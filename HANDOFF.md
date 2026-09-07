@@ -13,9 +13,9 @@
 | 項目 | 状態 |
 |---|---|
 | リポジトリ | `hirodiver/tampermonkey-scripts`（public / デフォルト `main`） |
-| スクリプト版数 | v3.6.0 |
+| スクリプト版数 | v3.7.0 |
 | 自動更新 | 有効（`@updateURL` は `main` の raw URL を指す） |
-| 自動検証 | `test/x-youtube-card.test.js` 33項目 全通過 |
+| 自動検証 | `test/x-youtube-card.test.js` 41項目 全通過 |
 | **実機での動作確認** | **未実施（v3.3.0 以降）** |
 
 配布URL:
@@ -24,7 +24,7 @@
 https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
 ```
 
-## 2. 直近のセッションでやったこと（v3.4.0 / v3.5.0 / v3.6.0）
+## 2. 直近のセッションでやったこと（v3.4.0 / v3.5.0 / v3.6.0 / v3.7.0）
 
 実機検証ができないため、代わりにヘッドレスChromium（Playwright）上へ
 Xのカード構造を模したDOMを組み、スクリプトを実際に流し込んで検証した。
@@ -67,6 +67,29 @@ v3.5.0 配信後、実機（デスクトップChrome + iOS Safari 双方）か�
 
 修正前のコードで実際にこのシナリオが再現することを確認した上で修正した。
 
+## 2.6 画像付き投稿への対応（v3.7.0）
+
+ユーザー要望: 画像とYouTube URLを含む投稿は、Xがカード化しない
+（画像がサムネイル代わりになる）。しかしYouTubeを開く操作は常に
+同じボタンで統一したい。
+
+**方針はユーザーに確認して決定**（AskUserQuestionで2点確認済み）:
+
+1. ボタンを出すタイミング → **確認後**ではなく、本文の表示テキストに
+   YouTubeらしき文字列が見えている時点で即座に出す
+2. 設置場所 → **画像の右上**（overlay）
+
+**実装**: t.co自体は展開しないと遷移先が分からないが、Xは本文リンクの
+表示に元URL（収まらなければ末尾省略）をテキストとして使う。これを
+`findYouTubeTextLink()` で読み取り、動画IDが完全なら確定URL、
+省略されていればweak扱い（クリック時にAPIで確定）とした。
+
+画像コンテナ（`tweetPhoto`）自体を「card」として既存の状態管理・
+先読み・クリック処理・開き方の仕組みにそのまま載せている
+（`addButton()` の同期解決ロジックを引数化して共通化）。
+
+詳細は `SPEC.md` 5.5章。
+
 ## 3. 検証の状況
 
 **やったこと**
@@ -76,7 +99,7 @@ node --check x-youtube-card-open-in-browser.user.js
 NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ```
 
-`test/x-youtube-card.test.js` はヘッドレスChromium上の模擬DOMで24項目を確認する。
+`test/x-youtube-card.test.js` はヘッドレスChromium上の模擬DOMで41項目を確認する。
 `GM_xmlhttpRequest` と `window.open` はモック。詳細は `SPEC.md` 第12章。
 
 **このテストが保証しないこと**
@@ -95,6 +118,8 @@ Tampermonkeyの `@connect` 判定、実APIのレスポンス形状。
 3. 配信前のライブカードでURLが取れるか
 4. 1つの投稿に複数のYouTubeカードがある場合、それぞれ正しいURLが開くか
 5. タイトルに「YouTube」を含む他ドメインのカードにボタンが出ていないか
+6. **[v3.7.0]** 画像付きでカード化されない投稿（YouTube URL + 画像）に、画像の右上にボタンが出るか。開いた動画が正しいか
+7. **[v3.7.0]** 画像付きでもYouTubeと無関係な投稿にボタンが出ていないか
 
 **ボタンが一切出ない場合**、疑う順序は
 `[data-testid="card.wrapper"]` の変更 → `isYouTubeCard()` の判定が厳しすぎる、の順。
@@ -110,6 +135,8 @@ Tampermonkeyの `@connect` 判定、実APIのレスポンス形状。
 | B-6 | ドメイン表記の判定は表示仕様依存。Xが表記をやめると配信前カードを検出できない |
 | B-7 | React探索の子孫走査は先頭40要素まで。巨大なカードでは取りこぼす |
 | B-8 | 引用ブロックに status リンクが無い構成では、引用カードが外側のツイートIDで解決される |
+| B-9 | 画像付き投稿の表示テキストからの動画ID復元は未検証のまま使う。稀に誤ったIDを開く可能性がある |
+| B-10 | 画像付き投稿は `tweetPhoto` セレクタに依存。複数枚グリッドでは1枚目にのみボタンが付く |
 | C-3' | ダークテーマ追従は `prefers-color-scheme` ベース。X側だけの切替には追従しない |
 | V-1 | 検証は模擬DOMのみ。実機確認は別途必要 |
 
