@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X YouTube Card - Open in Browser
 // @namespace    local.hiro.tools
-// @version      3.3.0
+// @version      3.3.1
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -14,6 +14,10 @@
 // @connect      *
 // @inject-into  page
 // @noframes
+// @homepageURL  https://github.com/hirodiver/tampermonkey-scripts
+// @supportURL   https://github.com/hirodiver/tampermonkey-scripts/issues
+// @downloadURL  https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/claude/improvement-plan-yqtbxe/x-youtube-card-open-in-browser.user.js
+// @updateURL    https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/claude/improvement-plan-yqtbxe/x-youtube-card-open-in-browser.user.js
 // ==/UserScript==
 
 (function () {
