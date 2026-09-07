@@ -1,0 +1,39 @@
+# tampermonkey-scripts
+
+hirodiver 用の Tampermonkey ユーザースクリプト置き場。
+
+## スクリプト一覧
+
+| ファイル | 名前 | 対象 |
+|---|---|---|
+| `x-youtube-card-open-in-browser.user.js` | X YouTube Card - Open in Browser | x.com / twitter.com |
+| `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) - Hiro | www.youtube.com |
+
+## インストール
+
+Tampermonkey で以下の raw URL を開くとインストールできる（以後は自動更新される）。
+
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
+
+## 自動更新の仕組み
+
+各スクリプトの `@updateURL` / `@downloadURL` は上記 raw URL（`main` ブランチ）を指している。
+Tampermonkey は定期的に `@updateURL` を取得し、`@version` が手元より新しければ更新する。
+
+**更新を配信するときのルール**
+
+1. スクリプトを編集する
+2. **必ず `@version` を上げる**（上げないと配信されない）
+3. `main` ブランチに反映する
+
+`main` に入っていない変更は配信されない。作業ブランチにコミットしただけでは反映されないので注意。
+
+## YouTube Full Dates (JST) について
+
+Greasy Fork の "YouTube Full Dates (v3)" (script id 564941) を元にした**独立フォーク**。
+`@name` / `@namespace` / 更新URL をすべて差し替えているため、本家の更新は反映されない。
+
+Tampermonkey はスクリプトを `@namespace` + `@name` で識別するため、本フォークは本家とは別スクリプトとして登録される。
+本家を入れている場合は**本家を削除**すること（両方動くと日付を二重に書き換えて競合する）。
+設定値（`GM_setValue`）もスクリプト単位で分かれるため、フォーク側では初期設定からやり直しになる。
