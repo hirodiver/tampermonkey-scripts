@@ -8,6 +8,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 |---|---|---|
 | `x-youtube-card-open-in-browser.user.js` | X YouTube Card - Open in Browser | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) - Hiro | www.youtube.com |
+| `youtube-upcoming-stream-list.user.js` | YouTube 登録チャンネル 配信予定リスト | www.youtube.com |
 
 ## インストール
 
@@ -15,6 +16,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 
 ## 自動更新の仕組み
 
