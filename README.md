@@ -1,41 +1,53 @@
 # tampermonkey-scripts
 
-個人用の Tampermonkey ユーザースクリプト置き場。
-公開リポジトリなので、**秘密にすべき情報は置かないこと**。
+hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 
-## 収録スクリプト
+## スクリプト一覧
 
-### X YouTube Card - Open in Browser
+| ファイル | 名前 | 対象 |
+|---|---|---|
+| `x-youtube-card-open-in-browser.user.js` | X YouTube Card - Open in Browser | x.com / twitter.com |
+| `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) - Hiro | www.youtube.com |
 
-X(Twitter) のタイムライン上のYouTubeカードに「▶ YouTubeで開く」ボタンを追加し、
-X内蔵プレイヤーを経由せずにYouTubeを開く。
+## インストール
 
-- 本体: [`x-youtube-card-open-in-browser.user.js`](x-youtube-card-open-in-browser.user.js)
-- 仕様書: [`SPEC.md`](SPEC.md)
+Tampermonkey で以下の raw URL を開くとインストールできる（以後は自動更新される）。
 
-**インストール**（Safari で開くと Tampermonkey のインストール画面が出る）
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 
-```
-https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
-```
+## 自動更新の仕組み
 
-`@updateURL` を設定済みのため、インストール後は Tampermonkey が自動で更新を拾う。
+各スクリプトの `@updateURL` / `@downloadURL` は上記 raw URL（`main` ブランチ）を指している。
+Tampermonkey は定期的に `@updateURL` を取得し、`@version` が手元より新しければ更新する。
 
-## 更新の手順
+**更新を配信するときのルール**
 
-1. スクリプトを修正する
-2. **`@version` を上げる**（これを忘れると自動更新が配信されない）
-3. `SPEC.md` の変更履歴とバージョンを更新する
-4. `main` へプッシュする
+1. スクリプトを編集する
+2. **必ず `@version` を上げる**（上げないと配信されない）
+3. `main` ブランチに反映する
 
-`@version` を上げずにプッシュしても、既存の利用者には何も届かない。
+`main` に入っていない変更は配信されない。作業ブランチにコミットしただけでは反映されないので注意。
 
-## 設計上の要点
+## YouTube Full Dates (JST) について
 
-詳細は `SPEC.md` にあるが、壊しやすい箇所を挙げておく。
+Greasy Fork の "YouTube Full Dates (v3)" (script id 564941) を元にした**独立フォーク**。
+`@name` / `@namespace` / 更新URL をすべて差し替えているため、本家の更新は反映されない。
+
+Tampermonkey はスクリプトを `@namespace` + `@name` で識別するため、本フォークは本家とは別スクリプトとして登録される。
+本家を入れている場合は**本家を削除**すること（両方動くと日付を二重に書き換えて競合する）。
+設定値（`GM_setValue`）もスクリプト単位で分かれるため、フォーク側では初期設定からやり直しになる。
+
+## X YouTube Card の設計上の要点
+
+詳細は [`SPEC.md`](SPEC.md) にあるが、壊しやすい箇所を挙げておく。
 
 - **`@inject-into page` は必須**。React の `__reactProps$` / `__reactFiber$` は
   isolated world から参照できず、URL解決の主要経路が死ぬ
 - **`@connect` はリダイレクト先も宣言する**。`publish.twitter.com` は
   `publish.x.com` へ飛ぶため、両方ないと遮断される
 - ボタンが一切出なくなったら、まず `[data-testid="card.wrapper"]` の変更を疑う
+
+## 注意
+
+公開リポジトリなので、**秘密にすべき情報は置かないこと**。
