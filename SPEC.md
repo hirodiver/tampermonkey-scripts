@@ -1,6 +1,6 @@
 # X YouTube Card - Open in Browser 仕様書
 
-- **バージョン**: 3.3.0
+- **バージョン**: 3.3.1
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -25,6 +25,7 @@ X はカード化した投稿の本文からURL文字列を除去し、カード
 | 権限 | `GM_xmlhttpRequest` |
 | フレーム | `@noframes`（トップレベルのみ） |
 | 確認済み環境 | iOS Safari + Tampermonkey |
+| 配布元 | https://github.com/hirodiver/tampermonkey-scripts |
 
 ### 実行コンテキストについて
 
@@ -236,7 +237,6 @@ article の data 属性ではなくカード単位にしたことで、
 | B-5 | 複数カードへのURL割当は「article内のYouTubeカードの出現順」に依存 | APIの返す順序とDOM順が食い違う構成では入れ替わりうる |
 | B-6 | ドメイン表記の判定は表示文字列に依存 | Xがカード下部のドメイン表記をやめると、直リンクもiframeも無い配信前カードで検出できなくなる |
 | C-3' | ダークテーマ追従は `prefers-color-scheme` ベース | X側だけをライト／ダークに切り替えた場合はOS設定に従う |
-| C-4 | `@updateURL` / `@downloadURL` / `@icon` 未指定 | 自動更新なし |
 
 ### v3.2.1 から解消した項目
 
@@ -264,6 +264,9 @@ article の data 属性ではなくカード単位にしたことで、
 ---
 
 ## 12. 変更履歴
+
+### v3.3.1
+- `@updateURL` / `@downloadURL` / `@homepageURL` / `@supportURL` を追加し、Tampermonkey の自動更新に対応（C-4）
 
 ### v3.3.0
 - 状態を article 単位から `card.wrapper` 単位（WeakMap）へ移行。1 article 複数カード構成に対応し、仮想リストのDOM再利用による古いURLの張り付きも解消（B-2 / B-3）
