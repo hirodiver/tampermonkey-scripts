@@ -432,6 +432,117 @@ function check(name, cond, extra) {
       'https://www.youtube.com/watch?v=PREFETCH02',
     { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
 
+  // ===================================================================
+  // 16. ドメイン表記の表記ゆれ
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__labels = [
+      ['youtube.com', true],
+      ['www.youtube.com', true],
+      ['youtu.be', true],
+      ['YouTube.com', true],
+      [' youtube.com ', true],
+      ['From youtube.com', true],
+      ['youtube.com から', true],
+      ['\u{1F517}youtube.com', true],
+      ['YouTubeで話題の動画', false],
+      ['notyoutube.com', false],
+      ['example.com', false],
+      ['youtube', false],
+    ];
+    window.__labels.forEach((pair, i) => {
+      const art = document.createElement('article');
+      art.innerHTML = '<a href="https://x.com/u/status/' + (5000000000000000000 + i) + '">t</a>';
+      const w = document.createElement('div');
+      w.setAttribute('data-testid', 'card.wrapper');
+      w.innerHTML = '<span>タイトル</span><span>' + pair[0] + '</span>';
+      art.appendChild(w);
+      document.getElementById('timeline').appendChild(art);
+    });
+  });
+  await rescan();
+  const labelResult = await page.evaluate(() =>
+    window.__labels
+      .map((pair, i) => {
+        const has = !!document.querySelectorAll('article')[i].querySelector('.hiroYtOpen-btn');
+        return has === pair[1] ? null : pair[0] + ' => ' + has;
+      })
+      .filter(Boolean));
+  check('16: ドメイン表記の判定（12パターン）', labelResult.length === 0, labelResult);
+
+  // ===================================================================
+  // 17. 引用ツイート内のカードは引用側のツイートIDで解決する
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened = [];
+    window.__api['3000000000000000001'] = ['https://www.youtube.com/watch?v=OUTERTWEET'];
+    window.__api['3000000000000000002'] = ['https://www.youtube.com/watch?v=QUOTEDTWET'];
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/outer/status/3000000000000000001">time</a>' +
+      '<div data-testid="tweetText">本文</div>' +
+      '<div role="link">' +
+        '<a href="https://x.com/inner/status/3000000000000000002">quoted</a>' +
+        '<div data-testid="card.wrapper"><span>Q</span><span>youtube.com</span></div>' +
+      '</div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(250);
+  check('17: 引用ツイート内カードは引用側のURLで開く',
+    await page.evaluate(() => window.__opened.some((u) => String(u).indexOf('QUOTEDTWET') >= 0)),
+    await page.evaluate(() => window.__opened));
+
+  // ===================================================================
+  // 18. 本体カード＋引用カードで、それぞれ自分のツイートで解決する
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened = [];
+    window.__api['3000000000000000003'] = ['https://www.youtube.com/watch?v=MAINCARD11'];
+    window.__api['3000000000000000004'] = ['https://www.youtube.com/watch?v=QUOTECARD1'];
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/outer/status/3000000000000000003">time</a>' +
+      '<div data-testid="card.wrapper"><span>M</span><span>youtube.com</span></div>' +
+      '<div role="link">' +
+        '<a href="https://x.com/inner/status/3000000000000000004">quoted</a>' +
+        '<div data-testid="card.wrapper"><span>Q</span><span>youtube.com</span></div>' +
+      '</div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  await page.locator('.hiroYtOpen-btn').nth(1).click();
+  await page.waitForTimeout(250);
+  check('18: 引用側カードは引用側のURLで開く（本体と混同しない）',
+    await page.evaluate(() => window.__opened.some((u) => String(u).indexOf('QUOTECARD1') >= 0)),
+    await page.evaluate(() => window.__opened));
+  await page.evaluate(() => { window.__opened = []; });
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(250);
+  check('18: 本体カードは本体のURLで開く',
+    await page.evaluate(() => window.__opened.some((u) => String(u).indexOf('MAINCARD11') >= 0)),
+    await page.evaluate(() => window.__opened));
+
+  // ===================================================================
+  // 19. t.co 止まり（weak）のカードには href を付けない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/4000000000000000001">time</a>' +
+      '<div data-testid="card.wrapper"><a href="https://t.co/zzzz">c</a><span>youtube.com</span></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('19: weak(t.co) のとき href を付けない',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) === null,
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
