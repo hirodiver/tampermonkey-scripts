@@ -48,6 +48,18 @@ Tampermonkey はスクリプトを `@namespace` + `@name` で識別するため�
   `publish.x.com` へ飛ぶため、両方ないと遮断される
 - ボタンが一切出なくなったら、まず `[data-testid="card.wrapper"]` の変更を疑う
 
+### 検証
+
+編集したら、コミット前に自動検証を通すこと。
+
+```
+node --check x-youtube-card-open-in-browser.user.js
+NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
+```
+
+ヘッドレスChromium上でXのカード構造を模したDOMにスクリプトを流し込み、検出・URL解決・ボタン設置を確認する（Playwright が必要）。
+ただしXの実DOMやiOSのUniversal Linkの挙動は再現していないため、**実機確認の代わりにはならない**。
+
 ## 注意
 
 公開リポジトリなので、**秘密にすべき情報は置かないこと**。
