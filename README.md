@@ -8,6 +8,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 |---|---|---|
 | `x-youtube-card-open-in-browser.user.js` | X YouTube Card - Open in Browser | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) - Hiro | www.youtube.com |
+| `demae-can-order-auto-complete.user.js` | 出前館 - お届け時間変更確認を自動で完了 | demae-can.com |
 
 ## インストール
 
@@ -15,6 +16,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-order-auto-complete.user.js
 
 ## 自動更新の仕組み
 
@@ -59,6 +61,16 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 
 ヘッドレスChromium上でXのカード構造を模したDOMにスクリプトを流し込み、検出・URL解決・ボタン設置を確認する（29項目、Playwright が必要）。
 ただしXの実DOMやiOSのUniversal Linkの挙動は再現していないため、**実機確認の代わりにはならない**。
+
+## 出前館 - お届け時間変更確認を自動で完了 について
+
+カートで「注文を完了する」を押した後、混雑等で到着時刻が変わった場合にのみ出る
+「お届け時間に変更があります」確認モーダル内の「注文を完了する」ボタンを自動でクリックする。
+
+- 見出しに「お届け時間」「変更」を含むモーダル内のボタンだけを対象にしており、
+  カート画面本体にある（ユーザーが手動で押すべき）最初の「注文を完了する」ボタンは対象外
+- 出前館側のDOM構造（クラス名・文言）が変わると効かなくなる可能性がある。
+  効かなくなった場合はモーダルの見出し文言が変わっていないか確認すること
 
 ## 注意
 
