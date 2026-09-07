@@ -1,6 +1,6 @@
 # X YouTube Card - Open in Browser 仕様書
 
-- **バージョン**: 3.3.2
+- **バージョン**: 3.4.0
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -24,7 +24,7 @@ X はカード化した投稿の本文からURL文字列を除去し、カード
 | 実行コンテキスト | `@inject-into page`（ページコンテキスト） |
 | 権限 | `GM_xmlhttpRequest` |
 | フレーム | `@noframes`（トップレベルのみ） |
-| 確認済み環境 | iOS Safari + Tampermonkey |
+| 想定環境 | iOS Safari + Tampermonkey（v3.3.0 以降は実機未確認） |
 | 配布元 | https://github.com/hirodiver/tampermonkey-scripts |
 
 ### 実行コンテキストについて
@@ -105,11 +105,22 @@ scan()   card.wrapper を走査
 |---|---|---|
 | 1 | カード内のYouTube直リンク | `watch` / `youtu.be` / `shorts` |
 | 2 | 再生済み iframe の `/embed/ID` | X内プレイヤー起動後に有効 |
-| 3 | React内部state | `__reactProps$` と `__reactFiber$.memoizedProps` を深さ6・上位12階層まで探索。**カードの親要素より上へは遡らない**（隣のカードのURLを拾わないため） |
+| 3 | React内部state | `__reactProps$` と `__reactFiber$.memoizedProps` を深さ6まで探索。カード自身 → カード内の子孫(最大40要素) → 上位12階層の順。上位への探索は境界要素の**手前**で打ち切り、境界要素自身は見ない |
 | 4 | カード内の t.co リンク | 暫定値（weak）扱い |
 | 5 | ツイート本文内の t.co リンク | 本文中の t.co が**1本だけ**のときのみ採用。暫定値（weak）扱い |
 
 t.co は「YouTube URLと確定していない」ため weak として記録する。weak のまま残っているカードは、先読み・押下時に非同期経路で確定URLへ上書きする。
+
+**上位探索の境界**は、その article 内のYouTubeカードの枚数で決める。
+
+| 枚数 | 境界（この要素は見ない） | 意図 |
+|---|---|---|
+| 2枚以上 | `card.parentElement` | 隣のカードと共有する親のpropsを覗くと、両カードが同じURLになる |
+| 1枚 | article の親 | 曖昧さが無いので article まで遡り、配信前カードの解決率を上げる |
+
+境界要素を**含めて**探索すると、複数カード構成で全カードが共有親の同一URLになる。v3.3.x はこの不具合を持っていた。
+
+カード内の子孫探索は境界に関わらず常に行う。子孫は確実にそのカードのものなので、隣のカードが混入しない。
 
 React探索は起点ごとに visited 集合（WeakSet）を作り直す。使い回すと深さ上限で打ち切った枝が「訪問済み」として残り、別の起点から浅い深さで到達できたURLを取りこぼす。
 
@@ -190,7 +201,7 @@ iOS では Universal Link の成立条件により、遷移の起こし方でYou
 
 `mousedown` / `pointerdown` / `click` をすべてキャプチャ段階で `stopPropagation` し、カード本体およびツイート本体のクリック（＝X内プレイヤー起動、詳細画面遷移）を抑止する。
 
-`<a>` 化により、URL確定済みなら中クリック・修飾キー付きクリック・長押しでのリンクコピーがブラウザ標準の挙動で使える。左クリック（修飾キーなし）だけを `preventDefault` して `openUrl()` の経路へ流し、Safari固定の挙動を維持する。URLが後から確定した場合は `href` を追従更新する。
+`<a>` 化により、URL確定済みなら中クリック・修飾キー付きクリック・長押しでのリンクコピーがブラウザ標準の挙動で使える。左クリック（修飾キーなし）だけを `preventDefault` して `openUrl()` の経路へ流し、Safari固定の挙動を維持する。URLが後から確定した場合は `href` を追従更新する。逆に、URLが未解決または t.co 止まり（weak）のときは `href` を**外す**。確定していないURLをブラウザ既定の経路に渡さないため。
 
 ---
 
@@ -204,13 +215,21 @@ iOS では Universal Link の成立条件により、遷移の起こし方でYou
 | `url` | 解決済みURL |
 | `weak` | `url` が t.co 由来の暫定値である |
 | `tried` | 先読みを試行済み（1カード1回） |
-| `watched` | IntersectionObserver 登録済み |
+| `watched` | IntersectionObserver 登録済み。**状態を作り直しても引き継ぐ**（監視は状態ではなく要素に紐づくため） |
+| `needsRefetch` | DOM再利用で作り直された状態。次の `scan()` で先読みを直接起動する |
 
 article の data 属性ではなくカード単位にしたことで、
 
 - 1つの article に複数カードがある構成（引用ツイート等）で、各カードが独立したURLを持つ
-- 仮想リストによるDOM再利用時に古いURLが張り付かない（`tweetId` が変化した状態は破棄する）
+- 仮想リストによるDOM再利用時に古いURLが張り付かない（`tweetId` が変化した状態は破棄し、ボタンの `href` も外す）
 - ページ遷移でDOMが捨てられれば状態も自動で回収される
+
+### DOM再利用時の後始末
+
+`tweetId` の変化で状態を破棄するとき、次の2つを併せて行う。
+
+- **ボタンの `href` を外す**（`syncHref(card, null)`）。残すと、中クリックやリンクコピーで前のツイートの動画が開く
+- **`watched` を引き継ぎ、`needsRefetch` を立てる**。IntersectionObserver は observe 済みの要素へ再度 observe しても無視するため、登録し直したつもりで再通知が来ない。代わりに `scan()` から直接 `prefetch()` を呼ぶ（そのカードは既に画面上にある）
 
 検出とURLは分離したままで、**URLが取れなくてもボタンは表示される**。解決はクリック時に非同期経路へフォールバックする。同時に、解決できないカードに対する再探索ループも止まる。
 
@@ -237,6 +256,8 @@ article の data 属性ではなくカード単位にしたことで、
 | B-5 | 複数カードへのURL割当は「article内のYouTubeカードの出現順」に依存 | APIの返す順序とDOM順が食い違う構成では入れ替わりうる |
 | B-6 | ドメイン表記の判定は表示文字列に依存 | Xがカード下部のドメイン表記をやめると、直リンクもiframeも無い配信前カードで検出できなくなる |
 | C-3' | ダークテーマ追従は `prefers-color-scheme` ベース | X側だけをライト／ダークに切り替えた場合はOS設定に従う |
+| B-7 | React探索の子孫走査は先頭40要素まで | 巨大なカードでは末尾の要素にしかpropsが無い場合に取りこぼす。非同期経路へ落ちる |
+| V-1 | 検証はヘッドレスChromium上の模擬DOMのみ | Xの実DOM・Reactの内部構造は再現できていない。実機（iOS Safari + Tampermonkey）での確認は別途必要 |
 
 ### v3.2.1 から解消した項目
 
@@ -263,7 +284,57 @@ article の data 属性ではなくカード単位にしたことで、
 
 ---
 
-## 12. 変更履歴
+## 12. 検証
+
+### 自動検証
+
+```
+NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
+```
+
+ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。24項目。
+
+| 項目 | 確認内容 |
+|---|---|
+| 1 | 直リンクカードの検出・overlay設置・href正規化 |
+| 2 | タイトルに「YouTube」を含む他ドメインカードを検出しない |
+| 3 | 配信前ライブカード（アンカー無し）の検出とAPI解決 |
+| 4 | 1 article 2カードで、それぞれ対応するURLで開く |
+| 5 | 展開でoverlay→inlineへ切替、`host`クラス除去、embedからの解決 |
+| 6 | DOM再利用後に古い `href` が残らない |
+| 7-8 | React props からの解決／隣カードへの混入が無い |
+| 9 | 本文 t.co が複数のとき本文t.coを使わない |
+| 10-11 | 失敗表示と、失敗をキャッシュしないこと |
+| 12 | 中クリックで `preventDefault` しない |
+| 13-14 | 祖先props（1枚時）／子孫propsからの解決 |
+| 15 | 先読みの発火と、DOM再利用後の再発火 |
+
+**このテストが保証しないこと**
+
+Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動、Tampermonkeyの `@connect` 判定、実APIのレスポンス形状。**実機確認の代替にはならない。**
+
+### 実機で確認すべきこと
+
+1. タイムラインのYouTubeカードにボタンが出るか
+2. 押すとSafariでYouTubeが開くか（アプリに奪われないか）
+3. 配信前のライブカードでURLが取れるか
+4. 1つの投稿に複数のYouTubeカードがある場合、それぞれ正しいURLが開くか
+5. タイトルに「YouTube」を含む他ドメインのカードにボタンが出ていないか
+
+ボタンが一切出ない場合、疑う順序は `[data-testid="card.wrapper"]` の変更 → `isYouTubeCard()` が厳しすぎる、の順。判定を緩めるなら `hasYouTubeDomainLabel()` を見る。
+
+---
+
+## 13. 変更履歴
+
+### v3.4.0
+- **React探索が境界要素自身を見ていた不具合を修正**。1 article に複数のYouTubeカードがある構成で、共有する親要素のpropsを拾い、全カードが同じURLになっていた（新 B-5 の主因）
+- React探索にカード内子孫の走査を追加（最大40要素）。カード自身にpropsが無い構成での解決率が上がる
+- カードが1枚だけの article では、上位探索の境界を article の親まで広げた
+- **DOM再利用でボタンの `href` に前のツイートのURLが残る不具合を修正**。中クリック・リンクコピーで誤った動画が開いていた
+- **DOM再利用後に先読みが二度と発火しない不具合を修正**。observe 済みの要素への再 observe が無視されるため、`scan()` から直接先読みするようにした
+- URLが未解決または weak のときは `href` を外すようにした
+- 検証ハーネス `test/x-youtube-card.test.js` を追加（ヘッドレスChromium、24項目）
 
 ### v3.3.2
 - 配布ブランチを `main` に整理し、`@updateURL` / `@downloadURL` を `main` 参照へ変更

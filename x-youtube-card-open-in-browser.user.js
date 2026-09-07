@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X YouTube Card - Open in Browser
 // @namespace    local.hiro.tools
-// @version      3.3.2
+// @version      3.4.0
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -241,49 +241,79 @@
     return null;
   }
 
-  /**
-   * 要素から上位DOM要素を遡り、
-   * React props / fiber 内のYouTube URLを探す。
-   *
-   * stopAt を渡すと、その要素より上へは遡らない。
-   * 1つの article に複数カードがある場合、
-   * article まで遡ると隣のカードのURLを拾ってしまうため。
-   *
-   * ページコンテキストで実行されていないと
-   * __reactProps$ / __reactFiber$ は参照できず、常にnullを返す。
-   */
-  function urlFromReact(element, stopAt) {
-    let node = element;
+  /** 1要素の React props / fiber を調べる */
+  function urlFromReactNode(node) {
+    const propsKey = reactKey(node, '__reactProps$');
 
-    for (let up = 0; node && up < 12; up++) {
-      const propsKey = reactKey(node, '__reactProps$');
+    if (propsKey) {
+      const url = findYtUrlDeep(node[propsKey], 0, new WeakSet());
 
-      if (propsKey) {
-        const url = findYtUrlDeep(node[propsKey], 0, new WeakSet());
+      if (url) {
+        return url;
+      }
+    }
+
+    const fiberKey = reactKey(node, '__reactFiber$');
+
+    if (fiberKey) {
+      let fiber = node[fiberKey];
+
+      for (let i = 0; fiber && i < 20; i++) {
+        const url = findYtUrlDeep(fiber.memoizedProps, 0, new WeakSet());
 
         if (url) {
           return url;
         }
+
+        fiber = fiber.return;
       }
+    }
 
-      const fiberKey = reactKey(node, '__reactFiber$');
+    return null;
+  }
 
-      if (fiberKey) {
-        let fiber = node[fiberKey];
+  /**
+   * 要素とその子孫、続いて上位DOM要素を辿り、
+   * React props / fiber 内のYouTube URLを探す。
+   *
+   * stopUnder は「これより上へは遡らない」境界で、**その要素自身も見ない**。
+   * 境界要素は隣のカードと共有されうるため、
+   * そこを覗くと隣のカードのURLを拾ってしまう。
+   *
+   * ページコンテキストで実行されていないと
+   * __reactProps$ / __reactFiber$ は参照できず、常にnullを返す。
+   */
+  function urlFromReact(element, stopUnder) {
+    // まず要素自身とその子孫。ここは確実にこのカードのものなので安全。
+    const own = urlFromReactNode(element);
 
-        for (let i = 0; fiber && i < 20; i++) {
-          const url = findYtUrlDeep(fiber.memoizedProps, 0, new WeakSet());
+    if (own) {
+      return own;
+    }
 
-          if (url) {
-            return url;
-          }
+    const descendants = element.querySelectorAll('*');
+    const limit = Math.min(descendants.length, 40);
 
-          fiber = fiber.return;
-        }
+    for (let i = 0; i < limit; i++) {
+      const url = urlFromReactNode(descendants[i]);
+
+      if (url) {
+        return url;
       }
+    }
 
-      if (stopAt && node === stopAt) {
+    // 続いて上位へ。境界に達したら、その要素は見ずに打ち切る。
+    let node = element.parentElement;
+
+    for (let up = 0; node && up < 12; up++) {
+      if (stopUnder && node === stopUnder) {
         return null;
+      }
+
+      const url = urlFromReactNode(node);
+
+      if (url) {
+        return url;
       }
 
       node = node.parentElement;
@@ -638,7 +668,19 @@
       }
     }
 
-    const fromReact = urlFromReact(card, card.parentElement);
+    // 同じ article に YouTube カードが複数あるときは、
+    // カードの外を覗くと隣のカードのURLを拾いうるのでカード内に閉じる。
+    // 1枚しかなければ曖昧さが無いので article まで遡ってよい。
+    const multi = article
+      ? Array.from(article.querySelectorAll(SELECTOR.card)).filter(isYouTubeCard)
+          .length > 1
+      : false;
+
+    const boundary = multi
+      ? card.parentElement
+      : (article && article.parentElement) || null;
+
+    const fromReact = urlFromReact(card, boundary);
 
     if (fromReact) {
       return { url: normalizeYtUrl(fromReact), weak: false };
@@ -686,11 +728,20 @@
     const id = status ? status.id : null;
 
     let state = cardState.get(card);
+    let reused = false;
+    let watched = false;
 
     if (state && state.tweetId !== id) {
       // DOM再利用で別のツイートに化けた
       log('状態を破棄（ツイート変化）', state.tweetId, '->', id);
+
+      // 前のツイートのURLがボタンに残らないようにする
+      syncHref(card, null);
+
+      // 監視は要素に紐づくので、状態を作り直しても引き継ぐ
+      watched = state.watched;
       state = null;
+      reused = true;
     }
 
     if (!state) {
@@ -700,7 +751,13 @@
         url: null,
         weak: false,
         tried: false,
-        watched: false,
+        // 監視は要素に紐づくので、状態を作り直しても解除しない。
+        // 既に observe 済みの要素へ再度 observe() を呼んでも無視されるため、
+        // 引き継がないと再登録したつもりで何も起きなくなる。
+        watched,
+        // DOM再利用による作り直し。カードは既に画面上にあるので、
+        // IntersectionObserver の再通知を待たず先読みしてよい。
+        needsRefetch: reused,
       };
 
       cardState.set(card, state);
@@ -876,12 +933,26 @@
   // カード → 設置済みボタン
   const cardButton = new WeakMap();
 
+  /**
+   * ボタンの href を状態に追従させる。
+   *
+   * URLが無い／t.co止まり（weak）の場合は href を外す。
+   * 残したままだと、仮想リストのDOM再利用で別ツイートに化けたあと
+   * 前のツイートのURLが中クリック・リンクコピーで開いてしまう。
+   */
   function syncHref(card, url) {
     const button = cardButton.get(card);
 
-    if (button && url && isYtUrl(url)) {
-      button.href = url;
+    if (!button) {
+      return;
     }
+
+    if (url && isYtUrl(url)) {
+      button.href = url;
+      return;
+    }
+
+    button.removeAttribute('href');
   }
 
   function showFailure(button, label) {
@@ -1081,6 +1152,13 @@
       const state = stateOf(card, article);
 
       watchForPrefetch(card, state);
+
+      // DOM再利用で別ツイートに化けたカードは、
+      // 交差判定の再通知が来ないのでここから直接先読みする。
+      if (state.needsRefetch) {
+        state.needsRefetch = false;
+        prefetch(card);
+      }
 
       // URLが取れなくてもボタンは出す。
       // 解決はクリック時にsyndication APIへフォールバックする。
