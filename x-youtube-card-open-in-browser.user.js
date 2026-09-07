@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X YouTube Card - Open in Browser
 // @namespace    local.hiro.tools
-// @version      3.6.0
+// @version      3.7.0
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -67,6 +67,8 @@
     tcoLink: 'a[href^="https://t.co/"]',
     statusLink: 'a[href*="/status/"]',
     tweetText: '[data-testid="tweetText"]',
+    // 画像付きでカード化されない投稿でのボタン設置先。
+    tweetPhoto: '[data-testid="tweetPhoto"]',
   };
 
   const YT_RE =
@@ -83,6 +85,22 @@
   // 「notyoutube.com」は直前が \w なので一致しない。
   const YT_DOMAIN_RE =
     /(?:^|[^\w.-])(?:www\.|m\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)(?![\w.-])/i;
+
+  // 本文リンクの表示テキストからYouTube URLを読み取るための正規表現。
+  //
+  // Xは本文中のリンクを t.co で短縮する一方、表示上は元URLを
+  // （収まらなければ末尾を省略して）そのまま出す。これを利用すると、
+  // カード化されない投稿（画像付き等）でもリンク先を推測できる。
+  // href（t.co）と違い、プロトコルは省略されて表示されるため任意とする。
+  const YT_DISPLAY_RE =
+    /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|live\/|shorts\/)|youtu\.be\/)([\w-]+)/i;
+
+  // 表示テキストの末尾省略記号。「…」（Unicode）と「...」の両方に対応する。
+  const ELLIPSIS_RE = /(?:\u2026|\.\.\.)$/;
+
+  // YouTubeの動画IDは11文字。ちょうど11文字で末尾に省略記号が
+  // 続いていなければ、表示テキストだけで完全なURLとみなせる。
+  const YT_VIDEO_ID_LEN = 11;
 
   const log = (...args) => {
     if (DEBUG) {
@@ -687,6 +705,108 @@
     return hasYouTubeDomainLabel(card);
   }
 
+  /** そのarticle内に、検出済みのYouTubeカードが1つでもあるか */
+  function hasYouTubeCardInArticle(article) {
+    if (!article) {
+      return false;
+    }
+
+    const cards = article.querySelectorAll(SELECTOR.card);
+
+    for (const card of cards) {
+      const existing = cardState.get(card);
+
+      if (existing && existing.isYtCard) {
+        return true;
+      }
+
+      if (isYouTubeCard(card)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // -----------------------------------------------------------------------
+  // 画像付き・カード無し投稿のURL検出
+  // -----------------------------------------------------------------------
+  //
+  // XはYouTubeのURLを含む投稿でも、画像が付いていると card.wrapper を
+  // 作らない（サムネイル代わりに投稿画像を使うため）。本文からURL文字列を
+  // 除去する処理もカード化とセットなので、この場合は本文にt.coリンクが
+  // そのまま残る。
+  //
+  // t.coの遷移先はDOMからは分からないが、Xは本文中のリンクを表示する際に
+  // 元URL（収まらなければ末尾省略）をテキストとして出す。これを読むことで、
+  // 展開せずにYouTubeらしさを判定できる。
+
+  /**
+   * article本文（tweetText）内のリンクを走査し、表示テキストが
+   * YouTube URLに見えるものを探す。
+   *
+   * 戻り値: { anchor, id, complete } / null
+   *   id：表示テキストから取れた動画ID（省略されていれば不完全な文字列）
+   *   complete：末尾省略が無く、動画IDの長さが揃っている＝確定してよい
+   */
+  function findYouTubeTextLink(article) {
+    if (!article) {
+      return null;
+    }
+
+    const scope = article.querySelector(SELECTOR.tweetText) || article;
+    const anchors = scope.querySelectorAll('a');
+
+    for (const anchor of anchors) {
+      const text = (anchor.textContent || '').trim();
+      const match = text.match(YT_DISPLAY_RE);
+
+      if (!match) {
+        continue;
+      }
+
+      const rawId = match[1];
+      const truncated = ELLIPSIS_RE.test(text) || ELLIPSIS_RE.test(rawId);
+      const id = rawId.replace(/[….]+$/, '');
+      const complete = !truncated && id.length >= YT_VIDEO_ID_LEN;
+
+      return { anchor, id, complete };
+    }
+
+    return null;
+  }
+
+  /**
+   * resolveFromDom と同じ形（{ url, weak } / null）で返す、
+   * カード無し・画像付き投稿用の解決関数。addButton() の
+   * resolveSync としてそのまま渡せる。
+   *
+   * 表示テキストから動画IDが完全に読めればそれを確定URLとして使う。
+   * 省略されていて読めない場合は、リンクの実href（t.co）を暫定値
+   * （weak）として使う。非同期経路（syndication API）が確定させる。
+   */
+  function resolveFromPostText(card, article) {
+    const found = findYouTubeTextLink(article);
+
+    if (!found) {
+      return null;
+    }
+
+    if (found.complete) {
+      return {
+        url: `https://www.youtube.com/watch?v=${found.id}`,
+        weak: false,
+      };
+    }
+
+    return { url: found.anchor.href, weak: true };
+  }
+
+  /** 画像投稿でのボタン設置先。複数枚グリッドでも最初の画像の右上に置く。 */
+  function imagePostTarget(article) {
+    return article.querySelector(SELECTOR.tweetPhoto);
+  }
+
   // -----------------------------------------------------------------------
   // URL解決（DOM／React）
   // -----------------------------------------------------------------------
@@ -1049,7 +1169,12 @@
    * URLが確定していれば中クリック・長押しでのリンクコピーが効く。
    * 通常クリックだけは openUrl() の経路（Safari固定）に流す。
    */
-  function addButton(card, target, article, overlay) {
+  /**
+   * resolveSync:
+   *   URL未確定時に、クリックした瞬間もう一度同期解決を試みる関数。
+   *   カードなら resolveFromDom、画像投稿なら resolveFromPostText を渡す。
+   */
+  function addButton(card, target, article, overlay, resolveSync) {
     const state = stateOf(card, article);
     const button = document.createElement('a');
 
@@ -1120,7 +1245,7 @@
         let ready = current.url;
 
         if (!ready) {
-          const resolved = resolveFromDom(card, article);
+          const resolved = resolveSync(card, article);
 
           if (resolved) {
             current.url = resolved.url;
@@ -1266,9 +1391,82 @@
         existing.remove();
       }
 
-      addButton(card, target.el, article, target.overlay);
+      addButton(card, target.el, article, target.overlay, resolveFromDom);
 
       log('button added', target.overlay ? 'overlay' : 'inline', state.url || '(URL未解決)');
+    });
+
+    scanCardlessImagePosts();
+  }
+
+  /**
+   * YouTubeカードが無いが、画像付きで本文にYouTubeらしいリンクがある投稿。
+   *
+   * 画像コンテナ（tweetPhoto）自体を「card」として cardState / cardButton
+   * に載せることで、状態管理・先読み・クリック処理・開き方は
+   * 通常のカードとまったく同じ経路を再利用する。異なるのは
+   * isYouTubeCard() の代わりに findYouTubeTextLink()、
+   * resolveFromDom() の代わりに resolveFromPostText() を使う点だけ。
+   *
+   * 常にoverlay配置（画像の右上）。展開の概念が無いため inline化はしない。
+   */
+  function scanCardlessImagePosts() {
+    document.querySelectorAll('article').forEach((article) => {
+      // YouTubeカードが既にあるなら、そちらのボタンで足りる
+      if (hasYouTubeCardInArticle(article)) {
+        return;
+      }
+
+      const target = imagePostTarget(article);
+
+      if (!target) {
+        return;
+      }
+
+      const state = stateOf(target, article);
+
+      // isYtCard の意味はここでは「本文にYouTubeらしいリンクがある」。
+      // 一度trueと判定したら、同じツイートである間は再判定しない
+      // （通常のカードと同じ理由：判定が変わってボタンを見失う事故を防ぐ）。
+      if (!state.isYtCard) {
+        if (!findYouTubeTextLink(article)) {
+          return;
+        }
+
+        state.isYtCard = true;
+      }
+
+      watchForPrefetch(target, state);
+
+      if (state.needsRefetch) {
+        state.needsRefetch = false;
+        prefetch(target);
+      }
+
+      if (!state.url) {
+        const resolved = resolveFromPostText(target, article);
+
+        if (resolved) {
+          state.url = resolved.url;
+          state.weak = resolved.weak;
+        }
+      }
+
+      const existing = cardButton.get(target);
+
+      if (existing && existing.isConnected && target.contains(existing)) {
+        syncHref(target, state.url);
+        return;
+      }
+
+      if (existing) {
+        existing.remove();
+      }
+
+      target.classList.add(CLASS.host);
+      addButton(target, target, article, true, resolveFromPostText);
+
+      log('button added (image post)', state.url || '(URL未解決)');
     });
   }
 
