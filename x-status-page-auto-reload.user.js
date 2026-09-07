@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Status Page - Auto Reload on Stuck Loading
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.1.0
 // @description  タイムラインから個別ポストへ遷移した際に読み込みが固まったら自動で更新する（Control Panel for Twitter等の拡張との競合対策）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -33,8 +33,14 @@
 
   const DEBUG = false;
 
-  // 個別ポストページに遷移してから、この時間内に本文が表示されなければ
-  // 自動更新する。短すぎると通常の回線遅延で誤発火するので余裕を持たせる。
+  // 遷移後、画面内のDOMに一切変化がないままこの時間が経過したら、
+  // 「完全に固まっている」とみなして早期にリロードする。
+  // 正常な読み込み中は（回線が遅くても）通常DOMが動き続けるので、
+  // ここは誤発火のリスクが低く、思い切って短くできる。
+  const NO_ACTIVITY_TIMEOUT_MS = 700;
+
+  // DOMは動いている（＝読み込み中の兆候がある）が、この時間経っても
+  // 本文が表示されない場合の最終判定として使う保険のタイムアウト。
   const STUCK_TIMEOUT_MS = 2500;
 
   // 保険のポーリング間隔（history APIを介さない遷移への対応）
@@ -48,6 +54,9 @@
   }
 
   let checkTimer = null;
+  let noActivityTimer = null;
+  let mutationObserver = null;
+  let hasActivity = false;
   let watchedPath = null;
 
   function isStatusPage(pathname) {
@@ -59,6 +68,21 @@
     return !!document.querySelector(
       'article[data-testid="tweet"], article[data-testid="tweetDetail"]'
     );
+  }
+
+  function stopWatching() {
+    if (mutationObserver) {
+      mutationObserver.disconnect();
+      mutationObserver = null;
+    }
+    if (noActivityTimer) {
+      clearTimeout(noActivityTimer);
+      noActivityTimer = null;
+    }
+    if (checkTimer) {
+      clearTimeout(checkTimer);
+      checkTimer = null;
+    }
   }
 
   function reloadKey(path) {
@@ -89,31 +113,67 @@
     }
   }
 
-  function scheduleCheck(path) {
-    if (checkTimer) {
-      clearTimeout(checkTimer);
+  function finishWatching(path) {
+    log('content loaded, no reload needed', path);
+    clearReloadFlag(path);
+    stopWatching();
+  }
+
+  function reloadNow(path, reason) {
+    if (alreadyReloaded(path)) {
+      log('already reloaded once for this path, giving up', path);
+      stopWatching();
+      return;
     }
 
-    checkTimer = setTimeout(() => {
-      checkTimer = null;
+    log(reason, path);
+    markReloaded(path);
+    stopWatching();
+    location.reload();
+  }
 
-      // タイマー発火時点で既に別ページへ移動していたら何もしない
+  function scheduleCheck(path) {
+    stopWatching();
+    hasActivity = false;
+
+    mutationObserver = new MutationObserver(() => {
+      hasActivity = true;
+    });
+    // document-start 実行時は document.body がまだ存在しないことがあるため、
+    // 常に存在する documentElement を監視する（subtree指定なのでbody追加も拾える）
+    mutationObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+
+    // 第1段階: 画面が完全に無反応のまま短時間経過したら早期にリロード
+    noActivityTimer = setTimeout(() => {
+      noActivityTimer = null;
       if (location.pathname !== path) return;
 
       if (hasTweetContent()) {
-        log('content loaded, no reload needed', path);
-        clearReloadFlag(path);
+        finishWatching(path);
         return;
       }
 
-      if (alreadyReloaded(path)) {
-        log('already reloaded once for this path, giving up', path);
+      if (!hasActivity) {
+        reloadNow(path, 'no DOM activity detected, reloading early');
+      }
+      // hasActivity が true の場合は読み込み中の兆候ありとみなし、
+      // 下の第2段階（STUCK_TIMEOUT_MS）の判定に委ねる
+    }, NO_ACTIVITY_TIMEOUT_MS);
+
+    // 第2段階: DOMは動いているが本文が出ない場合の最終判定
+    checkTimer = setTimeout(() => {
+      checkTimer = null;
+      if (location.pathname !== path) return;
+
+      if (hasTweetContent()) {
+        finishWatching(path);
         return;
       }
 
-      log('stuck loading detected, reloading', path);
-      markReloaded(path);
-      location.reload();
+      reloadNow(path, 'stuck loading detected, reloading');
     }, STUCK_TIMEOUT_MS);
   }
 
@@ -122,10 +182,7 @@
     if (path === watchedPath) return;
     watchedPath = path;
 
-    if (checkTimer) {
-      clearTimeout(checkTimer);
-      checkTimer = null;
-    }
+    stopWatching();
 
     if (!isStatusPage(path)) return;
 
