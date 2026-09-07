@@ -13,9 +13,9 @@
 | 項目 | 状態 |
 |---|---|
 | リポジトリ | `hirodiver/tampermonkey-scripts`（public / デフォルト `main`） |
-| スクリプト版数 | v3.5.0 |
+| スクリプト版数 | v3.6.0 |
 | 自動更新 | 有効（`@updateURL` は `main` の raw URL を指す） |
-| 自動検証 | `test/x-youtube-card.test.js` 29項目 全通過 |
+| 自動検証 | `test/x-youtube-card.test.js` 33項目 全通過 |
 | **実機での動作確認** | **未実施（v3.3.0 以降）** |
 
 配布URL:
@@ -24,7 +24,7 @@
 https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
 ```
 
-## 2. 直近のセッションでやったこと（v3.4.0 / v3.5.0）
+## 2. 直近のセッションでやったこと（v3.4.0 / v3.5.0 / v3.6.0）
 
 実機検証ができないため、代わりにヘッドレスChromium（Playwright）上へ
 Xのカード構造を模したDOMを組み、スクリプトを実際に流し込んで検証した。
@@ -49,6 +49,23 @@ Xのカード構造を模したDOMを組み、スクリプトを実際に流し�
 - カードが1枚だけの article では上位探索の境界を article の親まで広げた
 - URLが未解決または weak のときは `href` を外すようにした
 - `cardIndex()` と本文 t.co の探索範囲も scope（カードが属するツイート）基準に統一
+
+## 2.5 実機報告からの修正（v3.6.0）
+
+v3.5.0 配信後、実機（デスクトップChrome + iOS Safari 双方）から
+**「カードをクリックして展開すると、ボタンがどこにも見えなくなる」**という
+報告があった。これは模擬DOMでは再現していなかった、実機由来の不具合。
+
+**原因**: `scan()` が毎回 `isYouTubeCard()` を再判定していた。カード展開直後の
+一瞬、ドメイン表記が消えiframeもまだ無い過渡状態で判定がfalseへ反転し、
+`scan()` がそのカードを丸ごと無視。React側は展開時に古いボタンを道連れに
+消してしまうため、ボタンが跡形もなく消えていた。
+
+**修正**: 一度trueと判定したカードは `state.isYtCard` に記憶し、同じツイート
+である間は再判定しないようにした。あわせて、展開後の埋め込みiframeが
+`youtube-nocookie.com` の場合にも対応（保険）。
+
+修正前のコードで実際にこのシナリオが再現することを確認した上で修正した。
 
 ## 3. 検証の状況
 

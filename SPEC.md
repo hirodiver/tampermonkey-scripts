@@ -1,6 +1,6 @@
 # X YouTube Card - Open in Browser 仕様書
 
-- **バージョン**: 3.5.0
+- **バージョン**: 3.6.0
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -233,12 +233,28 @@ iOS では Universal Link の成立条件により、遷移の起こし方でYou
 | `tried` | 先読みを試行済み（1カード1回） |
 | `watched` | IntersectionObserver 登録済み。**状態を作り直しても引き継ぐ**（監視は状態ではなく要素に紐づくため） |
 | `needsRefetch` | DOM再利用で作り直された状態。次の `scan()` で先読みを直接起動する |
+| `isYtCard` | `isYouTubeCard()` が一度 true と判定したことを記憶する。同じツイートである間は再判定しない |
 
 article の data 属性ではなくカード単位にしたことで、
 
 - 1つの article に複数カードがある構成（引用ツイート等）で、各カードが独立したURLを持つ
 - 仮想リストによるDOM再利用時に古いURLが張り付かない（`tweetId` が変化した状態は破棄し、ボタンの `href` も外す）
 - ページ遷移でDOMが捨てられれば状態も自動で回収される
+
+### 判定の固定化（isYtCard）
+
+`scan()` は本来、毎回 `isYouTubeCard()` を呼んでカードかどうかを判定する。
+しかし**カード展開直後の一瞬**、ドメイン表記が消え、iframeもまだ挿入されていない
+過渡的なDOM状態になることがある。この瞬間に再判定すると `isYouTubeCard()` が
+**falseへ反転**し、`scan()` がそのカードを丸ごと無視する。React側は展開時に
+古いボタンを道連れに消してしまっているため、ボタンが跡形もなく消える
+（実機報告: デスクトップChrome / iOS Safari 双方で、カードクリック後に
+ボタンがどこにも見えなくなる）。
+
+対策として、一度 `isYouTubeCard()` が true と判定したカードは `state.isYtCard`
+に記録し、同じツイートである間（`tweetId` が変わらない間）は再判定しない。
+DOM再利用で別ツイートに化けたときは `isYtCard` を含む状態ごと破棄されるので、
+正しく再判定される。
 
 ### DOM再利用時の後始末
 
@@ -295,6 +311,7 @@ article の data 属性ではなくカード単位にしたことで、
 | `publish.x.com/oembed` | 公開エンドポイントだが過去に404多発・IP単位の遮断事例あり | `取得失敗(API)` |
 | `[data-testid="card.wrapper"]` | XのDOM実装依存 | カード検出が全滅しボタンが出なくなる |
 | カード下部のドメイン表記 | Xの表示仕様依存 | 直リンクもiframeも無いカード（配信前ライブ等）の検出が落ちる |
+| 展開後iframeのドメイン | `youtube.com` と `youtube-nocookie.com` の両方に対応済み | 別の埋め込みドメインに変わった場合は再度対応が必要 |
 | `__reactProps$` / `__reactFiber$` | Reactの内部実装依存 | 同期経路の優先度3が死に、非同期経路へ落ちる |
 
 いずれも単独障害では全滅せず、下位の経路に落ちる多段構成にしてある。**ボタンが一切出なくなった場合は `card.wrapper` の変更を疑う**のが最短。
@@ -309,7 +326,7 @@ article の data 属性ではなくカード単位にしたことで、
 NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ```
 
-ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。29項目。
+ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。33項目。
 
 | 項目 | 確認内容 |
 |---|---|
@@ -328,6 +345,8 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 | 16 | ドメイン表記の判定 12パターン（表記ゆれ・誤検出の双方） |
 | 17-18 | 引用ツイート内カードが引用側のツイートIDで解決される |
 | 19 | weak(t.co) のとき href を付けない |
+| 20 | 展開でドメイン表記が消える過渡状態でもカードを見失わない |
+| 21 | 展開後の iframe が youtube-nocookie.com でも解決できる |
 
 **このテストが保証しないこと**
 
@@ -346,6 +365,11 @@ Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動
 ---
 
 ## 13. 変更履歴
+
+### v3.6.0
+- **実機報告により判明: カードをクリックして展開すると、ボタンがどこにも見えなくなる不具合を修正**（デスクトップChrome / iOS Safari 双方で発生）。`scan()` が毎回 `isYouTubeCard()` を再判定していたため、展開直後の一瞬（ドメイン表記が消え、iframeもまだ無い過渡的なDOM状態）に判定がfalseへ反転し、カードを丸ごと無視していた。一度trueと判定したカードは、同じツイートである間は再判定しないよう修正（→ 8章「判定の固定化」）
+- 展開後の埋め込みiframeが `youtube-nocookie.com`（プライバシー強化埋め込み）の場合にも対応。ドメイン表記の判定・iframeセレクタの両方に追加
+- 検証を33項目に拡充。旧v3.5.0で実際に本不具合が再現することを確認した上で修正した
 
 ### v3.5.0
 - **引用ツイート内のカードが外側のツイートIDで解決されていた不具合を修正**。`findStatus()` がarticle全体の最初の status リンクを使っていたため、引用カードで別の動画が開いていた。カードから最も近い status リンクを持つ祖先（scope）を使うようにした（→ 5.4）

@@ -543,6 +543,56 @@ function check(name, cond, extra) {
     (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) === null,
     { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
 
+  // ===================================================================
+  // 20. 展開でドメイン表記が消えても、カードを見失わない
+  // ===================================================================
+  //
+  // 実機報告: カードをクリックして展開すると、ボタンがどこにも
+  // 見えなくなる（デスクトップChrome / iOS Safari 双方）。
+  //
+  // 原因: scan() が毎回 isYouTubeCard() を再判定していたため、
+  // 展開後にドメイン表記が消えてiframeも未挿入の一瞬に判定が
+  // false へ反転し、そのカードを丸ごと無視していた
+  // （React再描画で古いボタンは既に消えている）。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.mkTweet({
+      user: 'oscar', id: '1000000000000000020',
+      cards: ['<span>タイトル</span><span>youtube.com</span>'],
+    });
+  });
+  await rescan();
+  check('20: 展開前はボタンが出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+
+  // 展開の瞬間: ドメイン表記も直リンクも消える（iframeはまだ無い）
+  await page.evaluate(() => {
+    document.querySelector('[data-testid="card.wrapper"]').innerHTML =
+      '<div class="loading">読み込み中</div>';
+  });
+  await rescan();
+  check('20: 展開直後（iframe挿入前）もボタンが残る',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 21. 展開後の iframe が youtube-nocookie.com でも解決できる
+  // ===================================================================
+  await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="card.wrapper"]');
+    const f = document.createElement('iframe');
+    f.src = 'https://www.youtube-nocookie.com/embed/NOCOOKIEID1?autoplay=1';
+    card.appendChild(f);
+  });
+  await rescan();
+  check('21: nocookie iframe からも href が解決される',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
+      'https://www.youtube.com/watch?v=NOCOOKIEID1',
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+  check('21: nocookie 展開後は inline 配置になる',
+    await page.evaluate(() =>
+      !document.querySelector('.hiroYtOpen-btn').classList.contains('hiroYtOpen-overlay')));
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
