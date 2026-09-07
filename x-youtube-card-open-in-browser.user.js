@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X YouTube Card - Open in Browser
 // @namespace    local.hiro.tools
-// @version      3.5.0
+// @version      3.6.0
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -57,8 +57,13 @@
     youtubeAnyLink:
       'a[href*="youtube.com"], ' +
       'a[href*="youtu.be"]',
-    youtubeIframe: 'iframe[src*="youtube.com"]',
-    youtubeEmbedIframe: 'iframe[src*="youtube.com/embed/"]',
+    // 展開後のiframeはプライバシー強化埋め込み(youtube-nocookie.com)の
+    // 場合がある。両方にマッチさせる。
+    youtubeIframe:
+      'iframe[src*="youtube.com"], iframe[src*="youtube-nocookie.com"]',
+    youtubeEmbedIframe:
+      'iframe[src*="youtube.com/embed/"], ' +
+      'iframe[src*="youtube-nocookie.com/embed/"]',
     tcoLink: 'a[href^="https://t.co/"]',
     statusLink: 'a[href*="/status/"]',
     tweetText: '[data-testid="tweetText"]',
@@ -77,7 +82,7 @@
   // 切り出せることだけを条件にし、前後は英数・ドット・ハイフン以外を許す。
   // 「notyoutube.com」は直前が \w なので一致しない。
   const YT_DOMAIN_RE =
-    /(?:^|[^\w.-])(?:www\.|m\.)?(?:youtube\.com|youtu\.be)(?![\w.-])/i;
+    /(?:^|[^\w.-])(?:www\.|m\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)(?![\w.-])/i;
 
   const log = (...args) => {
     if (DEBUG) {
@@ -810,6 +815,14 @@
         // DOM再利用による作り直し。カードは既に画面上にあるので、
         // IntersectionObserver の再通知を待たず先読みしてよい。
         needsRefetch: reused,
+        // 一度 isYouTubeCard() が true と判定したら記憶する。
+        //
+        // 展開後はカード内部のDOM構造が変わり（ドメイン表記が消える、
+        // iframeのsrcが変わる等）、isYouTubeCard()の再判定がfalseに
+        // 反転しうる。scan()がそれを信じてカードを丸ごと無視すると、
+        // 展開直後にボタンが跡形もなく消える。
+        // 同じツイートである間は再判定しないことでこれを防ぐ。
+        isYtCard: false,
       };
 
       cardState.set(card, state);
@@ -1203,12 +1216,18 @@
 
   function scan() {
     document.querySelectorAll(SELECTOR.card).forEach((card) => {
-      if (!isYouTubeCard(card)) {
-        return;
-      }
-
       const article = card.closest('article');
       const state = stateOf(card, article);
+
+      // 一度trueと判定したカードは再判定しない（isYtCard の説明を参照）。
+      // まだ判定していない、またはfalseだったカードだけ調べる。
+      if (!state.isYtCard) {
+        if (!isYouTubeCard(card)) {
+          return;
+        }
+
+        state.isYtCard = true;
+      }
 
       watchForPrefetch(card, state);
 
