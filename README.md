@@ -7,6 +7,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | ファイル | 名前 | 対象 |
 |---|---|---|
 | `x-youtube-card-open-in-browser.user.js` | X YouTube Card - Open in Browser | x.com / twitter.com |
+| `x-status-page-auto-reload.user.js` | X Status Page - Auto Reload on Stuck Loading | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) - Hiro | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 登録チャンネル 配信予定リスト | www.youtube.com |
 
@@ -15,6 +16,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 Tampermonkey で以下の raw URL を開くとインストールできる（以後は自動更新される）。
 
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-status-page-auto-reload.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 
@@ -79,6 +81,17 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 
 ヘッドレスChromium上でXのカード構造を模したDOMにスクリプトを流し込み、検出・URL解決・ボタン設置を確認する（33項目、Playwright が必要）。
 ただしXの実DOMやiOSのUniversal Linkの挙動は再現していないため、**実機確認の代わりにはならない**。
+
+## X Status Page - Auto Reload について
+
+タイムラインから個別ポストへ遷移した際、Control Panel for Twitter 等の拡張との競合で
+SPA内遷移が固まり、いつまでも読み込まれないことがある（フルリロードすれば直る）。
+このスクリプトは、個別ポストのURL（`/status/数字`）に遷移してから
+`STUCK_TIMEOUT_MS`（既定2.5秒）以内にツイート本文が表示されなければ、
+自動で `location.reload()` を発行する。無限リロードを避けるため、
+同一URLへの自動更新は1回のみ（`sessionStorage` で記録、タブを閉じるとリセット）。
+
+体感で誤発火・遅発火する場合は、スクリプト冒頭の `STUCK_TIMEOUT_MS` を調整すること。
 
 ## 注意
 
