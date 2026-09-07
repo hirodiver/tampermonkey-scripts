@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X YouTube Card - Open in Browser
 // @namespace    local.hiro.tools
-// @version      3.4.0
+// @version      3.5.0
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -71,7 +71,13 @@
     /^https?:\/\/(?:[\w-]+\.)?(?:x|twitter)\.com\/([^/]+)\/status\/(\d+)/;
 
   // カード下部のドメイン表記。「YouTube」を含むだけのタイトルと区別する。
-  const YT_DOMAIN_RE = /^(?:www\.|m\.)?(?:youtube\.com|youtu\.be)$/i;
+  //
+  // 完全一致だと「From youtube.com」「youtube.com から」「🔗youtube.com」の
+  // ような装飾付きの表記を取りこぼす。ドメインを1トークンとして
+  // 切り出せることだけを条件にし、前後は英数・ドット・ハイフン以外を許す。
+  // 「notyoutube.com」は直前が \w なので一致しない。
+  const YT_DOMAIN_RE =
+    /(?:^|[^\w.-])(?:www\.|m\.)?(?:youtube\.com|youtu\.be)(?![\w.-])/i;
 
   const log = (...args) => {
     if (DEBUG) {
@@ -571,12 +577,8 @@
   // ツイート特定
   // -----------------------------------------------------------------------
 
-  function findStatus(article) {
-    if (!article) {
-      return null;
-    }
-
-    const anchors = article.querySelectorAll(SELECTOR.statusLink);
+  function statusInScope(scope) {
+    const anchors = scope.querySelectorAll(SELECTOR.statusLink);
 
     for (const anchor of anchors) {
       const match = anchor.href.match(STATUS_RE);
@@ -590,6 +592,55 @@
     }
 
     return null;
+  }
+
+  /**
+   * カードが属するツイートを特定する。
+   *
+   * 戻り値には scope（そのツイートに対応する要素）を含める。
+   *
+   * article 全体の最初の status リンクを使うと、引用ツイート内のカードでも
+   * 外側のツイートIDになり、APIから別の動画のURLが返る。
+   * カードから上へ辿り、**最初に status リンクを含む祖先**をそのカードの
+   * ツイートとみなす。引用ブロックに status リンクが無い構成では
+   * article まで遡るので、従来どおりの結果になる。
+   */
+  function findStatus(card, article) {
+    let node = card && card.parentElement;
+
+    for (let up = 0; node && up < 12; up++) {
+      const found = statusInScope(node);
+
+      if (found) {
+        found.scope = node;
+        return found;
+      }
+
+      if (article && node === article) {
+        return null;
+      }
+
+      node = node.parentElement;
+    }
+
+    if (!article) {
+      return null;
+    }
+
+    const found = statusInScope(article);
+
+    if (found) {
+      found.scope = article;
+    }
+
+    return found;
+  }
+
+  /** カードが属するツイートに対応する要素（引用ツイートなら引用ブロック） */
+  function scopeOf(card, article) {
+    const status = findStatus(card, article);
+
+    return (status && status.scope) || article;
   }
 
   // -----------------------------------------------------------------------
@@ -671,14 +722,16 @@
     // 同じ article に YouTube カードが複数あるときは、
     // カードの外を覗くと隣のカードのURLを拾いうるのでカード内に閉じる。
     // 1枚しかなければ曖昧さが無いので article まで遡ってよい。
-    const multi = article
-      ? Array.from(article.querySelectorAll(SELECTOR.card)).filter(isYouTubeCard)
+    const scope = scopeOf(card, article);
+
+    const multi = scope
+      ? Array.from(scope.querySelectorAll(SELECTOR.card)).filter(isYouTubeCard)
           .length > 1
       : false;
 
     const boundary = multi
       ? card.parentElement
-      : (article && article.parentElement) || null;
+      : (scope && scope.parentElement) || null;
 
     const fromReact = urlFromReact(card, boundary);
 
@@ -694,10 +747,9 @@
 
     // 本文の t.co は、どのリンクがこのカードのものか特定できない。
     // 候補が1本のときだけ採用する。
-    if (article) {
-      const text = article.querySelector(SELECTOR.tweetText);
-      const scope = text || article;
-      const tcos = scope.querySelectorAll(SELECTOR.tcoLink);
+    if (scope) {
+      const text = scope.querySelector(SELECTOR.tweetText);
+      const tcos = (text || scope).querySelectorAll(SELECTOR.tcoLink);
 
       if (tcos.length === 1) {
         return { url: tcos[0].href, weak: true };
@@ -724,7 +776,7 @@
   const cardState = new WeakMap();
 
   function stateOf(card, article) {
-    const status = findStatus(article);
+    const status = findStatus(card, article);
     const id = status ? status.id : null;
 
     let state = cardState.get(card);
@@ -772,13 +824,20 @@
     return state;
   }
 
-  /** そのarticle内で、このカードが何番目のYouTubeカードか */
-  function cardIndex(card, article) {
-    if (!article) {
+  /**
+   * そのツイートの範囲内で、このカードが何番目のYouTubeカードか。
+   *
+   * 範囲は article ではなく scope（引用ツイートなら引用ブロック）。
+   * article で数えると、本体カードと引用カードで番号が通し番号になり、
+   * 引用側のツイートIDで引いた1件しかない結果に対して
+   * index=1 で外してしまう。
+   */
+  function cardIndex(card, scope) {
+    if (!scope) {
       return 0;
     }
 
-    const cards = Array.from(article.querySelectorAll(SELECTOR.card)).filter(
+    const cards = Array.from(scope.querySelectorAll(SELECTOR.card)).filter(
       isYouTubeCard
     );
 
@@ -792,7 +851,7 @@
       return null;
     }
 
-    const index = cardIndex(card, article);
+    const index = cardIndex(card, scopeOf(card, article));
     const picked = urls[index] || urls[0];
 
     state.url = picked;
