@@ -29,6 +29,10 @@ Tampermonkey は定期的に `@updateURL` を取得し、`@version` が手元よ
 
 `main` に入っていない変更は配信されない。作業ブランチにコミットしただけでは反映されないので注意。
 
+**push した直後は届かない。** Tampermonkey の更新チェックは既定でおおむね1日1回なので、
+すぐ反映したいときはダッシュボードの**「更新を確認」を手動で実行する**こと。
+push 直後にバージョンが古いのは異常ではない。
+
 ## YouTube Full Dates (JST) について
 
 Greasy Fork の "YouTube Full Dates (v3)" (script id 564941) を元にした**独立フォーク**。
