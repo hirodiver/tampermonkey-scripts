@@ -1,6 +1,6 @@
 # X YouTube Card - Open in Browser 仕様書
 
-- **バージョン**: 3.3.1
+- **バージョン**: 3.3.2
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -264,6 +264,9 @@ article の data 属性ではなくカード単位にしたことで、
 ---
 
 ## 12. 変更履歴
+
+### v3.3.2
+- 配布ブランチを `main` に整理し、`@updateURL` / `@downloadURL` を `main` 参照へ変更
 
 ### v3.3.1
 - `@updateURL` / `@downloadURL` / `@homepageURL` / `@supportURL` を追加し、Tampermonkey の自動更新に対応（C-4）
