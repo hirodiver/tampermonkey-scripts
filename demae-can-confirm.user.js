@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         出前館 - 到着時刻確認オートクリック
+// @name         出前館 到着確認
 // @namespace    local.hiro.tools
 // @version      1.0.0
 // @description  カートで「注文を完了する」を押した後に出る「お届け時間に変更があります」確認モーダルの「注文を完了する」ボタンを自動でクリックする
