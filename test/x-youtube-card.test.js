@@ -593,6 +593,110 @@ function check(name, cond, extra) {
     await page.evaluate(() =>
       !document.querySelector('.hiroYtOpen-btn').classList.contains('hiroYtOpen-overlay')));
 
+  // ===================================================================
+  // 22. 画像付き・カード無し投稿：本文の表示テキストからボタンを出す
+  // ===================================================================
+  //
+  // Xは画像付きの投稿ではYouTube URLがあってもカード化しない。
+  // 本文からURLも除去されないので、t.coリンクがそのまま残る。
+  // 展開後の表示テキスト（youtube.com/watch?v=...）を手がかりに検出する。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/7000000000000000001">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/abcd">youtube.com/watch?v=dQw4w9WgXcQ</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('22: 画像付き投稿にボタンが出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+  check('22: 表示テキストが完全なら即座に確定URL(t.co展開不要)',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+  check('22: overlay配置（画像コンテナの内側）',
+    await page.evaluate(() => {
+      const btn = document.querySelector('.hiroYtOpen-btn');
+      const photo = document.querySelector('[data-testid="tweetPhoto"]');
+      return btn.classList.contains('hiroYtOpen-overlay') && photo.contains(btn);
+    }));
+
+  // ===================================================================
+  // 23. 表示テキストが省略されている場合は weak、クリックでAPI確定
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened = [];
+    window.__api['7000000000000000002'] = ['https://www.youtube.com/watch?v=RESOLVEDAPI'];
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/7000000000000000002">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/efgh">youtube.com/watch?v=dQw4w9…</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('23: 省略された表示テキストでもボタンは出る(weak)',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(250);
+  check('23: クリックでAPIの確定URLへ開く',
+    await page.evaluate(() => window.__opened.some((u) => String(u).indexOf('RESOLVEDAPI') >= 0)),
+    await page.evaluate(() => window.__opened));
+
+  // ===================================================================
+  // 24. YouTube以外のリンクの画像投稿にはボタンを出さない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/7000000000000000003">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/xxxx">example.com/article</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('24: 無関係なリンクの画像投稿にはボタンを出さない',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 25. 画像が無い投稿は対象外（カード化されるはずなので二重対応しない）
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/7000000000000000004">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/yyyy">youtube.com/watch?v=dQw4w9WgXcQ</a></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('25: 画像が無ければ対象外',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 26. YouTubeカードが既にある投稿では画像側にボタンを重複させない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/7000000000000000005">t</a>' +
+      '<div data-testid="tweetText">本文</div>' +
+      '<div data-testid="card.wrapper"><a href="https://www.youtube.com/watch?v=CARDVIDEO11">l</a><span>youtube.com</span></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('26: カードがあれば画像側には出さない（合計1個）',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
