@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube Full Dates (JST)
+// @name         YouTube Full Dates (JST) v3.8.2
 // @namespace    local.hiro.tools
-// @version      3.8.1
+// @version      3.8.2
 // @description  YouTubeの「1年前」等の相対表示を、JST基準の絶対日付に置換する。今週/今年/昨年以前を色分け表示。Trusted Types対応。
 // @author       hirodiver (fork of Solomon / InMirrors "YouTube Full Dates v3")
 // @match        https://www.youtube.com/*

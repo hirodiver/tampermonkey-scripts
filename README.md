@@ -12,9 +12,12 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 
-**`@name` は短く。** Tampermonkeyの一覧画面は名前が長いと省略され、バージョンも
-一覧には出ない。目安は2〜4単語（日本語なら10文字前後）まで。詳細な説明は
-`@description` に書く。
+**`@name` は短く、末尾に `@version` と同じ値を付ける。** Tampermonkeyの一覧画面は
+名前が長いと省略され、バージョンも一覧には出ない（個別のスクリプト詳細画面を
+開く必要がある）ため、`@name` の末尾に ` vX.Y.Z` の形で `@version` と同じ値を
+付記し、一覧からでもバージョンが分かるようにする（例: `X YouTube Card v3.9.1`）。
+`@version` を上げたら、その値に合わせて `@name` 末尾のバージョン表記も必ず更新すること。
+基本の名前部分は2〜4単語（日本語なら10文字前後）まで。詳細な説明は `@description` に書く。
 
 ## インストール
 
