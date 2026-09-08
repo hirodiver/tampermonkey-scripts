@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube 登録チャンネル 配信予定リスト
+// @name         YouTube 配信予定リスト
 // @namespace    https://www.youtube.com/
-// @version      4.1
+// @version      4.2
 // @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示
 // @match        https://www.youtube.com/*
 // @grant        none
