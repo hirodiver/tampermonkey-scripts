@@ -6,7 +6,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 
 | ファイル | 名前 | 対象 |
 |---|---|---|
-| `x-youtube-card-open-in-browser.user.js` | X YouTube Card - Open in Browser | x.com / twitter.com |
+| `x-youtube-card-open-in-browser.user.js` | X YouTube Card | x.com / twitter.com |
 | `x-status-page-auto-reload.user.js` | X Status Page - Auto Reload on Stuck Loading | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) - Hiro | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 登録チャンネル 配信予定リスト | www.youtube.com |
