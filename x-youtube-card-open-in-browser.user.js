@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X YouTube Card - Open in Browser
 // @namespace    local.hiro.tools
-// @version      3.8.0
+// @version      3.8.1
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -32,6 +32,12 @@
   // 'browser' … 常にSafariで開く（iOSのUniversal Linkを発火させない）
   // 'app'     … 可能ならYouTubeアプリで開く
   const OPEN_TARGET = 'browser';
+
+  // 画像付き・カード無し投稿への対応（本文の直後にボタンを追加する機能）。
+  // 万一この機能だけが問題を起こした場合、Tampermonkeyのエディタで
+  // ここを false に書き換えて保存すれば、再配信を待たずに即座に無効化できる。
+  // カード自体のボタンには影響しない。
+  const ENABLE_IMAGE_POST_SUPPORT = true;
 
   // カードが表示領域に近づいた時点でURL取得を先行させる
   const PREFETCH_ON_VIEW = true;
@@ -1442,6 +1448,10 @@
    * 不具合を起こしてロールバックした経緯があるため。
    */
   function scanCardlessImagePosts() {
+    if (!ENABLE_IMAGE_POST_SUPPORT) {
+      return;
+    }
+
     document.querySelectorAll('article').forEach((article) => {
       // YouTubeカードが既にあるなら、そちらのボタンで足りる
       if (hasYouTubeCardInArticle(article)) {
