@@ -114,11 +114,11 @@ function check(name, cond, extra) {
     (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
       'https://www.youtube.com/watch?v=ABCDEFGHIJK&si=xx',
     { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
-  check('1: overlay 形態で カード内に設置',
+  check('1: カードの直前（外側）に設置され、カード内には入らない',
     await page.evaluate(() => {
       const b = document.querySelector('.hiroYtOpen-btn');
       const c = document.querySelector('[data-testid="card.wrapper"]');
-      return b.classList.contains('hiroYtOpen-overlay') && c.contains(b);
+      return b.nextSibling === c && !c.contains(b);
     }));
 
   // ===================================================================
@@ -190,7 +190,7 @@ function check(name, cond, extra) {
     await page.evaluate(() => window.__opened));
 
   // ===================================================================
-  // 5. 展開後（iframe あり）→ inline 形態に切り替わる
+  // 5. 展開しても配置は変わらない（常にカードの直前）
   // ===================================================================
   await page.evaluate(() => {
     document.getElementById('timeline').innerHTML = '';
@@ -200,9 +200,12 @@ function check(name, cond, extra) {
     });
   });
   await rescan();
-  check('5: 展開前は overlay',
-    await page.evaluate(() =>
-      document.querySelector('.hiroYtOpen-btn').classList.contains('hiroYtOpen-overlay')));
+  check('5: 展開前からカードの直前にある',
+    await page.evaluate(() => {
+      const b = document.querySelector('.hiroYtOpen-btn');
+      const c = document.querySelector('[data-testid="card.wrapper"]');
+      return b.nextSibling === c;
+    }));
   await page.evaluate(() => {
     const c = document.querySelector('[data-testid="card.wrapper"]');
     const f = document.createElement('iframe');
@@ -210,15 +213,15 @@ function check(name, cond, extra) {
     c.appendChild(f);
   });
   await rescan();
-  check('5: 展開後は inline でカード外',
+  check('5: 展開後もカードの直前のまま（作り直しも移動もしない）',
     await page.evaluate(() => {
       const b = document.querySelector('.hiroYtOpen-btn');
       const c = document.querySelector('[data-testid="card.wrapper"]');
-      return b && !b.classList.contains('hiroYtOpen-overlay') && !c.contains(b);
+      return b && b.nextSibling === c && !c.contains(b);
     }));
-  check('5: 展開後は host クラスが残らない',
+  check('5: カード要素にクラスを付けない（Xの要素に干渉しない）',
     await page.evaluate(() =>
-      !document.querySelector('[data-testid="card.wrapper"]').classList.contains('hiroYtOpen-host')));
+      document.querySelector('[data-testid="card.wrapper"]').className === ''));
   check('5: 展開後の href が embed から解決される',
     (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
       'https://www.youtube.com/watch?v=EMBEDID1234',
@@ -542,6 +545,303 @@ function check(name, cond, extra) {
   check('19: weak(t.co) のとき href を付けない',
     (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) === null,
     { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+
+  // ===================================================================
+  // 20. 展開でドメイン表記が消えても、カードを見失わない
+  // ===================================================================
+  //
+  // 実機報告: カードをクリックして展開すると、ボタンがどこにも
+  // 見えなくなる（デスクトップChrome / iOS Safari 双方）。
+  //
+  // 原因: scan() が毎回 isYouTubeCard() を再判定していたため、
+  // 展開後にドメイン表記が消えてiframeも未挿入の一瞬に判定が
+  // false へ反転し、そのカードを丸ごと無視していた
+  // （React再描画で古いボタンは既に消えている）。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.mkTweet({
+      user: 'oscar', id: '1000000000000000020',
+      cards: ['<span>タイトル</span><span>youtube.com</span>'],
+    });
+  });
+  await rescan();
+  check('20: 展開前はボタンが出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+
+  // 展開の瞬間: ドメイン表記も直リンクも消える（iframeはまだ無い）
+  await page.evaluate(() => {
+    document.querySelector('[data-testid="card.wrapper"]').innerHTML =
+      '<div class="loading">読み込み中</div>';
+  });
+  await rescan();
+  check('20: 展開直後（iframe挿入前）もボタンが残る',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 21. 展開後の iframe が youtube-nocookie.com でも解決できる
+  // ===================================================================
+  await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="card.wrapper"]');
+    const f = document.createElement('iframe');
+    f.src = 'https://www.youtube-nocookie.com/embed/NOCOOKIEID1?autoplay=1';
+    card.appendChild(f);
+  });
+  await rescan();
+  check('21: nocookie iframe からも href が解決される',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
+      'https://www.youtube.com/watch?v=NOCOOKIEID1',
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+  check('21: nocookie 展開後もカードの直前のまま',
+    await page.evaluate(() => {
+      const b = document.querySelector('.hiroYtOpen-btn');
+      const c = document.querySelector('[data-testid="card.wrapper"]');
+      return b.nextSibling === c;
+    }));
+
+  // ===================================================================
+  // 22. 画像付き・カード無し投稿：本文の直後にボタン、画像には触れない
+  // ===================================================================
+  //
+  // v3.7.0は画像要素(tweetPhoto)自体にボタンをoverlay設置し、実機で
+  // 画像が真っ白になりボタンも消える不具合を起こしてロールバックした
+  // (v3.7.1)。今回は画像要素を一切操作せず、本文(tweetText)の直後に
+  // 独立ブロックとしてボタンを挿入する設計にした。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/8000000000000000001">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/abcd">youtube.com/watch?v=dQw4w9WgXcQ</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  const photoHtmlBefore = await page.evaluate(() =>
+    document.querySelector('[data-testid="tweetPhoto"]').outerHTML);
+  await rescan();
+  check('22: 画像付き投稿にボタンが出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+  check('22: 表示テキストが完全なら即座に確定URL(t.co展開不要)',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+  const photoHtmlAfter = await page.evaluate(() =>
+    document.querySelector('[data-testid="tweetPhoto"]').outerHTML);
+  check('22: 画像要素のHTMLが完全に無傷（v3.7.0の再発防止）',
+    photoHtmlBefore === photoHtmlAfter,
+    { before: photoHtmlBefore, after: photoHtmlAfter });
+  check('22: ボタンは本文の直後・画像の前に挿入される',
+    await page.evaluate(() => {
+      const text = document.querySelector('[data-testid="tweetText"]');
+      const btn = document.querySelector('.hiroYtOpen-btn');
+      const photo = document.querySelector('[data-testid="tweetPhoto"]');
+      return text.nextElementSibling === btn && btn.nextElementSibling === photo;
+    }));
+  check('22: 画像要素にクラスを付けない（Xの要素に干渉しない）',
+    await page.evaluate(() =>
+      document.querySelector('[data-testid="tweetPhoto"]').className === ''));
+
+  // ===================================================================
+  // 23. 表示テキストが省略されている場合は weak、クリックでAPI確定
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened = [];
+    window.__api['8000000000000000002'] = ['https://www.youtube.com/watch?v=RESOLVEDAPI'];
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/8000000000000000002">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/efgh">youtube.com/watch?v=dQw4w9…</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('23: 省略された表示テキストでもボタンは出る(weak)',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(250);
+  check('23: クリックでAPIの確定URLへ開く',
+    await page.evaluate(() => window.__opened.some((u) => String(u).indexOf('RESOLVEDAPI') >= 0)),
+    await page.evaluate(() => window.__opened));
+
+  // ===================================================================
+  // 24. YouTube以外のリンクの画像投稿にはボタンを出さない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/8000000000000000003">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/xxxx">example.com/article</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('24: 無関係なリンクの画像投稿にはボタンを出さない',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 25. 画像が無い投稿は対象外（カード化されるはずなので二重対応しない）
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/8000000000000000004">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/yyyy">youtube.com/watch?v=dQw4w9WgXcQ</a></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('25: 画像が無ければ対象外',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 26. YouTubeカードが既にある投稿では本文側にボタンを重複させない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/8000000000000000005">t</a>' +
+      '<div data-testid="tweetText">本文</div>' +
+      '<div data-testid="card.wrapper"><a href="https://www.youtube.com/watch?v=CARDVIDEO11">l</a><span>youtube.com</span></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('26: カードがあれば本文側には出さない（合計1個）',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 27. 複数回scanしてもボタンが重複しない（安定性）
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/8000000000000000006">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/zzzz">youtube.com/watch?v=STABLEVID1</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  await rescan();
+  await rescan();
+  check('27: 複数回scanしてもボタンは1個のまま',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 28. カード要素が丸ごと置き換わっても（タップ後の再描画等）ボタンを
+  //     見失わない
+  // ===================================================================
+  //
+  // 実機報告: 配信前のカードをタップ（展開）するとボタンが消える。
+  //
+  // 原因: v3.6.0で入れた isYtCard（同じDOM要素の中身が変わるケースを
+  // 救う固定化）は、Xがカード要素自体を丸ごと新しいノードに置き換える
+  // ケースには無力。新しい要素には過去の記憶が無いため、その一瞬
+  // （直リンクもiframeもドメイン表記も無い「読み込み中」的な過渡状態）
+  // に isYouTubeCard() が false を返すと、その要素は二度とYouTubeカード
+  // として扱われず、ボタンが復活しなかった。
+  //
+  // article単位でも一度確定した事実を記憶するようにして解消した。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/9100000000000000001">t</a>' +
+      '<div data-testid="card.wrapper"><span>配信タイトル</span><span>youtube.com</span></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('28: タップ前はボタンが出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+
+  await page.evaluate(() => {
+    const art = document.querySelector('article');
+    const oldCard = art.querySelector('[data-testid="card.wrapper"]');
+    const newCard = document.createElement('div');
+    newCard.setAttribute('data-testid', 'card.wrapper');
+    // 直リンク無し・iframe無し・ドメイン表記も無い「読み込み中」的な
+    // 過渡状態を模した、まったく新しいDOMノードへの置き換え。
+    newCard.innerHTML = '<div class="player-loading">読み込み中</div>';
+    oldCard.replaceWith(newCard);
+  });
+  await rescan();
+  check('28: カード要素が丸ごと置き換わってもボタンが残る',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 29. article単位の緩和が、隣接する無関係なarticleへ越境しない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art1 = document.createElement('article');
+    art1.innerHTML =
+      '<a href="https://x.com/u/status/9200000000000000001">t</a>' +
+      '<div data-testid="card.wrapper"><span>配信タイトル</span><span>youtube.com</span></div>';
+    document.getElementById('timeline').appendChild(art1);
+
+    const art2 = document.createElement('article');
+    art2.innerHTML =
+      '<a href="https://x.com/u/status/9200000000000000002">t</a>' +
+      '<div data-testid="card.wrapper"><span>記事タイトル</span><span>example.com</span></div>';
+    document.getElementById('timeline').appendChild(art2);
+  });
+  await rescan();
+  check('29: 隣のarticleが無関係なら最初からボタンを出さない',
+    await page.locator('article').nth(1).locator('.hiroYtOpen-btn').count() === 0);
+
+  await page.evaluate(() => {
+    const art2 = document.querySelectorAll('article')[1];
+    const oldCard = art2.querySelector('[data-testid="card.wrapper"]');
+    const newCard = document.createElement('div');
+    newCard.setAttribute('data-testid', 'card.wrapper');
+    newCard.innerHTML = '<span>別の記事</span><span>news.example.com</span>';
+    oldCard.replaceWith(newCard);
+  });
+  await rescan();
+  check('29: 無関係なarticleはカード置換後もボタンを出さない（越境なし）',
+    await page.locator('article').nth(1).locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('article').nth(1).locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 30. 本文要素が丸ごと置き換わってもボタンが重複しない
+  // ===================================================================
+  //
+  // ボタンをXの要素の「外側」に置く設計にした結果、Xが要素を作り直しても
+  // 古いボタンが道連れにならず残るようになった。掃除しないと、新しい要素の
+  // 分と合わせてボタンが2つ並ぶ。カード側（28）と同じことが本文側でも起きる。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/9300000000000000001">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/abcd">youtube.com/watch?v=dQw4w9WgXcQ</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('30: 画像付き投稿にボタンが1個出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+
+  await page.evaluate(() => {
+    const art = document.querySelector('article');
+    const oldText = art.querySelector('[data-testid="tweetText"]');
+    const newText = document.createElement('div');
+    newText.setAttribute('data-testid', 'tweetText');
+    newText.innerHTML = '<a href="https://t.co/abcd">youtube.com/watch?v=dQw4w9WgXcQ</a>';
+    oldText.replaceWith(newText);
+  });
+  await rescan();
+  check('30: 本文が丸ごと置き換わってもボタンは1個のまま',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
 
   await browser.close();
 

@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X YouTube Card - Open in Browser
+// @name         X YouTube Card
 // @namespace    local.hiro.tools
-// @version      3.5.0
+// @version      3.9.0
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -33,6 +33,12 @@
   // 'app'     … 可能ならYouTubeアプリで開く
   const OPEN_TARGET = 'browser';
 
+  // 画像付き・カード無し投稿への対応（本文の直後にボタンを追加する機能）。
+  // 万一この機能だけが問題を起こした場合、Tampermonkeyのエディタで
+  // ここを false に書き換えて保存すれば、再配信を待たずに即座に無効化できる。
+  // カード自体のボタンには影響しない。
+  const ENABLE_IMAGE_POST_SUPPORT = true;
+
   // カードが表示領域に近づいた時点でURL取得を先行させる
   const PREFETCH_ON_VIEW = true;
   const MAX_INFLIGHT = 3;
@@ -43,8 +49,6 @@
 
   const CLASS = {
     button: `${PREFIX}-btn`,
-    overlay: `${PREFIX}-overlay`,
-    host: `${PREFIX}-host`,
   };
 
   const SELECTOR = {
@@ -57,11 +61,19 @@
     youtubeAnyLink:
       'a[href*="youtube.com"], ' +
       'a[href*="youtu.be"]',
-    youtubeIframe: 'iframe[src*="youtube.com"]',
-    youtubeEmbedIframe: 'iframe[src*="youtube.com/embed/"]',
+    // 展開後のiframeはプライバシー強化埋め込み(youtube-nocookie.com)の
+    // 場合がある。両方にマッチさせる。
+    youtubeIframe:
+      'iframe[src*="youtube.com"], iframe[src*="youtube-nocookie.com"]',
+    youtubeEmbedIframe:
+      'iframe[src*="youtube.com/embed/"], ' +
+      'iframe[src*="youtube-nocookie.com/embed/"]',
     tcoLink: 'a[href^="https://t.co/"]',
     statusLink: 'a[href*="/status/"]',
     tweetText: '[data-testid="tweetText"]',
+    // 画像付き投稿の対象判定にのみ使う。ボタンの設置先には使わない
+    // （画像要素を操作して壊した前歴があるため）。
+    tweetPhoto: '[data-testid="tweetPhoto"]',
   };
 
   const YT_RE =
@@ -77,7 +89,23 @@
   // 切り出せることだけを条件にし、前後は英数・ドット・ハイフン以外を許す。
   // 「notyoutube.com」は直前が \w なので一致しない。
   const YT_DOMAIN_RE =
-    /(?:^|[^\w.-])(?:www\.|m\.)?(?:youtube\.com|youtu\.be)(?![\w.-])/i;
+    /(?:^|[^\w.-])(?:www\.|m\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)(?![\w.-])/i;
+
+  // 本文リンクの表示テキストからYouTube URLを読み取るための正規表現。
+  //
+  // Xは本文中のリンクを t.co で短縮する一方、表示上は元URL
+  // （収まらなければ末尾を省略）をそのまま出す。これを利用すると、
+  // カード化されない投稿（画像付き等）でもリンク先を推測できる。
+  // href（t.co）と違い、プロトコルは省略されて表示されるため任意とする。
+  const YT_DISPLAY_RE =
+    /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|live\/|shorts\/)|youtu\.be\/)([\w-]+)/i;
+
+  // 表示テキストの末尾省略記号。「…」（Unicode）と「...」の両方に対応する。
+  const ELLIPSIS_RE = /(?:…|\.\.\.)$/;
+
+  // YouTubeの動画IDは11文字。ちょうど11文字で末尾に省略記号が
+  // 続いていなければ、表示テキストだけで完全なURLとみなせる。
+  const YT_VIDEO_ID_LEN = 11;
 
   const log = (...args) => {
     if (DEBUG) {
@@ -135,21 +163,6 @@
   .${CLASS.button}:focus-visible {
     background: #5c7cfa;
   }
-}
-
-/* 展開前：カード右上に重ねる */
-.${CLASS.button}.${CLASS.overlay} {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 5;
-  margin: 0;
-  opacity: .78;
-  box-shadow: 0 1px 3px rgba(30,40,80,.25);
-}
-
-.${CLASS.host} {
-  position: relative;
 }
 `;
 
@@ -682,6 +695,121 @@
     return hasYouTubeDomainLabel(card);
   }
 
+  /** そのarticle内に、検出済みのYouTubeカードが1つでもあるか */
+  function hasYouTubeCardInArticle(article) {
+    if (!article) {
+      return false;
+    }
+
+    const cards = article.querySelectorAll(SELECTOR.card);
+
+    for (const card of cards) {
+      const existing = cardState.get(card);
+
+      if (existing && existing.isYtCard) {
+        return true;
+      }
+
+      if (isYouTubeCard(card)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // -----------------------------------------------------------------------
+  // 画像付き・カード無し投稿のURL検出
+  // -----------------------------------------------------------------------
+  //
+  // XはYouTubeのURLを含む投稿でも、画像が付いていると card.wrapper を
+  // 作らない（サムネイル代わりに投稿画像を使うため）。本文からURL文字列を
+  // 除去する処理もカード化とセットなので、この場合は本文にt.coリンクが
+  // そのまま残る。
+  //
+  // t.coの遷移先はDOMからは分からないが、Xは本文中のリンクを表示する際に
+  // 元URL（収まらなければ末尾省略）をテキストとして出す。これを読むことで、
+  // 展開せずにYouTubeらしさを判定できる。
+  //
+  // v3.7.0では画像要素（tweetPhoto）自体にボタンをoverlay設置していたが、
+  // 実機で画像が真っ白になりボタンも消える不具合を起こし、v3.7.1でロール
+  // バックした。原因は未特定だが、画像要素へのCSSクラス付与かDOM操作が
+  // Xの画像レンダリングと衝突した疑いが強い。そのため今回は画像要素には
+  // 一切手を加えず、本文（tweetText）の直後にボタンを独立ブロックとして
+  // 追加する（カード展開後のinline配置と同じ、実績のある安全な設置方法）。
+
+  /**
+   * article本文（tweetText）内のリンクを走査し、表示テキストが
+   * YouTube URLに見えるものを探す。
+   *
+   * 戻り値: { anchor, id, complete } / null
+   *   id：表示テキストから取れた動画ID（省略されていれば不完全な文字列）
+   *   complete：末尾省略が無く、動画IDの長さが揃っている＝確定してよい
+   */
+  function findYouTubeTextLink(article) {
+    if (!article) {
+      return null;
+    }
+
+    const scope = article.querySelector(SELECTOR.tweetText) || article;
+    const anchors = scope.querySelectorAll('a');
+
+    for (const anchor of anchors) {
+      const text = (anchor.textContent || '').trim();
+      const match = text.match(YT_DISPLAY_RE);
+
+      if (!match) {
+        continue;
+      }
+
+      const rawId = match[1];
+      const truncated = ELLIPSIS_RE.test(text) || ELLIPSIS_RE.test(rawId);
+      const id = rawId.replace(/[….]+$/, '');
+      const complete = !truncated && id.length >= YT_VIDEO_ID_LEN;
+
+      return { anchor, id, complete };
+    }
+
+    return null;
+  }
+
+  /**
+   * resolveFromDom と同じ形（{ url, weak } / null）で返す、
+   * カード無し・画像付き投稿用の解決関数。addButton() の
+   * resolveSync としてそのまま渡せる。
+   *
+   * 表示テキストから動画IDが完全に読めればそれを確定URLとして使う。
+   * 省略されていて読めない場合は、リンクの実href（t.co）を暫定値
+   * （weak）として使う。非同期経路（syndication API）が確定させる。
+   */
+  function resolveFromPostText(card, article) {
+    const found = findYouTubeTextLink(article);
+
+    if (!found) {
+      return null;
+    }
+
+    if (found.complete) {
+      return {
+        url: `https://www.youtube.com/watch?v=${found.id}`,
+        weak: false,
+      };
+    }
+
+    return { url: found.anchor.href, weak: true };
+  }
+
+  /**
+   * ボタンの設置先。tweetText要素そのものを返す。
+   *
+   * 画像コンテナ（tweetPhoto）には一切触れない。addButton() には
+   * overlay:false で渡し、tweetTextの直後に独立ブロックとして
+   * 挿入する（カード展開後のinline配置と同じ方式）。
+   */
+  function textPostTarget(article) {
+    return article.querySelector(SELECTOR.tweetText);
+  }
+
   // -----------------------------------------------------------------------
   // URL解決（DOM／React）
   // -----------------------------------------------------------------------
@@ -775,6 +903,24 @@
    */
   const cardState = new WeakMap();
 
+  /**
+   * article単位で「このarticleにはYouTubeカードが確認されたことがある」
+   * ことを記憶する。
+   *
+   * isYtCard（card単位の固定化）は、同じDOM要素の中身が変わるケース
+   * （展開でドメイン表記が消える等）は救えるが、Xがカード要素自体を
+   * 丸ごと新しいノードに置き換えるケースには無力——新しい要素には
+   * 過去の記憶が無いため。配信前カードをタップした際にXがカードを
+   * 再生成し、その一瞬（直リンクもiframeもドメイン表記も無い「読み込み
+   * 中」的な過渡状態）に isYouTubeCard() が false を返すと、その新しい
+   * 要素は二度とYouTubeカードとして扱われず、ボタンが復活しなくなる。
+   *
+   * 対策として、article単位でも一度確定した事実を記憶し、新しいカード
+   * 要素が一時的に判定基準を満たさなくても、そのarticleが既に確定済み
+   * なら通す。
+   */
+  const articleYtState = new WeakMap();
+
   function stateOf(card, article) {
     const status = findStatus(card, article);
     const id = status ? status.id : null;
@@ -810,6 +956,14 @@
         // DOM再利用による作り直し。カードは既に画面上にあるので、
         // IntersectionObserver の再通知を待たず先読みしてよい。
         needsRefetch: reused,
+        // 一度 isYouTubeCard() が true と判定したら記憶する。
+        //
+        // 展開後はカード内部のDOM構造が変わり（ドメイン表記が消える、
+        // iframeのsrcが変わる等）、isYouTubeCard()の再判定がfalseに
+        // 反転しうる。scan()がそれを信じてカードを丸ごと無視すると、
+        // 展開直後にボタンが跡形もなく消える。
+        // 同じツイートである間は再判定しないことでこれを防ぐ。
+        isYtCard: false,
       };
 
       cardState.set(card, state);
@@ -1025,24 +1179,64 @@
   }
 
   /**
-   * target:
-   *   ボタン設置の基準要素
+   * ボタンをあるべき位置に用意する。既に正しく置かれていれば作り直さない。
    *
-   * overlay:
-   *   true  → target内右上に重ねる
-   *   false → target直前に挿入
+   * ボタンは target の兄弟（＝Xが管理する要素の外側）に置くので、
+   * Xがカードや本文の要素を作り直しても**古いボタンは道連れにならず残る**。
+   * 何もしないと、新しい要素の分と合わせてボタンが2つ並ぶ。
+   * そのため WeakMap だけでなく、隣接要素をDOMから直接見て掃除する。
+   */
+  function placeButton(card, target, article, insertAfter, resolveSync) {
+    const neighbor = insertAfter
+      ? target.nextElementSibling
+      : target.previousElementSibling;
+
+    // 既にこのtarget用のボタンが正しい位置にある
+    if (neighbor && buttonCard.get(neighbor) === card) {
+      syncHref(card, stateOf(card, article).url);
+      return;
+    }
+
+    // 作り直された要素の隣に残っている、前の要素用のボタンを掃除する
+    if (neighbor && neighbor.classList.contains(CLASS.button)) {
+      neighbor.remove();
+    }
+
+    // 位置がずれた自前のボタンも掃除する
+    const existing = cardButton.get(card);
+
+    if (existing && existing.isConnected) {
+      existing.remove();
+    }
+
+    addButton(card, target, article, insertAfter, resolveSync);
+  }
+
+  /**
+   * ボタンは常に target の兄弟として挿入する。
+   * X が管理する要素にクラスを付けたり子要素を足したりはしない
+   * （v3.7.0で画像要素にそれをやってレイアウトを壊した）。
+   *
+   * target:
+   *   ボタン設置の基準要素（カード、または本文）
+   *
+   * insertAfter:
+   *   false → target の直前（カードの直上）
+   *   true  → target の直後（画像付き投稿で、本文の最下部）
+   *
+   * resolveSync:
+   *   URL未確定時に、クリックした瞬間もう一度同期解決を試みる関数。
+   *   カードなら resolveFromDom、画像付き投稿なら resolveFromPostText を渡す。
    *
    * 要素は <a href> にしてある。
    * URLが確定していれば中クリック・長押しでのリンクコピーが効く。
    * 通常クリックだけは openUrl() の経路（Safari固定）に流す。
    */
-  function addButton(card, target, article, overlay) {
+  function addButton(card, target, article, insertAfter, resolveSync) {
     const state = stateOf(card, article);
     const button = document.createElement('a');
 
-    button.className = overlay
-      ? `${CLASS.button} ${CLASS.overlay}`
-      : CLASS.button;
+    button.className = CLASS.button;
 
     button.textContent = BTN_LABEL;
     button.setAttribute('role', 'button');
@@ -1107,7 +1301,7 @@
         let ready = current.url;
 
         if (!ready) {
-          const resolved = resolveFromDom(card, article);
+          const resolved = resolveSync(card, article);
 
           if (resolved) {
             current.url = resolved.url;
@@ -1159,33 +1353,10 @@
       true
     );
 
-    if (overlay) {
-      target.classList.add(CLASS.host);
-      target.appendChild(button);
-      return;
-    }
-
-    // インライン設置では重ね配置用の指定を残さない
-    target.classList.remove(CLASS.host);
-    target.parentElement.insertBefore(button, target);
-  }
-
-  // -----------------------------------------------------------------------
-  // 設置先判定
-  // -----------------------------------------------------------------------
-
-  /**
-   * 展開前：カード右上にoverlay
-   * 展開後：カード直上にinline
-   *
-   * 展開してもcard.wrapper自体は残り、中身だけiframeへ差し替わる。
-   */
-  function pickTarget(card) {
-    if (card.querySelector('iframe') && card.parentElement) {
-      return { el: card, overlay: false };
-    }
-
-    return { el: card, overlay: true };
+    target.parentElement.insertBefore(
+      button,
+      insertAfter ? target.nextSibling : target
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -1203,12 +1374,30 @@
 
   function scan() {
     document.querySelectorAll(SELECTOR.card).forEach((card) => {
-      if (!isYouTubeCard(card)) {
-        return;
-      }
-
       const article = card.closest('article');
       const state = stateOf(card, article);
+
+      // 一度trueと判定したカードは再判定しない（isYtCard の説明を参照）。
+      // まだ判定していない、またはfalseだったカードだけ調べる。
+      if (!state.isYtCard) {
+        const detected = isYouTubeCard(card);
+
+        if (detected) {
+          if (article) {
+            articleYtState.set(article, true);
+          }
+        } else if (!article || !articleYtState.get(article)) {
+          // このarticleでYouTubeカードが確認された実績も無ければ、
+          // 本当に対象外のカードとしてスキップする。
+          return;
+        }
+
+        // ここに来るのは「今回検出できた」か「同じarticleで過去に
+        // 検出済み」のいずれか。後者は、Xがカード要素を丸ごと
+        // 置き換えた直後の一時的な過渡状態を想定している
+        // （articleYtState の説明を参照）。
+        state.isYtCard = true;
+      }
 
       watchForPrefetch(card, state);
 
@@ -1230,26 +1419,90 @@
         }
       }
 
-      const target = pickTarget(card);
-      const existing = cardButton.get(card);
+      // カードの外側に兄弟として置くので、親が無ければ設置できない
+      if (!card.parentElement) {
+        return;
+      }
 
-      if (existing && existing.isConnected) {
-        const isOverlay = existing.classList.contains(CLASS.overlay);
-        // overlayはカードの内側、inlineはカードの外側（直前）にある
-        const placedInside = card.contains(existing);
+      placeButton(card, card, article, false, resolveFromDom);
 
-        // 展開状態に対して形態も位置も正しいなら作り直さない
-        if (isOverlay === target.overlay && placedInside === target.overlay) {
-          syncHref(card, state.url);
+      log('button added', state.url || '(URL未解決)');
+    });
+
+    scanCardlessImagePosts();
+  }
+
+  /**
+   * YouTubeカードが無いが、画像付きで本文にYouTubeらしいリンクがある投稿。
+   *
+   * 状態管理・先読み・クリック処理・開き方は通常のカードとまったく同じ
+   * 経路を再利用する（tweetText要素自体を「card」として cardState /
+   * cardButton に載せる）。異なるのは判定・解決の中身と、ボタンを
+   * 本文の直前ではなく直後に置くこと（insertAfter: true）だけ。
+   *
+   * 画像要素（tweetPhoto）は対象を絞る判定にのみ使い、一切操作しない。
+   * v3.7.0で画像要素にボタンを直接設置し、実機で画像が真っ白になる
+   * 不具合を起こしてロールバックした経緯があるため。
+   */
+  function scanCardlessImagePosts() {
+    if (!ENABLE_IMAGE_POST_SUPPORT) {
+      return;
+    }
+
+    document.querySelectorAll('article').forEach((article) => {
+      // YouTubeカードが既にあるなら、そちらのボタンで足りる
+      if (hasYouTubeCardInArticle(article)) {
+        return;
+      }
+
+      // 画像が無い投稿は対象外。画像が無ければ通常どおりカード化される
+      // はずなので、二重対応する理由が無い。
+      if (!article.querySelector(SELECTOR.tweetPhoto)) {
+        return;
+      }
+
+      const target = textPostTarget(article);
+
+      if (!target) {
+        return;
+      }
+
+      const state = stateOf(target, article);
+
+      // isYtCard の意味はここでは「本文にYouTubeらしいリンクがある」。
+      // 一度trueと判定したら、同じツイートである間は再判定しない
+      // （通常のカードと同じ理由：判定が変わってボタンを見失う事故を防ぐ）。
+      if (!state.isYtCard) {
+        if (!findYouTubeTextLink(article)) {
           return;
         }
 
-        existing.remove();
+        state.isYtCard = true;
       }
 
-      addButton(card, target.el, article, target.overlay);
+      watchForPrefetch(target, state);
 
-      log('button added', target.overlay ? 'overlay' : 'inline', state.url || '(URL未解決)');
+      if (state.needsRefetch) {
+        state.needsRefetch = false;
+        prefetch(target);
+      }
+
+      if (!state.url) {
+        const resolved = resolveFromPostText(target, article);
+
+        if (resolved) {
+          state.url = resolved.url;
+          state.weak = resolved.weak;
+        }
+      }
+
+      if (!target.parentElement) {
+        return;
+      }
+
+      placeButton(target, target, article, true, resolveFromPostText);
+
+      log('button added (image post)', state.url || '(URL未解決)');
     });
   }
 
