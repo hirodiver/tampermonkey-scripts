@@ -86,7 +86,7 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ヘッドレスChromium上でXのカード構造を模したDOMにスクリプトを流し込み、検出・URL解決・ボタン設置を確認する（50項目、Playwright が必要）。
 ただしXの実DOMやiOSのUniversal Linkの挙動は再現していないため、**実機確認の代わりにはならない**。
 
-## X Status Auto Reload について
+## X Status Auto Reload について（ファイル: `x-status-page-auto-reload.user.js`）
 
 タイムラインから個別ポストへ遷移した際、Control Panel for Twitter 等の拡張との競合で
 SPA内遷移が固まり、いつまでも読み込まれないことがある（フルリロードすれば直る）。
