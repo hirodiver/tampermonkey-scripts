@@ -55,6 +55,13 @@ Tampermonkey は取得した中身の `@version` が同じなら、エラーを�
 なお、開発環境から `curl` で配信URLを叩いて 200 と新バージョンを確認しても、
 **それは実機に届くことの証明にならない**（別の POP を見ているため）。
 
+**`@name` だけを変更した場合について**
+
+`@namespace` が同じままなら、`@name` を変更しても同一スクリプトとして扱われ、
+通常の「更新を確認」でそのまま新しい名前に切り替わる（実測で確認済み、2026-09）。
+別スクリプトとして登録されるのは、下記の YouTube Full Dates (JST) のように
+`@namespace` ごと変えた場合。
+
 ## YouTube Full Dates (JST) について
 
 Greasy Fork の "YouTube Full Dates (v3)" (script id 564941) を元にした**独立フォーク**。
