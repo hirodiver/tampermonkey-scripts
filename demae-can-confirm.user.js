@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         出前館 - お届け時間変更確認を自動で完了
+// @name         出前館 - 到着時刻確認オートクリック
 // @namespace    local.hiro.tools
 // @version      1.0.0
 // @description  カートで「注文を完了する」を押した後に出る「お届け時間に変更があります」確認モーダルの「注文を完了する」ボタンを自動でクリックする
@@ -10,8 +10,8 @@
 // @grant        none
 // @homepageURL  https://github.com/hirodiver/tampermonkey-scripts
 // @supportURL   https://github.com/hirodiver/tampermonkey-scripts/issues
-// @downloadURL  https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-order-auto-complete.user.js
-// @updateURL    https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-order-auto-complete.user.js
+// @downloadURL  https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
+// @updateURL    https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 // ==/UserScript==
 
 // -----------------------------------------------------------------------------
