@@ -114,11 +114,11 @@ function check(name, cond, extra) {
     (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
       'https://www.youtube.com/watch?v=ABCDEFGHIJK&si=xx',
     { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
-  check('1: overlay 形態で カード内に設置',
+  check('1: カードの直前（外側）に設置され、カード内には入らない',
     await page.evaluate(() => {
       const b = document.querySelector('.hiroYtOpen-btn');
       const c = document.querySelector('[data-testid="card.wrapper"]');
-      return b.classList.contains('hiroYtOpen-overlay') && c.contains(b);
+      return b.nextSibling === c && !c.contains(b);
     }));
 
   // ===================================================================
@@ -190,7 +190,7 @@ function check(name, cond, extra) {
     await page.evaluate(() => window.__opened));
 
   // ===================================================================
-  // 5. 展開後（iframe あり）→ inline 形態に切り替わる
+  // 5. 展開しても配置は変わらない（常にカードの直前）
   // ===================================================================
   await page.evaluate(() => {
     document.getElementById('timeline').innerHTML = '';
@@ -200,9 +200,12 @@ function check(name, cond, extra) {
     });
   });
   await rescan();
-  check('5: 展開前は overlay',
-    await page.evaluate(() =>
-      document.querySelector('.hiroYtOpen-btn').classList.contains('hiroYtOpen-overlay')));
+  check('5: 展開前からカードの直前にある',
+    await page.evaluate(() => {
+      const b = document.querySelector('.hiroYtOpen-btn');
+      const c = document.querySelector('[data-testid="card.wrapper"]');
+      return b.nextSibling === c;
+    }));
   await page.evaluate(() => {
     const c = document.querySelector('[data-testid="card.wrapper"]');
     const f = document.createElement('iframe');
@@ -210,15 +213,15 @@ function check(name, cond, extra) {
     c.appendChild(f);
   });
   await rescan();
-  check('5: 展開後は inline でカード外',
+  check('5: 展開後もカードの直前のまま（作り直しも移動もしない）',
     await page.evaluate(() => {
       const b = document.querySelector('.hiroYtOpen-btn');
       const c = document.querySelector('[data-testid="card.wrapper"]');
-      return b && !b.classList.contains('hiroYtOpen-overlay') && !c.contains(b);
+      return b && b.nextSibling === c && !c.contains(b);
     }));
-  check('5: 展開後は host クラスが残らない',
+  check('5: カード要素にクラスを付けない（Xの要素に干渉しない）',
     await page.evaluate(() =>
-      !document.querySelector('[data-testid="card.wrapper"]').classList.contains('hiroYtOpen-host')));
+      document.querySelector('[data-testid="card.wrapper"]').className === ''));
   check('5: 展開後の href が embed から解決される',
     (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
       'https://www.youtube.com/watch?v=EMBEDID1234',
@@ -589,9 +592,12 @@ function check(name, cond, extra) {
     (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
       'https://www.youtube.com/watch?v=NOCOOKIEID1',
     { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
-  check('21: nocookie 展開後は inline 配置になる',
-    await page.evaluate(() =>
-      !document.querySelector('.hiroYtOpen-btn').classList.contains('hiroYtOpen-overlay')));
+  check('21: nocookie 展開後もカードの直前のまま',
+    await page.evaluate(() => {
+      const b = document.querySelector('.hiroYtOpen-btn');
+      const c = document.querySelector('[data-testid="card.wrapper"]');
+      return b.nextSibling === c;
+    }));
 
   // ===================================================================
   // 22. 画像付き・カード無し投稿：本文の直後にボタン、画像には触れない
@@ -631,12 +637,9 @@ function check(name, cond, extra) {
       const photo = document.querySelector('[data-testid="tweetPhoto"]');
       return text.nextElementSibling === btn && btn.nextElementSibling === photo;
     }));
-  check('22: overlayクラスは付かない（画像に重ねない）',
+  check('22: 画像要素にクラスを付けない（Xの要素に干渉しない）',
     await page.evaluate(() =>
-      !document.querySelector('.hiroYtOpen-btn').classList.contains('hiroYtOpen-overlay')));
-  check('22: 画像要素に hiroYtOpen-host クラスが付かない',
-    await page.evaluate(() =>
-      !document.querySelector('[data-testid="tweetPhoto"]').classList.contains('hiroYtOpen-host')));
+      document.querySelector('[data-testid="tweetPhoto"]').className === ''));
 
   // ===================================================================
   // 23. 表示テキストが省略されている場合は weak、クリックでAPI確定
@@ -806,6 +809,39 @@ function check(name, cond, extra) {
   check('29: 無関係なarticleはカード置換後もボタンを出さない（越境なし）',
     await page.locator('article').nth(1).locator('.hiroYtOpen-btn').count() === 0,
     { count: await page.locator('article').nth(1).locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 30. 本文要素が丸ごと置き換わってもボタンが重複しない
+  // ===================================================================
+  //
+  // ボタンをXの要素の「外側」に置く設計にした結果、Xが要素を作り直しても
+  // 古いボタンが道連れにならず残るようになった。掃除しないと、新しい要素の
+  // 分と合わせてボタンが2つ並ぶ。カード側（28）と同じことが本文側でも起きる。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/9300000000000000001">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/abcd">youtube.com/watch?v=dQw4w9WgXcQ</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('30: 画像付き投稿にボタンが1個出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+
+  await page.evaluate(() => {
+    const art = document.querySelector('article');
+    const oldText = art.querySelector('[data-testid="tweetText"]');
+    const newText = document.createElement('div');
+    newText.setAttribute('data-testid', 'tweetText');
+    newText.innerHTML = '<a href="https://t.co/abcd">youtube.com/watch?v=dQw4w9WgXcQ</a>';
+    oldText.replaceWith(newText);
+  });
+  await rescan();
+  check('30: 本文が丸ごと置き換わってもボタンは1個のまま',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
 
   await browser.close();
 

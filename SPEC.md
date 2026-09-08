@@ -1,6 +1,6 @@
 # X YouTube Card 仕様書
 
-- **バージョン**: 3.8.3
+- **バージョン**: 3.9.0
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -78,10 +78,14 @@ X はカード化した投稿の本文からURL文字列を除去し、カード
 
 scan()   card.wrapper を走査
  ├ isYouTubeCard()          直リンク／iframe／ドメイン表記で判定
+ │                          （articleYtState に実績があれば緩和）
  ├ stateOf(card)            WeakMapから状態取得（tweetId変化なら破棄して作り直し）
  ├ watchForPrefetch()       IntersectionObserver に登録
  ├ resolveFromDom()         未解決ならDOM/Reactで解決
- └ pickTarget() → ボタン設置／形態・位置が不一致なら作り直し
+ └ placeButton()            カードの直前に設置／残骸があれば掃除して作り直す
+
+scanCardlessImagePosts()   カード無し・画像付き投稿を走査
+ └ placeButton()            本文の直後に設置（同じ関数を通る）
 
 表示域に接近（rootMargin 400px）
  └ prefetch()               未解決またはweakなら syndication API を先行取得
@@ -284,12 +288,36 @@ iOS では Universal Link の成立条件により、遷移の起こし方でYou
 | 書体 | Noto Sans JP 11px / weight 500 |
 | aria-label | `YouTubeをブラウザで開く` |
 
-**設置形態**
+**設置形態（v3.9.0以降）**
 
-- **展開前** — `card.wrapper` の右上にオーバーレイ（`position: absolute; top: 8px; right: 8px`）。カード側に `position: relative` を付与
-- **展開後**（カード内にiframeが入った状態）— カード直上にインライン配置。オーバーレイ用の `position: relative` は除去
+ボタンは**常に対象要素の兄弟**として挿入する。状態による切り替えは無い。
 
-展開状態に対して形態または位置が不一致になった場合、`scan()` がボタンを作り直す。
+| 対象 | 位置 |
+|---|---|
+| YouTubeカード | `card.wrapper` の**直前**（カードの直上） |
+| 画像付き・カード無し投稿 | `tweetText` の**直後**（本文の最下部） |
+
+**Xが管理する要素には一切触れない。** クラスの付与も子要素の追加もしない。
+挿入するのは兄弟要素1つだけである。v3.8.3以前はカード右上へのオーバーレイ配置が
+あり、そのためにカード要素へ `position: relative` を付与していたが、これは
+v3.7.0で画像要素を真っ白にした操作と同じ種類の干渉だった（→ 13章 v3.9.0）。
+
+**ボタンの後始末**
+
+要素の外側に置く以上、Xがカードや本文の要素を作り直しても**古いボタンは道連れに
+ならず残る**。何もしないと、新しい要素の分と合わせてボタンが2つ並ぶ。
+そこで `placeButton()` が、WeakMapだけでなく**隣接要素をDOMから直接見て**判定する。
+
+```
+placeButton(card, target, article, insertAfter, resolveSync)
+  隣（挿入されるべき位置）を見る
+   ├ そこにこのtarget用のボタンがある     → 何もしない（hrefだけ追従）
+   ├ そこに別の要素用のボタンが残っている → 掃除してから作り直す
+   └ 位置のずれた自前のボタンがある       → 掃除してから作り直す
+```
+
+`buttonCard`（ボタン→対象要素のWeakMap）で「そのボタンがどの要素用に作られたか」を
+判定する。カード側・画像投稿側の両方が同じ関数を通るので、経路の非対称性が無い。
 
 **イベント制御**
 
@@ -438,7 +466,7 @@ scan() のカード判定:
 NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ```
 
-ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。49項目。
+ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。50項目。
 
 | 項目 | 確認内容 |
 |---|---|
@@ -481,6 +509,14 @@ Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動
 ---
 
 ## 13. 変更履歴
+
+### v3.9.0
+- **オーバーレイ配置を廃止し、ボタンを常にカードの直上（対象要素の兄弟）に置くようにした**。展開状態による配置の切り替えが無くなった
+- これにより **Xが管理する要素への干渉が完全にゼロ**になった。`classList` の付与も子要素の追加もしない。挿入するのは兄弟要素1つだけ。カード要素への `position: relative` 付与は、v3.7.0で画像を真っ白にした操作と同じ種類の干渉であり、これが残っていた
+- 削除: `CLASS.overlay` / `CLASS.host` とそのCSS、`pickTarget()`、`addButton()` の配置分岐、`scan()` の「形態も位置も正しいか」判定。**正味55行の削減**
+- `addButton()` の配置指定を3値の文字列から真偽値 `insertAfter` に単純化した
+- **新たに生まれた穴を塞いだ**: ボタンを要素の外側に置くと、Xが要素を作り直しても古いボタンが道連れにならず残り、ボタンが2つ並ぶ。`placeButton()` を追加し、WeakMapだけでなく隣接要素をDOMから直接見て掃除するようにした（→ 7章）。カード側・画像投稿側が同じ関数を通るので、経路の非対称性も解消した
+- 検証を50項目に拡充（本文要素が置き換わってもボタンが重複しないケースを追加）
 
 ### v3.8.3
 - `@name` を `X YouTube Card - Open in Browser` から `X YouTube Card` へ短縮した。iOS Tampermonkeyのスクリプト一覧で名前が省略され、バージョンも確認しづらいという実機報告を受けての対応
