@@ -1,6 +1,6 @@
-# X YouTube Card - Open in Browser 仕様書
+# X YouTube Card 仕様書
 
-- **バージョン**: 3.8.2
+- **バージョン**: 3.8.3
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -481,6 +481,11 @@ Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動
 ---
 
 ## 13. 変更履歴
+
+### v3.8.3
+- `@name` を `X YouTube Card - Open in Browser` から `X YouTube Card` へ短縮した。iOS Tampermonkeyのスクリプト一覧で名前が省略され、バージョンも確認しづらいという実機報告を受けての対応
+- `@name` 変更時のTampermonkeyの実際の挙動（既存インストールの名前が更新されるだけか、別スクリプトとして二重登録されうるか）は確証を得られないまま、ユーザーの明示的な指示で変更した。**もし実機で二重にインストールされた場合**、Tampermonkeyのダッシュボードで重複を確認し、古い方（またはどちらか一方）を削除すること
+- ドキュメント上の表記もあわせて `X YouTube Card` に統一した（`@namespace` は `local.hiro.tools` のまま変更していない）
 
 ### v3.8.2
 - **実機報告により判明: 配信前のカードをタップ（展開）すると、ボタンが消えたまま復活しない不具合を修正**。v3.6.0で入れた `isYtCard`（同じDOM要素の中身が変わるケースを救う固定化）は、Xがカード要素自体を丸ごと新しいノードに置き換えるケースには無力だった。新しい要素には過去の記憶が無く、置き換え直後の一瞬（判定基準を満たさない過渡状態）に判定されると、その要素は二度とYouTubeカードとして扱われなかった
