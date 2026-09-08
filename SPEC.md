@@ -1,6 +1,6 @@
 # X YouTube Card - Open in Browser 仕様書
 
-- **バージョン**: 3.6.0
+- **バージョン**: 3.7.0
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -9,7 +9,8 @@
 
 ## 1. 目的
 
-X(Twitter) のタイムライン上のYouTubeカードに「▶ YouTubeで開く」ボタンを追加し、X内蔵プレイヤーを経由せずにYouTubeを開く。
+X(Twitter) のタイムライン上のYouTubeカード、および**カード化されない画像付きYouTube投稿**に
+「▶ YouTubeで開く」ボタンを追加し、X内蔵プレイヤーを経由せずにYouTubeを開く。
 
 X はカード化した投稿の本文からURL文字列を除去し、カードのタップをアプリ内プレイヤーの起動に割り当てる。そのため「元のYouTubeを開く」という単純な操作が、通常のUI上では成立しない。本スクリプトはその経路を復元する。
 
@@ -179,6 +180,61 @@ scope は次の3つで使う。
 
 ---
 
+## 5.5 画像付き・カード無し投稿への対応
+
+Xは画像が付いた投稿では、YouTube URLが含まれていても `card.wrapper` を作らない
+（投稿画像がサムネイル代わりになるため）。カード化と本文URL除去はセットの処理
+なので、この場合は本文に t.co リンクがそのまま残る。
+
+t.co の遷移先はDOMからは分からないが、Xは本文中のリンクを表示する際に
+**元URL（収まらなければ末尾を省略）をテキストとしてそのまま出す**。これを読む
+ことで、展開せずにYouTubeらしさを判定できる。
+
+### 検出
+
+`findYouTubeTextLink(article)` が `tweetText` 内の `<a>` を走査し、表示テキスト
+（`textContent`）が `YT_DISPLAY_RE`（`youtube.com/watch?v=` 等、プロトコル省略
+可）にマッチするものを探す。
+
+- YouTubeカードが1つでもある article は対象外（`hasYouTubeCardInArticle()`）。
+  カード側のボタンで足りるため
+- 画像（`[data-testid="tweetPhoto"]`）が無い article も対象外。画像が無ければ
+  通常どおりカード化されるはずなので、二重対応する理由が無い
+
+### URL解決
+
+表示テキストから動画ID（11文字）が完全に読めるかどうかで扱いを変える。
+
+| 状態 | 判定 | 扱い |
+|---|---|---|
+| 省略記号（`…` / `...`）が無く、IDが11文字以上 | `complete: true` | 確定URL（weak:false） |
+| 省略されている、またはIDが11文字未満 | `complete: false` | href（t.co）を暫定値として使う（weak:true） |
+
+weak のときは、通常のカードと同じく非同期経路（syndication API）が確定URLへ
+上書きする。**表示テキストから復元したURLは検証していない**ので、末尾が
+実際には省略されていないのに何らかの理由でズレて見える等のケースでは、
+誤ったIDを開く可能性がゼロではない（→ 10章 B-9）。
+
+### 状態管理・ボタン設置の再利用
+
+画像コンテナ（`tweetPhoto` 要素）自体を「card」として `cardState` /
+`cardButton` に載せる。これにより、状態管理・先読み・クリック処理・
+開き方（`openUrl`）は通常のカードとまったく同じ経路を再利用する。
+
+異なるのは判定・解決の中身だけ：
+
+| 用途 | カード | 画像付き投稿 |
+|---|---|---|
+| 検出 | `isYouTubeCard()` | `findYouTubeTextLink()` |
+| 同期解決 | `resolveFromDom()` | `resolveFromPostText()` |
+| 設置場所 | `card.wrapper` | `tweetPhoto`（複数枚グリッドでも1枚目） |
+| 配置形態 | overlay ⇔ inline を切替 | 常にoverlay（展開の概念が無い） |
+
+`addButton()` は同期解決関数を引数（`resolveSync`）として受け取るようになり、
+呼び出し側がカード用・画像投稿用のどちらを渡すかを決める。
+
+---
+
 ## 6. 開き方の仕様
 
 iOS では Universal Link の成立条件により、遷移の起こし方でYouTubeアプリに奪われるかどうかが変わる。Apple の制約として、クリックがユーザー起点であること、遷移がクライアント側JavaScriptでないことが要求される。
@@ -326,7 +382,7 @@ DOM再利用で別ツイートに化けたときは `isYtCard` を含む状態�
 NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ```
 
-ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。33項目。
+ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。41項目。
 
 | 項目 | 確認内容 |
 |---|---|
@@ -347,6 +403,8 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 | 19 | weak(t.co) のとき href を付けない |
 | 20 | 展開でドメイン表記が消える過渡状態でもカードを見失わない |
 | 21 | 展開後の iframe が youtube-nocookie.com でも解決できる |
+| 22-23 | 画像付き・カード無し投稿：表示テキストからの確定／weak解決 |
+| 24-26 | 無関係なリンク・画像無し・カード優先での誤検出防止 |
 
 **このテストが保証しないこと**
 
@@ -365,6 +423,13 @@ Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動
 ---
 
 ## 13. 変更履歴
+
+### v3.7.0
+- **画像付きでカード化されない投稿にもボタンを追加**。Xは画像付き投稿ではYouTube URLがあってもcard.wrapperを作らず、本文にt.coリンクがそのまま残る。t.co自体は展開しないと遷移先が分からないが、Xが本文リンクの表示に使う元URLのテキスト（収まらなければ末尾省略）を読むことで、展開せずにYouTubeらしさを判定できるようにした（→ 5.5章）
+- 表示テキストから動画IDが完全に読めれば確定URLとして即座に使用。省略されていればweak扱いとし、既存の非同期経路（syndication API）が確定させる
+- ボタンは画像コンテナ（`tweetPhoto`）の右上にoverlay設置。YouTubeカードが既にある投稿では二重に出さない
+- `addButton()` の同期解決ロジックを引数化し、カード用（`resolveFromDom`）・画像投稿用（`resolveFromPostText`）のどちらでも使えるよう汎用化。状態管理・先読み・クリック処理・開き方は完全に共通
+- 検証を41項目に拡充
 
 ### v3.6.0
 - **実機報告により判明: カードをクリックして展開すると、ボタンがどこにも見えなくなる不具合を修正**（デスクトップChrome / iOS Safari 双方で発生）。`scan()` が毎回 `isYouTubeCard()` を再判定していたため、展開直後の一瞬（ドメイン表記が消え、iframeもまだ無い過渡的なDOM状態）に判定がfalseへ反転し、カードを丸ごと無視していた。一度trueと判定したカードは、同じツイートである間は再判定しないよう修正（→ 8章「判定の固定化」）
