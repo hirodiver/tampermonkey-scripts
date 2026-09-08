@@ -1,6 +1,6 @@
 # X YouTube Card - Open in Browser 仕様書
 
-- **バージョン**: 3.7.1
+- **バージョン**: 3.8.0
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -179,6 +179,76 @@ scope は次の3つで使う。
 
 ---
 
+## 5.5 画像付き・カード無し投稿への対応
+
+Xは画像が付いた投稿では、YouTube URLが含まれていても `card.wrapper` を作らない
+（投稿画像がサムネイル代わりになるため）。カード化と本文URL除去はセットの処理
+なので、この場合は本文に t.co リンクがそのまま残る。
+
+t.co の遷移先はDOMからは分からないが、Xは本文中のリンクを表示する際に
+**元URL（収まらなければ末尾を省略）をテキストとしてそのまま出す**。これを読む
+ことで、展開せずにYouTubeらしさを判定できる。
+
+### v3.7.0での失敗と設計の変更
+
+最初の実装（v3.7.0）は画像コンテナ（`tweetPhoto`）要素自体に
+`position: relative` を付与し、ボタンをその右上にoverlay設置した。
+模擬DOMのテストは全項目通過したが、**実機では画像が真っ白になりボタンも
+消える**不具合が発生し、ロールバックした（v3.7.1）。原因は未特定（実際の
+Xの `tweetPhoto` のDOM構造をこの開発環境から確認できないため）。
+
+v3.8.0では、**画像要素には一切手を加えない**設計に変更した。ボタンは
+本文（`tweetText`）の直後に独立ブロックとして挿入する。カード展開後の
+inline配置（`card.wrapper`の直前に挿入）と同じ、既に実績のある方式の
+向きを変えただけで、画像のクラス・属性・DOM構造は何も変更しない。
+
+### 検出
+
+`findYouTubeTextLink(article)` が `tweetText` 内の `<a>` を走査し、表示テキスト
+（`textContent`）が `YT_DISPLAY_RE`（`youtube.com/watch?v=` 等、プロトコル省略
+可）にマッチするものを探す。
+
+- YouTubeカードが1つでもある article は対象外（`hasYouTubeCardInArticle()`）。
+  カード側のボタンで足りるため
+- 画像（`[data-testid="tweetPhoto"]`）が無い article も対象外。画像が無ければ
+  通常どおりカード化されるはずなので、二重対応する理由が無い。**この判定に
+  使うだけで、`tweetPhoto` 要素そのものには一切触れない**
+
+### URL解決
+
+表示テキストから動画ID（11文字）が完全に読めるかどうかで扱いを変える。
+
+| 状態 | 判定 | 扱い |
+|---|---|---|
+| 省略記号（`…` / `...`）が無く、IDが11文字以上 | `complete: true` | 確定URL（weak:false） |
+| 省略されている、またはIDが11文字未満 | `complete: false` | href（t.co）を暫定値として使う（weak:true） |
+
+weak のときは、通常のカードと同じく非同期経路（syndication API）が確定URLへ
+上書きする。**表示テキストから復元したURLは検証していない**ので、末尾が
+実際には省略されていないのに何らかの理由でズレて見える等のケースでは、
+誤ったIDを開く可能性がゼロではない（→ 10章 B-9）。
+
+### 状態管理・ボタン設置の再利用
+
+`tweetText` 要素自体を「card」として `cardState` / `cardButton` に載せる。
+これにより、状態管理・先読み・クリック処理・開き方（`openUrl`）は通常の
+カードとまったく同じ経路を再利用する。異なるのは判定・解決の中身と、
+設置位置だけ：
+
+| 用途 | カード | 画像付き投稿 |
+|---|---|---|
+| 検出 | `isYouTubeCard()` | `findYouTubeTextLink()` |
+| 同期解決 | `resolveFromDom()` | `resolveFromPostText()` |
+| 設置先 | `card.wrapper` | `tweetText`（画像には触れない） |
+| 配置形態 | `'overlay'` ⇔ `'inline-before'` を切替 | 常に `'inline-after'`（本文の直後） |
+
+`addButton()` の第4引数は真偽値のoverlayフラグから、`'overlay'` /
+`'inline-before'` / `'inline-after'` の3値（`placement`）に拡張した。
+同期解決関数も引数（`resolveSync`）として受け取るようになり、呼び出し側が
+カード用・画像投稿用のどちらを渡すかを決める。
+
+---
+
 ## 6. 開き方の仕様
 
 iOS では Universal Link の成立条件により、遷移の起こし方でYouTubeアプリに奪われるかどうかが変わる。Apple の制約として、クリックがユーザー起点であること、遷移がクライアント側JavaScriptでないことが要求される。
@@ -288,6 +358,8 @@ DOM再利用で別ツイートに化けたときは `isYtCard` を含む状態�
 | B-5 | 複数カードへのURL割当は「article内のYouTubeカードの出現順」に依存 | APIの返す順序とDOM順が食い違う構成では入れ替わりうる |
 | B-6 | ドメイン表記の判定は表示文字列に依存 | Xがカード下部のドメイン表記をやめると、直リンクもiframeも無い配信前カードで検出できなくなる |
 | B-8 | scope は status リンクの有無で決まる | 引用ブロックに status リンクが無い構成では、引用カードが外側のツイートIDで解決される（v3.4.x 以前と同じ挙動） |
+| B-9 | 画像付き投稿の表示テキストからの動画ID復元は未検証のまま使う | 稀に誤ったIDを開く可能性がある。非同期経路で確定URLに上書きされるまでの間のみ |
+| B-10 | 画像付き投稿は `tweetPhoto`（判定用）と `tweetText`（設置先）の2セレクタに依存 | Xがdata-testidを変更すると検出できなくなる |
 | C-3' | ダークテーマ追従は `prefers-color-scheme` ベース | X側だけをライト／ダークに切り替えた場合はOS設定に従う |
 | B-7 | React探索の子孫走査は先頭40要素まで | 巨大なカードでは末尾の要素にしかpropsが無い場合に取りこぼす。非同期経路へ落ちる |
 | V-1 | 検証はヘッドレスChromium上の模擬DOMのみ | Xの実DOM・Reactの内部構造は再現できていない。実機（iOS Safari + Tampermonkey）での確認は別途必要 |
@@ -326,7 +398,7 @@ DOM再利用で別ツイートに化けたときは `isYtCard` を含む状態�
 NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ```
 
-ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。33項目。
+ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。45項目。
 
 | 項目 | 確認内容 |
 |---|---|
@@ -347,6 +419,8 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 | 19 | weak(t.co) のとき href を付けない |
 | 20 | 展開でドメイン表記が消える過渡状態でもカードを見失わない |
 | 21 | 展開後の iframe が youtube-nocookie.com でも解決できる |
+| 22-23 | 画像付き・カード無し投稿：表示テキストからの確定／weak解決、画像要素が無傷であること |
+| 24-27 | 無関係なリンク・画像無し・カード優先での誤検出防止、複数回scanでの重複防止 |
 
 **このテストが保証しないこと**
 
@@ -365,6 +439,12 @@ Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動
 ---
 
 ## 13. 変更履歴
+
+### v3.8.0
+- **画像付きでカード化されない投稿への対応を再実装**。v3.7.0は画像要素（`tweetPhoto`）自体にボタンをoverlay設置して実機を壊し、v3.7.1でロールバックした（下記参照）。今回は**画像要素には一切手を加えない**設計に変更し、本文（`tweetText`）の直後にボタンを独立ブロックとして追加する（→ 5.5章）
+- `addButton()` の設置方式指定を真偽値（overlay）から `'overlay'` / `'inline-before'` / `'inline-after'` の3値（`placement`）に拡張。画像付き投稿は常に `'inline-after'`
+- 検出（`findYouTubeTextLink`）・解決（`resolveFromPostText`）のロジック自体はv3.7.0から変更なし。表示テキストから動画IDが完全に読めれば確定URL、省略されていればweak扱いとし非同期経路が確定させる
+- 検証を45項目に拡充。画像要素のHTMLが操作前後で完全に一致することを確認するテストを追加（v3.7.0の再発防止）
 
 ### v3.7.1（v3.7.0のロールバック）
 - **実機報告により判明: 画像付き投稿で画像が真っ白になり、ボタンも表示されなくなる不具合が発生**。v3.7.0で追加した「画像付き・カード無し投稿への対応」（`tweetPhoto` 要素にボタンをoverlay設置する機能）が原因と見て、機能ごと撤去した
