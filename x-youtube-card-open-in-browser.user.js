@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X YouTube Card - Open in Browser
 // @namespace    local.hiro.tools
-// @version      3.8.1
+// @version      3.8.2
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -920,6 +920,24 @@
    */
   const cardState = new WeakMap();
 
+  /**
+   * article単位で「このarticleにはYouTubeカードが確認されたことがある」
+   * ことを記憶する。
+   *
+   * isYtCard（card単位の固定化）は、同じDOM要素の中身が変わるケース
+   * （展開でドメイン表記が消える等）は救えるが、Xがカード要素自体を
+   * 丸ごと新しいノードに置き換えるケースには無力——新しい要素には
+   * 過去の記憶が無いため。配信前カードをタップした際にXがカードを
+   * 再生成し、その一瞬（直リンクもiframeもドメイン表記も無い「読み込み
+   * 中」的な過渡状態）に isYouTubeCard() が false を返すと、その新しい
+   * 要素は二度とYouTubeカードとして扱われず、ボタンが復活しなくなる。
+   *
+   * 対策として、article単位でも一度確定した事実を記憶し、新しいカード
+   * 要素が一時的に判定基準を満たさなくても、そのarticleが既に確定済み
+   * なら通す。
+   */
+  const articleYtState = new WeakMap();
+
   function stateOf(card, article) {
     const status = findStatus(card, article);
     const id = status ? status.id : null;
@@ -1377,10 +1395,22 @@
       // 一度trueと判定したカードは再判定しない（isYtCard の説明を参照）。
       // まだ判定していない、またはfalseだったカードだけ調べる。
       if (!state.isYtCard) {
-        if (!isYouTubeCard(card)) {
+        const detected = isYouTubeCard(card);
+
+        if (detected) {
+          if (article) {
+            articleYtState.set(article, true);
+          }
+        } else if (!article || !articleYtState.get(article)) {
+          // このarticleでYouTubeカードが確認された実績も無ければ、
+          // 本当に対象外のカードとしてスキップする。
           return;
         }
 
+        // ここに来るのは「今回検出できた」か「同じarticleで過去に
+        // 検出済み」のいずれか。後者は、Xがカード要素を丸ごと
+        // 置き換えた直後の一時的な過渡状態を想定している
+        // （articleYtState の説明を参照）。
         state.isYtCard = true;
       }
 

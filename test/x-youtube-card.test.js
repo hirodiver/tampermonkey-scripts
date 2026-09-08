@@ -731,6 +731,82 @@ function check(name, cond, extra) {
     await page.locator('.hiroYtOpen-btn').count() === 1,
     { count: await page.locator('.hiroYtOpen-btn').count() });
 
+  // ===================================================================
+  // 28. カード要素が丸ごと置き換わっても（タップ後の再描画等）ボタンを
+  //     見失わない
+  // ===================================================================
+  //
+  // 実機報告: 配信前のカードをタップ（展開）するとボタンが消える。
+  //
+  // 原因: v3.6.0で入れた isYtCard（同じDOM要素の中身が変わるケースを
+  // 救う固定化）は、Xがカード要素自体を丸ごと新しいノードに置き換える
+  // ケースには無力。新しい要素には過去の記憶が無いため、その一瞬
+  // （直リンクもiframeもドメイン表記も無い「読み込み中」的な過渡状態）
+  // に isYouTubeCard() が false を返すと、その要素は二度とYouTubeカード
+  // として扱われず、ボタンが復活しなかった。
+  //
+  // article単位でも一度確定した事実を記憶するようにして解消した。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/u/status/9100000000000000001">t</a>' +
+      '<div data-testid="card.wrapper"><span>配信タイトル</span><span>youtube.com</span></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('28: タップ前はボタンが出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1);
+
+  await page.evaluate(() => {
+    const art = document.querySelector('article');
+    const oldCard = art.querySelector('[data-testid="card.wrapper"]');
+    const newCard = document.createElement('div');
+    newCard.setAttribute('data-testid', 'card.wrapper');
+    // 直リンク無し・iframe無し・ドメイン表記も無い「読み込み中」的な
+    // 過渡状態を模した、まったく新しいDOMノードへの置き換え。
+    newCard.innerHTML = '<div class="player-loading">読み込み中</div>';
+    oldCard.replaceWith(newCard);
+  });
+  await rescan();
+  check('28: カード要素が丸ごと置き換わってもボタンが残る',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // ===================================================================
+  // 29. article単位の緩和が、隣接する無関係なarticleへ越境しない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art1 = document.createElement('article');
+    art1.innerHTML =
+      '<a href="https://x.com/u/status/9200000000000000001">t</a>' +
+      '<div data-testid="card.wrapper"><span>配信タイトル</span><span>youtube.com</span></div>';
+    document.getElementById('timeline').appendChild(art1);
+
+    const art2 = document.createElement('article');
+    art2.innerHTML =
+      '<a href="https://x.com/u/status/9200000000000000002">t</a>' +
+      '<div data-testid="card.wrapper"><span>記事タイトル</span><span>example.com</span></div>';
+    document.getElementById('timeline').appendChild(art2);
+  });
+  await rescan();
+  check('29: 隣のarticleが無関係なら最初からボタンを出さない',
+    await page.locator('article').nth(1).locator('.hiroYtOpen-btn').count() === 0);
+
+  await page.evaluate(() => {
+    const art2 = document.querySelectorAll('article')[1];
+    const oldCard = art2.querySelector('[data-testid="card.wrapper"]');
+    const newCard = document.createElement('div');
+    newCard.setAttribute('data-testid', 'card.wrapper');
+    newCard.innerHTML = '<span>別の記事</span><span>news.example.com</span>';
+    oldCard.replaceWith(newCard);
+  });
+  await rescan();
+  check('29: 無関係なarticleはカード置換後もボタンを出さない（越境なし）',
+    await page.locator('article').nth(1).locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('article').nth(1).locator('.hiroYtOpen-btn').count() });
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
