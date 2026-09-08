@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X YouTube Card
 // @namespace    local.hiro.tools
-// @version      3.8.3
+// @version      3.9.0
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -49,8 +49,6 @@
 
   const CLASS = {
     button: `${PREFIX}-btn`,
-    overlay: `${PREFIX}-overlay`,
-    host: `${PREFIX}-host`,
   };
 
   const SELECTOR = {
@@ -165,21 +163,6 @@
   .${CLASS.button}:focus-visible {
     background: #5c7cfa;
   }
-}
-
-/* 展開前：カード右上に重ねる */
-.${CLASS.button}.${CLASS.overlay} {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 5;
-  margin: 0;
-  opacity: .78;
-  box-shadow: 0 1px 3px rgba(30,40,80,.25);
-}
-
-.${CLASS.host} {
-  position: relative;
 }
 `;
 
@@ -1196,33 +1179,64 @@
   }
 
   /**
-   * target:
-   *   ボタン設置の基準要素
+   * ボタンをあるべき位置に用意する。既に正しく置かれていれば作り直さない。
    *
-   * overlay:
-   *   true  → target内右上に重ねる
-   *   false → target直前に挿入
+   * ボタンは target の兄弟（＝Xが管理する要素の外側）に置くので、
+   * Xがカードや本文の要素を作り直しても**古いボタンは道連れにならず残る**。
+   * 何もしないと、新しい要素の分と合わせてボタンが2つ並ぶ。
+   * そのため WeakMap だけでなく、隣接要素をDOMから直接見て掃除する。
+   */
+  function placeButton(card, target, article, insertAfter, resolveSync) {
+    const neighbor = insertAfter
+      ? target.nextElementSibling
+      : target.previousElementSibling;
+
+    // 既にこのtarget用のボタンが正しい位置にある
+    if (neighbor && buttonCard.get(neighbor) === card) {
+      syncHref(card, stateOf(card, article).url);
+      return;
+    }
+
+    // 作り直された要素の隣に残っている、前の要素用のボタンを掃除する
+    if (neighbor && neighbor.classList.contains(CLASS.button)) {
+      neighbor.remove();
+    }
+
+    // 位置がずれた自前のボタンも掃除する
+    const existing = cardButton.get(card);
+
+    if (existing && existing.isConnected) {
+      existing.remove();
+    }
+
+    addButton(card, target, article, insertAfter, resolveSync);
+  }
+
+  /**
+   * ボタンは常に target の兄弟として挿入する。
+   * X が管理する要素にクラスを付けたり子要素を足したりはしない
+   * （v3.7.0で画像要素にそれをやってレイアウトを壊した）。
+   *
+   * target:
+   *   ボタン設置の基準要素（カード、または本文）
+   *
+   * insertAfter:
+   *   false → target の直前（カードの直上）
+   *   true  → target の直後（画像付き投稿で、本文の最下部）
+   *
+   * resolveSync:
+   *   URL未確定時に、クリックした瞬間もう一度同期解決を試みる関数。
+   *   カードなら resolveFromDom、画像付き投稿なら resolveFromPostText を渡す。
    *
    * 要素は <a href> にしてある。
    * URLが確定していれば中クリック・長押しでのリンクコピーが効く。
    * 通常クリックだけは openUrl() の経路（Safari固定）に流す。
    */
-  /**
-   * placement:
-   *   'overlay'       … target右上に重ねる（カード展開前）
-   *   'inline-before' … targetの直前に独立ブロックとして挿入（カード展開後）
-   *   'inline-after'  … targetの直後に独立ブロックとして挿入（画像付き投稿、本文の最下部）
-   *
-   * resolveSync:
-   *   URL未確定時に、クリックした瞬間もう一度同期解決を試みる関数。
-   *   カードなら resolveFromDom、画像付き投稿なら resolveFromPostText を渡す。
-   */
-  function addButton(card, target, article, placement, resolveSync) {
+  function addButton(card, target, article, insertAfter, resolveSync) {
     const state = stateOf(card, article);
     const button = document.createElement('a');
 
-    button.className =
-      placement === 'overlay' ? `${CLASS.button} ${CLASS.overlay}` : CLASS.button;
+    button.className = CLASS.button;
 
     button.textContent = BTN_LABEL;
     button.setAttribute('role', 'button');
@@ -1339,39 +1353,10 @@
       true
     );
 
-    if (placement === 'overlay') {
-      target.classList.add(CLASS.host);
-      target.appendChild(button);
-      return;
-    }
-
-    // インライン設置では重ね配置用の指定を残さない
-    target.classList.remove(CLASS.host);
-
-    if (placement === 'inline-after') {
-      target.parentElement.insertBefore(button, target.nextSibling);
-      return;
-    }
-
-    target.parentElement.insertBefore(button, target);
-  }
-
-  // -----------------------------------------------------------------------
-  // 設置先判定
-  // -----------------------------------------------------------------------
-
-  /**
-   * 展開前：カード右上にoverlay
-   * 展開後：カード直上にinline
-   *
-   * 展開してもcard.wrapper自体は残り、中身だけiframeへ差し替わる。
-   */
-  function pickTarget(card) {
-    if (card.querySelector('iframe') && card.parentElement) {
-      return { el: card, overlay: false };
-    }
-
-    return { el: card, overlay: true };
+    target.parentElement.insertBefore(
+      button,
+      insertAfter ? target.nextSibling : target
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -1434,32 +1419,14 @@
         }
       }
 
-      const target = pickTarget(card);
-      const existing = cardButton.get(card);
-
-      if (existing && existing.isConnected) {
-        const isOverlay = existing.classList.contains(CLASS.overlay);
-        // overlayはカードの内側、inlineはカードの外側（直前）にある
-        const placedInside = card.contains(existing);
-
-        // 展開状態に対して形態も位置も正しいなら作り直さない
-        if (isOverlay === target.overlay && placedInside === target.overlay) {
-          syncHref(card, state.url);
-          return;
-        }
-
-        existing.remove();
+      // カードの外側に兄弟として置くので、親が無ければ設置できない
+      if (!card.parentElement) {
+        return;
       }
 
-      addButton(
-        card,
-        target.el,
-        article,
-        target.overlay ? 'overlay' : 'inline-before',
-        resolveFromDom
-      );
+      placeButton(card, card, article, false, resolveFromDom);
 
-      log('button added', target.overlay ? 'overlay' : 'inline', state.url || '(URL未解決)');
+      log('button added', state.url || '(URL未解決)');
     });
 
     scanCardlessImagePosts();
@@ -1470,8 +1437,8 @@
    *
    * 状態管理・先読み・クリック処理・開き方は通常のカードとまったく同じ
    * 経路を再利用する（tweetText要素自体を「card」として cardState /
-   * cardButton に載せる）。異なるのは判定・解決の中身と、設置場所が
-   * 'inline-after'（本文の直後）固定であることだけ。
+   * cardButton に載せる）。異なるのは判定・解決の中身と、ボタンを
+   * 本文の直前ではなく直後に置くこと（insertAfter: true）だけ。
    *
    * 画像要素（tweetPhoto）は対象を絞る判定にのみ使い、一切操作しない。
    * v3.7.0で画像要素にボタンを直接設置し、実機で画像が真っ白になる
@@ -1529,18 +1496,11 @@
         }
       }
 
-      const existing = cardButton.get(target);
-
-      if (existing && existing.isConnected && target.nextSibling === existing) {
-        syncHref(target, state.url);
+      if (!target.parentElement) {
         return;
       }
 
-      if (existing) {
-        existing.remove();
-      }
-
-      addButton(target, target, article, 'inline-after', resolveFromPostText);
+      placeButton(target, target, article, true, resolveFromPostText);
 
       log('button added (image post)', state.url || '(URL未解決)');
     });
