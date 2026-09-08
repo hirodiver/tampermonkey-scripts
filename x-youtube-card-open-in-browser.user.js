@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X YouTube Card
+// @name         X YouTube Card v3.9.1
 // @namespace    local.hiro.tools
-// @version      3.9.0
+// @version      3.9.1
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*

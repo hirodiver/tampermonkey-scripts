@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X Status Auto Reload
+// @name         X Status Auto Reload v1.2.1
 // @namespace    local.hiro.tools
-// @version      1.2.0
+// @version      1.2.1
 // @description  タイムラインから個別ポストへ遷移した際に読み込みが固まったら自動で更新する（Control Panel for Twitter等の拡張との競合対策）
 // @match        https://x.com/*
 // @match        https://twitter.com/*

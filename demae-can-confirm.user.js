@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         出前館 到着確認
+// @name         出前館 到着確認 v1.0.1
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.0.1
 // @description  カートで「注文を完了する」を押した後に出る「お届け時間に変更があります」確認モーダルの「注文を完了する」ボタンを自動でクリックする
 // @author       hirodiver
 // @match        https://demae-can.com/*
