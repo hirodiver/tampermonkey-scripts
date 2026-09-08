@@ -10,6 +10,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `x-status-page-auto-reload.user.js` | X Status Auto Reload | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
+| `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 
 **`@name` は短く。** Tampermonkeyの一覧画面は名前が長いと省略され、バージョンも
 一覧には出ない。目安は2〜4単語（日本語なら10文字前後）まで。詳細な説明は
@@ -23,6 +24,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-status-page-auto-reload.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 
 ## 自動更新の仕組み
 
@@ -109,6 +111,16 @@ SPA内遷移が固まり、いつまでも読み込まれないことがある�
   本文が出てこない場合の最終判定
 
 体感で誤発火・遅発火する場合は、スクリプト冒頭のこの2つの定数を調整すること。
+
+## 出前館 到着確認 について（ファイル: `demae-can-confirm.user.js`）
+
+カートで「注文を完了する」を押した後、混雑等で到着時刻が変わった場合にのみ出る
+「お届け時間に変更があります」確認モーダル内の「注文を完了する」ボタンを自動でクリックする。
+
+- 見出しに「お届け時間」「変更」を含むモーダル内のボタンだけを対象にしており、
+  カート画面本体にある（ユーザーが手動で押すべき）最初の「注文を完了する」ボタンは対象外
+- 出前館側のDOM構造（クラス名・文言）が変わると効かなくなる可能性がある。
+  効かなくなった場合はモーダルの見出し文言が変わっていないか確認すること
 
 ## 注意
 
