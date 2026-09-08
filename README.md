@@ -8,8 +8,12 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 |---|---|---|
 | `x-youtube-card-open-in-browser.user.js` | X YouTube Card | x.com / twitter.com |
 | `x-status-page-auto-reload.user.js` | X Status Auto Reload | x.com / twitter.com |
-| `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) - Hiro | www.youtube.com |
-| `youtube-upcoming-stream-list.user.js` | YouTube 登録チャンネル 配信予定リスト | www.youtube.com |
+| `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
+| `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
+
+**`@name` は短く。** Tampermonkeyの一覧画面は名前が長いと省略され、バージョンも
+一覧には出ない。目安は2〜4単語（日本語なら10文字前後）まで。詳細な説明は
+`@description` に書く。
 
 ## インストール
 
