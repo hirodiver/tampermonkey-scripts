@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube 配信予定リスト v4.4
+// @name         YouTube 配信予定リスト v4.5
 // @namespace    https://www.youtube.com/
-// @version      4.4
-// @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示（リストの非表示・再表示ボタン付き）
+// @version      4.5
+// @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示（本日5時以降・開始済み/未開始・今日/明日以降で区切り表示）
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-idle
@@ -362,9 +362,10 @@
         );
     }
 
-    function getTodayStartJst() {
-        const p =
-            getJstParts(new Date());
+    const DAY_START_HOUR = 5;
+
+    function getJstMidnight(date) {
+        const p = getJstParts(date);
 
         return new Date(
             Date.UTC(
@@ -373,6 +374,39 @@
                 Number(p.day)
             ) -
             9 * 60 * 60 * 1000
+        );
+    }
+
+    /*
+     * 一覧の起点は「本日5:00 JST」。
+     *
+     * 深夜0:00〜5:00の間は、まだ前日の
+     * 続きとみなして前日5:00を起点にする。
+     */
+    function getListStartJst() {
+        const now = new Date();
+
+        const p = getJstParts(now);
+
+        const start =
+            getJstMidnight(now).getTime() +
+            DAY_START_HOUR * 60 * 60 * 1000;
+
+        if (
+            Number(p.hour) < DAY_START_HOUR
+        ) {
+            return new Date(
+                start - 86400000
+            );
+        }
+
+        return new Date(start);
+    }
+
+    function getJstDayIndex(date) {
+        return Math.round(
+            getJstMidnight(date).getTime() /
+            86400000
         );
     }
 
@@ -412,6 +446,10 @@
 
         if (diffDays === 1) {
             return `明日 ${time}`;
+        }
+
+        if (diffDays === -1) {
+            return `昨日 ${time}`;
         }
 
         return `${p.month}/${p.day} ${time}`;
@@ -486,8 +524,8 @@
     }
 
     function filterItems(items) {
-        const todayStart =
-            getTodayStartJst();
+        const listStart =
+            getListStartJst();
 
         return items.filter(item => {
             /*
@@ -513,14 +551,14 @@
             }
 
             /*
-             * 本日0:00 JST以降に開始した
+             * 本日5:00 JST以降に開始した
              * ライブ系コンテンツを表示。
              *
              * 終了済みでも残る。
              */
             return (
                 item.date.getTime() >=
-                todayStart.getTime()
+                listStart.getTime()
             );
         });
     }
@@ -556,6 +594,68 @@
     // ============================================================
     // 表示
     // ============================================================
+
+    const SECTION_LABELS = {
+        started: '開始済み',
+        today: 'これから（今日）',
+        later: '明日以降'
+    };
+
+    /*
+     * 開始済み / 今日これから / 明日以降
+     * の3区分。
+     */
+    function getSection(item) {
+        if (!item.date) return 'later';
+
+        if (
+            item.isLive ||
+            item.date.getTime() <= Date.now()
+        ) {
+            return 'started';
+        }
+
+        if (
+            getJstDayIndex(item.date) ===
+            getJstDayIndex(new Date())
+        ) {
+            return 'today';
+        }
+
+        return 'later';
+    }
+
+    function makeSectionDivider(
+        label,
+        spaced
+    ) {
+        const el =
+            document.createElement('div');
+
+        el.textContent = label;
+
+        Object.assign(
+            el.style,
+            {
+                padding: '8px 12px 6px',
+
+                marginTop:
+                    spaced ? '14px' : '0',
+
+                borderTop:
+                    spaced
+                        ? '1px solid var(--yt-spec-10-percent-layer)'
+                        : 'none',
+
+                fontSize: '13px',
+                fontWeight: '700',
+                letterSpacing: '0.04em',
+                opacity: '0.6'
+            }
+        );
+
+        return el;
+    }
 
     function makeCell(text, style = {}) {
         const el =
@@ -803,7 +903,23 @@
         }
 
 
+        let currentSection = null;
+
         for (const item of items) {
+            const section =
+                getSection(item);
+
+            if (section !== currentSection) {
+                currentSection = section;
+
+                body.appendChild(
+                    makeSectionDivider(
+                        SECTION_LABELS[section],
+                        body.childElementCount > 0
+                    )
+                );
+            }
+
             const row =
                 document.createElement(
                     'a'
