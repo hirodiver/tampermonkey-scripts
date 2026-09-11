@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube 配信予定リスト v4.5
+// @name         YouTube 配信予定リスト v4.6
 // @namespace    https://www.youtube.com/
-// @version      4.5
-// @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示（本日5時以降・開始済み/未開始・今日/明日以降で区切り表示）
+// @version      4.6
+// @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示（本日5時以降・区切り表示・前回リストの保持・キーワード強調）
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-idle
@@ -17,6 +17,10 @@
 
     const PANEL_ID = 'tm-upcoming-stream-list';
     const COLLAPSE_KEY = 'tm-upcoming-stream-list-collapsed';
+    const HIGHLIGHT_KEY = 'tm-upcoming-stream-list-highlight';
+    const STORE_KEY = 'tm-upcoming-stream-list-items';
+    const STORE_MAX = 300;
+    const SECTION_TICK_MS = 60 * 1000;
     const CONCURRENCY = 6;
     const RETRY_MS = 5 * 60 * 1000;
 
@@ -25,6 +29,18 @@
     const pending = new Map();
 
     let collapsed = loadCollapsed();
+    let highlightText = loadHighlightText();
+    let highlightTerms = parseHighlightTerms(highlightText);
+
+    // 直近に描画した内容
+    let lastItems = [];
+    let lastLoading = false;
+
+    // 一度でも件数のあるリストを出したか
+    let hasShownList = false;
+
+    // 強調ワード入力欄を開いているか
+    let highlightOpen = false;
 
     let timer = null;
     let building = false;
@@ -52,6 +68,124 @@
                 value ? '1' : '0'
             );
         } catch {}
+    }
+
+    function loadHighlightText() {
+        try {
+            return (
+                localStorage.getItem(
+                    HIGHLIGHT_KEY
+                ) || ''
+            );
+        } catch {
+            return '';
+        }
+    }
+
+    function saveHighlightText(value) {
+        try {
+            localStorage.setItem(
+                HIGHLIGHT_KEY,
+                value
+            );
+        } catch {}
+    }
+
+    function parseHighlightTerms(text) {
+        return text
+            .split(/\r?\n/)
+            .map(line => line.trim().toLowerCase())
+            .filter(Boolean);
+    }
+
+
+    /*
+     * 取得済みリストの保持。
+     *
+     * 次回ページを開いたときに、
+     * 取得を待たずにまず表示する。
+     */
+    function saveItems(items) {
+        try {
+            localStorage.setItem(
+                STORE_KEY,
+                JSON.stringify({
+                    savedAt: Date.now(),
+
+                    items: items
+                        .slice(0, STORE_MAX)
+                        .map(item => ({
+                            videoId: item.videoId,
+                            href: item.href,
+                            title: item.title,
+                            channel: item.channel,
+
+                            /*
+                             * 配信中かどうかは時間で
+                             * 変わるので保存しない。
+                             */
+                            isLiveContent: true,
+
+                            date:
+                                item.date
+                                    ? item.date.toISOString()
+                                    : null
+                        }))
+                })
+            );
+        } catch {}
+    }
+
+    function getStoredMap() {
+        return new Map(
+            loadStoredItems().map(
+                item => [item.videoId, item]
+            )
+        );
+    }
+
+    function loadStoredItems() {
+        try {
+            const raw =
+                localStorage.getItem(STORE_KEY);
+
+            if (!raw) return [];
+
+            const data = JSON.parse(raw);
+
+            if (!Array.isArray(data?.items)) {
+                return [];
+            }
+
+            return data.items
+                .map(item => {
+                    const date =
+                        item.date
+                            ? new Date(item.date)
+                            : null;
+
+                    return {
+                        videoId: item.videoId,
+                        href: item.href,
+                        title: item.title || 'タイトル不明',
+                        channel: item.channel || 'チャンネル名不明',
+                        isLive: false,
+                        isLiveContent: true,
+
+                        date:
+                            date &&
+                            !Number.isNaN(date.getTime())
+                                ? date
+                                : null
+                    };
+                })
+                .filter(
+                    item =>
+                        item.videoId && item.href
+                );
+        } catch {
+            return [];
+        }
     }
 
 
@@ -691,59 +825,49 @@
         );
     }
 
-    function render(items, loading = false) {
-        const target =
-            findPanelTarget();
+    const GRID_COLUMNS =
+        '190px 270px minmax(0,1fr)';
 
-        if (!target) return;
 
-        let panel =
-            document.getElementById(
-                PANEL_ID
-            );
+    /*
+     * パネルは一度だけ組み立て、
+     * 以降は中身だけ差し替える。
+     *
+     * 入力欄のフォーカスや入力途中の
+     * 内容を再描画で失わないため。
+     */
+    let els = null;
 
-        if (!panel) {
-            panel =
-                document.createElement(
-                    'section'
-                );
+    function buildPanel() {
+        const panel =
+            document.createElement('section');
 
-            panel.id = PANEL_ID;
+        panel.id = PANEL_ID;
 
-            Object.assign(
-                panel.style,
-                {
-                    margin:
-                        '16px 24px 24px',
+        Object.assign(
+            panel.style,
+            {
+                margin: '16px 24px 24px',
+                padding: '18px 22px',
+                borderRadius: '12px',
 
-                    padding:
-                        '18px 22px',
+                border:
+                    '1px solid var(--yt-spec-10-percent-layer)',
 
-                    borderRadius:
-                        '12px',
+                background:
+                    'var(--yt-spec-base-background)',
 
-                    border:
-                        '1px solid var(--yt-spec-10-percent-layer)',
+                color:
+                    'var(--yt-spec-text-primary)',
 
-                    background:
-                        'var(--yt-spec-base-background)',
+                fontFamily:
+                    'Roboto, Arial, sans-serif'
+            }
+        );
 
-                    color:
-                        'var(--yt-spec-text-primary)',
-
-                    fontFamily:
-                        'Roboto, Arial, sans-serif'
-                }
-            );
-        }
-
-        // Trusted Types対応
-        panel.replaceChildren();
 
         const headingRow =
-            document.createElement(
-                'div'
-            );
+            document.createElement('div');
 
         Object.assign(
             headingRow.style,
@@ -756,14 +880,7 @@
         );
 
         const heading =
-            document.createElement(
-                'div'
-            );
-
-        heading.textContent =
-            loading
-                ? '本日以降の配信　取得中…'
-                : `本日以降の配信　${items.length}件`;
+            document.createElement('div');
 
         Object.assign(
             heading.style,
@@ -777,31 +894,164 @@
             }
         );
 
+        const highlightButton =
+            makeChipButton('強調ワード');
+
         const toggle =
-            document.createElement(
-                'button'
-            );
+            makeChipButton('リストを非表示');
 
-        toggle.type = 'button';
-
-        toggle.textContent =
-            collapsed
-                ? 'リストを表示'
-                : 'リストを非表示';
-
-        toggle.setAttribute(
-            'aria-expanded',
-            collapsed ? 'false' : 'true'
+        headingRow.append(
+            heading,
+            highlightButton,
+            toggle
         );
 
+
+        const highlightBox =
+            document.createElement('div');
+
         Object.assign(
-            toggle.style,
+            highlightBox.style,
             {
-                marginLeft: 'auto',
+                display: 'none',
+                marginBottom: '14px'
+            }
+        );
+
+        const highlightLabel =
+            document.createElement('div');
+
+        highlightLabel.textContent =
+            '強調したい文字列を改行区切りで入力（タイトル・チャンネル名の部分一致）';
+
+        Object.assign(
+            highlightLabel.style,
+            {
+                fontSize: '13px',
+                opacity: '0.65',
+                marginBottom: '6px'
+            }
+        );
+
+        const textarea =
+            document.createElement('textarea');
+
+        textarea.rows = 4;
+        textarea.spellcheck = false;
+        textarea.value = highlightText;
+
+        textarea.placeholder =
+            '例）\n〇〇ch\nゲリラ';
+
+        Object.assign(
+            textarea.style,
+            {
+                width: '100%',
+                boxSizing: 'border-box',
+                padding: '8px 10px',
+                borderRadius: '8px',
+
+                border:
+                    '1px solid var(--yt-spec-10-percent-layer)',
+
+                background:
+                    'var(--yt-spec-badge-chip-background)',
+
+                color:
+                    'var(--yt-spec-text-primary)',
+
+                fontFamily: 'inherit',
+                fontSize: '14px',
+                lineHeight: '1.6',
+                resize: 'vertical'
+            }
+        );
+
+        textarea.addEventListener(
+            'input',
+            () => {
+                highlightText =
+                    textarea.value;
+
+                highlightTerms =
+                    parseHighlightTerms(
+                        highlightText
+                    );
+
+                saveHighlightText(
+                    highlightText
+                );
+
+                applyHighlight();
+            }
+        );
+
+        // 入力中のキーでページがスクロール等しないように
+        textarea.addEventListener(
+            'keydown',
+            event =>
+                event.stopPropagation()
+        );
+
+        highlightBox.append(
+            highlightLabel,
+            textarea
+        );
+
+
+        const body =
+            document.createElement('div');
+
+
+        highlightButton.onclick = () => {
+            highlightOpen = !highlightOpen;
+
+            applyCollapsed();
+
+            if (highlightOpen) textarea.focus();
+        };
+
+        toggle.onclick = () => {
+            collapsed = !collapsed;
+
+            saveCollapsed(collapsed);
+
+            applyCollapsed();
+        };
+
+        panel.append(
+            headingRow,
+            highlightBox,
+            body
+        );
+
+        els = {
+            panel,
+            heading,
+            toggle,
+            highlightButton,
+            highlightBox,
+            textarea,
+            body
+        };
+
+        applyCollapsed();
+
+        return els;
+    }
+
+    function makeChipButton(label) {
+        const el =
+            document.createElement('button');
+
+        el.type = 'button';
+        el.textContent = label;
+
+        Object.assign(
+            el.style,
+            {
                 flex: '0 0 auto',
-
                 padding: '6px 14px',
-
                 borderRadius: '18px',
 
                 border:
@@ -820,73 +1070,145 @@
             }
         );
 
-        toggle.onclick = () => {
-            collapsed = !collapsed;
+        return el;
+    }
 
-            saveCollapsed(collapsed);
+    function applyCollapsed() {
+        if (!els) return;
 
-            toggle.textContent =
-                collapsed
-                    ? 'リストを表示'
-                    : 'リストを非表示';
+        els.toggle.textContent =
+            collapsed
+                ? 'リストを表示'
+                : 'リストを非表示';
 
-            toggle.setAttribute(
-                'aria-expanded',
-                collapsed ? 'false' : 'true'
-            );
-
-            body.style.display =
-                collapsed ? 'none' : '';
-        };
-
-        headingRow.append(
-            heading,
-            toggle
+        els.toggle.setAttribute(
+            'aria-expanded',
+            collapsed ? 'false' : 'true'
         );
 
-        panel.appendChild(
-            headingRow
-        );
+        els.highlightButton.style.marginLeft =
+            'auto';
 
-
-        /*
-         * 見出し以外はまとめて
-         * 非表示にできるようにする。
-         */
-        const body =
-            document.createElement(
-                'div'
-            );
-
-        body.style.display =
+        els.body.style.display =
             collapsed ? 'none' : '';
 
-        panel.appendChild(
-            body
+        els.highlightButton.setAttribute(
+            'aria-expanded',
+            highlightOpen && !collapsed
+                ? 'true'
+                : 'false'
         );
 
+        els.highlightBox.style.display =
+            highlightOpen && !collapsed
+                ? ''
+                : 'none';
+    }
+
+
+    // ============================================================
+    // 強調
+    // ============================================================
+
+    function isHighlighted(item) {
+        if (!highlightTerms.length) {
+            return false;
+        }
+
+        const haystack =
+            `${item.title}\n${item.channel}`
+                .toLowerCase();
+
+        return highlightTerms.some(
+            term =>
+                haystack.includes(term)
+        );
+    }
+
+    function styleRow(row, highlighted) {
+        const base =
+            highlighted
+                ? 'rgba(255, 202, 40, 0.16)'
+                : '';
+
+        row.dataset.tmBase = base;
+
+        row.style.background = base;
+
+        row.style.boxShadow =
+            highlighted
+                ? 'inset 3px 0 0 0 #ffca28'
+                : '';
+
+        row.style.fontWeight =
+            highlighted ? '600' : '';
+    }
+
+    /*
+     * 行を作り直さずに強調だけ更新する。
+     */
+    function applyHighlight() {
+        if (!els) return;
+
+        for (const row of els.body.querySelectorAll(
+            '[data-tm-row]'
+        )) {
+            const index =
+                Number(row.dataset.tmRow);
+
+            const item =
+                lastItems[index];
+
+            if (item) {
+                styleRow(
+                    row,
+                    isHighlighted(item)
+                );
+            }
+        }
+    }
+
+
+    // ============================================================
+    // 描画
+    // ============================================================
+
+    function render(items, loading = false) {
+        lastItems = items;
+        lastLoading = loading;
+
+        const target = findPanelTarget();
+        if (!target) return;
+
+        const el = els || buildPanel();
+
+        if (items.length) {
+            hasShownList = true;
+        }
+
+        el.heading.textContent =
+            loading
+                ? (
+                    hasShownList
+                        ? '本日以降の配信　更新中…'
+                        : '本日以降の配信　取得中…'
+                )
+                : `本日以降の配信　${items.length}件`;
+
+        el.body.replaceChildren();
 
         if (items.length) {
             const header =
-                document.createElement(
-                    'div'
-                );
+                document.createElement('div');
 
             Object.assign(
                 header.style,
                 {
                     display: 'grid',
-
-                    gridTemplateColumns:
-                        '190px 270px minmax(0,1fr)',
-
+                    gridTemplateColumns: GRID_COLUMNS,
                     gap: '20px',
-
-                    padding:
-                        '0 12px 8px',
-
+                    padding: '0 12px 8px',
                     opacity: '0.6',
-
                     fontWeight: '600'
                 }
             );
@@ -897,65 +1219,50 @@
                 makeCell('配信タイトル')
             );
 
-            body.appendChild(
-                header
-            );
+            el.body.appendChild(header);
         }
 
 
         let currentSection = null;
 
-        for (const item of items) {
-            const section =
-                getSection(item);
+        items.forEach((item, index) => {
+            const section = getSection(item);
 
             if (section !== currentSection) {
                 currentSection = section;
 
-                body.appendChild(
+                el.body.appendChild(
                     makeSectionDivider(
                         SECTION_LABELS[section],
-                        body.childElementCount > 0
+                        el.body.childElementCount > 0
                     )
                 );
             }
 
             const row =
-                document.createElement(
-                    'a'
-                );
+                document.createElement('a');
 
-            row.href =
-                item.href;
+            row.href = item.href;
+            row.dataset.tmRow = String(index);
 
             Object.assign(
                 row.style,
                 {
                     display: 'grid',
-
-                    gridTemplateColumns:
-                        '190px 270px minmax(0,1fr)',
-
+                    gridTemplateColumns: GRID_COLUMNS,
                     gap: '20px',
-
-                    padding:
-                        '11px 12px',
-
-                    borderRadius:
-                        '8px',
-
-                    alignItems:
-                        'center',
-
-                    color:
-                        'inherit',
-
-                    textDecoration:
-                        'none',
-
-                    fontSize:
-                        '16px'
+                    padding: '11px 12px',
+                    borderRadius: '8px',
+                    alignItems: 'center',
+                    color: 'inherit',
+                    textDecoration: 'none',
+                    fontSize: '16px'
                 }
+            );
+
+            styleRow(
+                row,
+                isHighlighted(item)
             );
 
             row.onmouseenter = () => {
@@ -964,7 +1271,8 @@
             };
 
             row.onmouseleave = () => {
-                row.style.background = '';
+                row.style.background =
+                    row.dataset.tmBase || '';
             };
 
 
@@ -973,64 +1281,60 @@
                     ? `配信中　${formatDate(item.date)}`
                     : formatDate(item.date);
 
-
             row.append(
                 makeCell(
                     dateText,
-                    {
-                        fontWeight:
-                            '700'
-                    }
+                    { fontWeight: '700' }
                 ),
 
                 makeCell(
                     item.channel,
-                    {
-                        opacity:
-                            '0.75'
-                    }
+                    { opacity: '0.75' }
                 ),
 
-                makeCell(
-                    item.title
-                )
+                makeCell(item.title)
             );
 
-            body.appendChild(
-                row
-            );
-        }
+            el.body.appendChild(row);
+        });
 
 
-        if (
-            !loading &&
-            !items.length
-        ) {
+        if (!loading && !items.length) {
             const empty =
-                document.createElement(
-                    'div'
-                );
+                document.createElement('div');
 
             empty.textContent =
                 '現在読み込まれている範囲に本日以降の配信はありません。';
 
-            empty.style.opacity =
-                '0.65';
+            empty.style.opacity = '0.65';
 
-            body.appendChild(
-                empty
-            );
+            el.body.appendChild(empty);
         }
 
 
+        if (el.panel.parentElement !== target) {
+            target.prepend(el.panel);
+        }
+    }
+
+    /*
+     * 時間帯の区切りだけを今の時刻で
+     * 引き直す。
+     */
+    function refreshSections() {
         if (
-            panel.parentElement !==
-            target
+            !isSubscriptionsPage() ||
+            !lastItems.length
         ) {
-            target.prepend(
-                panel
-            );
+            return;
         }
+
+        const items =
+            filterItems(lastItems);
+
+        sortItems(items);
+
+        render(items, lastLoading);
     }
 
 
@@ -1042,11 +1346,10 @@
         if (
             !isSubscriptionsPage()
         ) {
-            document
-                .getElementById(
-                    PANEL_ID
-                )
-                ?.remove();
+            (
+                els?.panel ||
+                document.getElementById(PANEL_ID)
+            )?.remove();
 
             return;
         }
@@ -1066,6 +1369,8 @@
              * キャッシュ済みのものだけで
              * まず現在分を描画。
              */
+            const stored = getStoredMap();
+
             const cachedItems =
                 filterItems(
                     items.map(item => {
@@ -1080,9 +1385,27 @@
 
                             item.isLiveContent =
                                 cached.isLiveContent;
+
+                            return { ...item };
                         }
 
-                        return item;
+                        /*
+                         * 未取得のものは、保持している
+                         * 前回の情報で暫定表示する。
+                         * itemそのものは書き換えない。
+                         */
+                        const previous =
+                            stored.get(item.videoId);
+
+                        if (previous) {
+                            return {
+                                ...item,
+                                date: previous.date,
+                                isLiveContent: true
+                            };
+                        }
+
+                        return { ...item };
                     })
                 );
 
@@ -1090,8 +1413,14 @@
                 cachedItems
             );
 
+            /*
+             * 暫定表示が空になる場合は、
+             * すでに出しているリストを残す。
+             */
             render(
-                cachedItems,
+                cachedItems.length || !lastItems.length
+                    ? cachedItems
+                    : lastItems,
                 true
             );
 
@@ -1123,6 +1452,8 @@
                 false
             );
 
+            saveItems(result);
+
         } finally {
             building = false;
 
@@ -1152,8 +1483,13 @@
 
     document.addEventListener(
         'yt-navigate-finish',
-        () =>
-            scheduleBuild(500)
+        () => {
+            if (isSubscriptionsPage()) {
+                renderStored();
+            }
+
+            scheduleBuild(500);
+        }
     );
 
     const observer =
@@ -1191,7 +1527,28 @@
             }
         );
 
+    /*
+     * 保持しているリストを、今の時刻で
+     * 区切り直して先に描画する。
+     */
+    function renderStored() {
+        const stored = loadStoredItems();
+
+        if (!stored.length) return;
+
+        const items = filterItems(stored);
+
+        sortItems(items);
+
+        render(items, true);
+    }
+
     function start() {
+        setInterval(
+            refreshSections,
+            SECTION_TICK_MS
+        );
+
         observer.observe(
             document.body,
             {
@@ -1203,6 +1560,7 @@
         if (
             isSubscriptionsPage()
         ) {
+            renderStored();
             scheduleBuild(700);
         }
     }
