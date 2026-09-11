@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube 配信予定リスト v4.3
+// @name         YouTube 配信予定リスト v4.4
 // @namespace    https://www.youtube.com/
-// @version      4.3
-// @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示
+// @version      4.4
+// @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示（リストの非表示・再表示ボタン付き）
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-idle
@@ -16,6 +16,7 @@
     'use strict';
 
     const PANEL_ID = 'tm-upcoming-stream-list';
+    const COLLAPSE_KEY = 'tm-upcoming-stream-list-collapsed';
     const CONCURRENCY = 6;
     const RETRY_MS = 5 * 60 * 1000;
 
@@ -23,12 +24,35 @@
     const cache = new Map();
     const pending = new Map();
 
+    let collapsed = loadCollapsed();
+
     let timer = null;
     let building = false;
     let rebuildRequested = false;
 
     const isSubscriptionsPage = () =>
         location.pathname === '/feed/subscriptions';
+
+    function loadCollapsed() {
+        try {
+            return (
+                localStorage.getItem(
+                    COLLAPSE_KEY
+                ) === '1'
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    function saveCollapsed(value) {
+        try {
+            localStorage.setItem(
+                COLLAPSE_KEY,
+                value ? '1' : '0'
+            );
+        } catch {}
+    }
 
 
     // ============================================================
@@ -616,6 +640,21 @@
         // Trusted Types対応
         panel.replaceChildren();
 
+        const headingRow =
+            document.createElement(
+                'div'
+            );
+
+        Object.assign(
+            headingRow.style,
+            {
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                marginBottom: '14px'
+            }
+        );
+
         const heading =
             document.createElement(
                 'div'
@@ -631,12 +670,99 @@
             {
                 fontSize: '24px',
                 fontWeight: '700',
-                marginBottom: '14px'
+                minWidth: '0',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
             }
         );
 
+        const toggle =
+            document.createElement(
+                'button'
+            );
+
+        toggle.type = 'button';
+
+        toggle.textContent =
+            collapsed
+                ? 'リストを表示'
+                : 'リストを非表示';
+
+        toggle.setAttribute(
+            'aria-expanded',
+            collapsed ? 'false' : 'true'
+        );
+
+        Object.assign(
+            toggle.style,
+            {
+                marginLeft: 'auto',
+                flex: '0 0 auto',
+
+                padding: '6px 14px',
+
+                borderRadius: '18px',
+
+                border:
+                    '1px solid var(--yt-spec-10-percent-layer)',
+
+                background:
+                    'var(--yt-spec-badge-chip-background)',
+
+                color:
+                    'var(--yt-spec-text-primary)',
+
+                fontFamily: 'inherit',
+                fontSize: '14px',
+                fontWeight: '600',
+                cursor: 'pointer'
+            }
+        );
+
+        toggle.onclick = () => {
+            collapsed = !collapsed;
+
+            saveCollapsed(collapsed);
+
+            toggle.textContent =
+                collapsed
+                    ? 'リストを表示'
+                    : 'リストを非表示';
+
+            toggle.setAttribute(
+                'aria-expanded',
+                collapsed ? 'false' : 'true'
+            );
+
+            body.style.display =
+                collapsed ? 'none' : '';
+        };
+
+        headingRow.append(
+            heading,
+            toggle
+        );
+
         panel.appendChild(
-            heading
+            headingRow
+        );
+
+
+        /*
+         * 見出し以外はまとめて
+         * 非表示にできるようにする。
+         */
+        const body =
+            document.createElement(
+                'div'
+            );
+
+        body.style.display =
+            collapsed ? 'none' : '';
+
+        panel.appendChild(
+            body
         );
 
 
@@ -671,7 +797,7 @@
                 makeCell('配信タイトル')
             );
 
-            panel.appendChild(
+            body.appendChild(
                 header
             );
         }
@@ -754,7 +880,7 @@
                 )
             );
 
-            panel.appendChild(
+            body.appendChild(
                 row
             );
         }
@@ -775,7 +901,7 @@
             empty.style.opacity =
                 '0.65';
 
-            panel.appendChild(
+            body.appendChild(
                 empty
             );
         }
