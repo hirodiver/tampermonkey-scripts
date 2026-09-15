@@ -10,6 +10,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `x-status-page-auto-reload.user.js` | X Status Auto Reload | x.com / twitter.com |
 | `x-following-tab.user.js` | X フォロー中固定 | x.com / twitter.com |
 | `x-hide-note-notice.user.js` | X ノート通知非表示 | x.com / twitter.com |
+| `x-hide-spaces-bar.user.js` | X スペース帯非表示 | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
@@ -35,6 +36,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-status-page-auto-reload.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-following-tab.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-note-notice.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-spaces-bar.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
