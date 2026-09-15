@@ -1,6 +1,6 @@
 # X YouTube Card 仕様書
 
-- **バージョン**: 3.9.0
+- **バージョン**: 3.10.0
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -58,6 +58,8 @@ X はカード化した投稿の本文からURL文字列を除去し、カード
 | `DEBUG` | `false` | `true` でコンソールに検出・通信ログを出力 |
 | `OPEN_TARGET` | `'browser'` | `'browser'`＝常にSafariで開く / `'app'`＝可能ならYouTubeアプリで開く |
 | `ENABLE_IMAGE_POST_SUPPORT` | `true` | 画像付き・カード無し投稿対応（5.5章）の有効/無効。`false` にすると、再配信を待たずTampermonkeyのエディタ上の書き換えだけでこの機能だけ即座に無効化できる（カードのボタンには影響しない） |
+| `ENABLE_QUOTE_SUPPORT` | `true` | 引用ポスト対応（5.6章）の有効/無効。`false` でこの機能だけ即座に無効化できる |
+| `QUOTE_DEEP_LOOKUP` | `true` | 引用ブロック本文からURLが読めないとき、React内部stateまで探すか（引用の引用の救済） |
 | `PREFETCH_ON_VIEW` | `true` | カードが表示域に近づいた時点でURL取得を先行 |
 | `MAX_INFLIGHT` | `3` | 先読みの同時実行上限 |
 | `BTN_LABEL` | `▶ YouTubeで開く` | ボタン文言 |
@@ -86,6 +88,11 @@ scan()   card.wrapper を走査
 
 scanCardlessImagePosts()   カード無し・画像付き投稿を走査
  └ placeButton()            本文の直後に設置（同じ関数を通る）
+
+scanQuotedPosts()          引用ブロックを走査（articleにYouTubeカードが無い場合のみ）
+ ├ findQuoteBlocks()        role="link" かつ本文を内包する div を引用とみなす
+ ├ resolveFromQuote()       引用ブロック本文の表示テキスト → React内部state → t.co
+ └ placeButton()            引用ブロック本文の直後に設置（同じ関数を通る）
 
 表示域に接近（rootMargin 400px）
  └ prefetch()               未解決またはweakなら syndication API を先行取得
@@ -261,6 +268,41 @@ weak のときは、通常のカードと同じく非同期経路（syndication 
 
 ---
 
+## 5.6 引用ポストへの対応（v3.10.0）
+
+引用した側の投稿にYouTubeリンクが無く、**引用元の投稿にある**場合、Xは引用ブロックの
+中にカードを作らない（カードは1投稿につき最大1枚で、引用ブロックは入れ子の簡易表示の
+ため）。そのためカード走査でも画像付き投稿の走査でも拾えず、ボタンがまったく出なかった。
+
+引用ブロックの本文には、引用元本文のリンクが t.co のまま残り、表示テキストは元URL
+（収まらなければ末尾省略）になる。**5.5章とまったく同じ読み取り方がそのまま使える。**
+
+### 引用ブロックの特定
+
+クラス名は使わない。`div[role="link"]` のうち、内側に `tweetText` を持つものを引用と
+みなし、入れ子になっている場合は外側だけを採る（`findQuoteBlocks()`）。
+
+### 対象を絞る条件
+
+- そのarticleにYouTubeカードが**1枚も無い**こと（あればカード側のボタンで足りる）
+- 引用ブロック内に `card.wrapper` が無いこと（あればカード走査の担当）
+- `resolveFromQuote()` が何らかのURLを返すこと（返さなければボタンを出さない）
+
+### 「引用の引用」
+
+さらに内側の投稿はXがまったく描画しないため、本文テキストからは読めない。その場合
+だけ、**引用ブロックの範囲に限定して** React内部stateを探す（`QUOTE_DEEP_LOOKUP`）。
+`urlFromReact()` の境界に `quote.parentElement` を渡し、外側の投稿のURLを拾わないように
+している。見つからなければボタンは出さない（誤ったURLのボタンを出すより出さない方を
+選ぶ）。
+
+### Xが管理する要素には触れない
+
+引用ブロック自身にもその子要素にも一切手を加えない。挿入するのは引用ブロック本文の
+直後の兄弟要素1つだけで、5.5章と同じ `placeButton()` を通る。
+
+---
+
 ## 6. 開き方の仕様
 
 iOS では Universal Link の成立条件により、遷移の起こし方でYouTubeアプリに奪われるかどうかが変わる。Apple の制約として、クリックがユーザー起点であること、遷移がクライアント側JavaScriptでないことが要求される。
@@ -296,6 +338,7 @@ iOS では Universal Link の成立条件により、遷移の起こし方でYou
 |---|---|
 | YouTubeカード | `card.wrapper` の**直前**（カードの直上） |
 | 画像付き・カード無し投稿 | `tweetText` の**直後**（本文の最下部） |
+| 引用ポスト（引用元にURL） | 引用ブロック内 `tweetText` の**直後** |
 
 **Xが管理する要素には一切触れない。** クラスの付与も子要素の追加もしない。
 挿入するのは兄弟要素1つだけである。v3.8.3以前はカード右上へのオーバーレイ配置が
@@ -466,7 +509,7 @@ scan() のカード判定:
 NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ```
 
-ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。50項目。
+ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。55項目。
 
 | 項目 | 確認内容 |
 |---|---|
@@ -491,6 +534,8 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 | 24-27 | 無関係なリンク・画像無し・カード優先での誤検出防止、複数回scanでの重複防止 |
 | 28 | カード要素が丸ごと置き換わって（タップ後の再描画等）もボタンを見失わない |
 | 29 | article単位の緩和が隣接する無関係なarticleへ越境しない |
+| 30 | 本文要素が丸ごと置き換わってもボタンが重複しない |
+| 31-33 | 引用ポスト：引用元本文からの確定解決と設置位置、引用側にカードがあるときの重複防止、YouTubeリンクの無い引用での誤検出防止 |
 
 **このテストが保証しないこと**
 
@@ -509,6 +554,14 @@ Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動
 ---
 
 ## 13. 変更履歴
+
+### v3.10.0
+- **引用ポストへの対応を追加**（→ 5.6章）。引用した側にYouTubeリンクが無く引用元にある場合、Xは引用ブロック内にカードを作らないため、これまでボタンがまったく出なかった
+- `scanQuotedPosts()` / `findQuoteBlocks()` / `quoteBlockOf()` / `resolveFromQuote()` を追加。状態管理・先読み・クリック処理・設置（`placeButton()`）は既存の経路をそのまま再利用しており、新しい設置方式は増えていない
+- 「引用の引用」は本文テキストから読めないため、引用ブロックの範囲に限って React内部stateを探す（`QUOTE_DEEP_LOOKUP`）。見つからなければボタンは出さない
+- `ENABLE_QUOTE_SUPPORT` を追加。問題が出たらTampermonkeyのエディタ上の書き換えだけでこの機能だけ無効化できる
+- 引用ブロック内の t.co を無条件に拾う保険は**置かなかった**。引用元本文の「ただのリンク」もすべて t.co であり、YouTubeと無関係な引用にまでボタンが出るため
+- 検証を55項目に拡充（引用ポストの3ケースを追加）
 
 ### v3.9.0
 - **オーバーレイ配置を廃止し、ボタンを常にカードの直上（対象要素の兄弟）に置くようにした**。展開状態による配置の切り替えが無くなった
