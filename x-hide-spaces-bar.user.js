@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.0.0
+// @name         X スペース帯非表示 v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.1.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
-// @run-at       document-idle
+// @run-at       document-start
 // @noframes
 // @homepageURL  https://github.com/hirodiver/tampermonkey-scripts
 // @supportURL   https://github.com/hirodiver/tampermonkey-scripts/issues
@@ -14,13 +14,24 @@
 // ==/UserScript==
 
 /*
- * タイムラインの先頭に差し込まれる音声スペースの帯を display:none で隠す。
+ * タイムラインに差し込まれる音声スペースの帯を隠す。
  *
- * X は SPA なので @match はサイト全体に張り、処理側でパスを見て判定する。
- * スペースのページ自体（/i/spaces/...）では何も隠さない。
+ * 二段構えにしている。
+ *
+ *   1. CSS（:has）— document-start で <style> を注入する。
+ *      要素が生まれた瞬間から効くので、一瞬見えてから消える現象が起きない。
+ *      スペースへのリンクを含み、投稿本体を含まないセルだけを狙う。
+ *
+ *   2. JavaScript — CSS で取り切れない分の保険。
+ *      :has 非対応環境、リンクを持たない帯、下部の再生バーを見る。
  *
  * 非表示は要素の削除ではなく display:none で行う。
  * 誤爆したときに DevTools で元の要素を確認できるようにするため。
+ *
+ * 効かない・消えすぎる場合は、コンソールで次を実行すると
+ * 候補要素の一覧が出る。そのまま報告に使える。
+ *
+ *   __tmSpacesBar.dump()
  */
 
 (function () {
@@ -36,11 +47,17 @@
     // 画面下部に居座る再生バー（オーディオドック）も隠すか
     const HIDE_AUDIO_DOCK = true;
 
+    // 目印が無い帯を表示テキストで判定するか（誤爆が出るなら false）
+    const USE_TEXT_FALLBACK = true;
+
     // DOM変化後の再処理までの待ち時間（ミリ秒）
     const REBUILD_DELAY = 250;
 
     // SPA遷移直後の再処理までの待ち時間（ミリ秒）
     const NAV_DELAY = 500;
+
+    // スペースへのリンク
+    const SPACE_LINK_SELECTOR = 'a[href*="/i/spaces/"]';
 
     // タイムライン1件分の要素（上から順に試す）
     const CELL_SELECTORS = [
@@ -50,31 +67,31 @@
 
     // スペースの帯だと判断する目印（いずれかに当たれば該当）
     const SPACE_MARK_SELECTORS = [
-        'a[href*="/i/spaces/"]',
+        SPACE_LINK_SELECTOR,
         'a[href^="/i/spaces"]',
         '[data-testid="audioSpaceRoot"]',
         '[data-testid="AudioSpacePill"]',
-        '[data-testid="socialContext"][href*="/i/spaces/"]'
+        '[data-testid="placementTracking"] a[href*="/i/spaces/"]'
     ];
 
-    // 画面下部の再生バー（上から順に試す）
+    // 画面下部の再生バー
     const AUDIO_DOCK_SELECTORS = [
         'div[data-testid="AudioDock"]',
         'div[data-testid="audioDock"]',
-        'div[aria-label*="スペース"][role="complementary"]'
+        'div[data-testid="AudioDockSpace"]'
     ];
 
     // 目印が取れないとき最後に見る表示テキスト（部分一致）
     const SPACE_KEYWORDS = [
         'スペース',
-        'Spaces',
-        'Space'
+        'Spaces'
     ];
 
     // 投稿本体の要素（これを含むセルは投稿なので隠さない）
     const TWEET_SELECTORS = [
         'article[data-testid="tweet"]',
-        'article[role="article"]'
+        'article[role="article"]',
+        'article'
     ];
 
     // テキスト判定に回すセルの最大文字数（長い＝投稿とみなす）
@@ -82,6 +99,9 @@
 
     // 本スクリプトが非表示にした要素の目印
     const HIDDEN_ATTR = 'data-tm-space-hidden';
+
+    // 注入する <style> の id
+    const STYLE_ID = 'tm-hide-spaces-bar-style';
 
 
     // ============================================================
@@ -95,6 +115,8 @@
 
     let processing = false;
     let reprocessRequested = false;
+
+    let styleElement = null;
 
 
     // ============================================================
@@ -110,7 +132,7 @@
 
 
     /*
-     * スペースそのものを開いているときは隠さない
+     * スペースそのものを開いているときは何も隠さない
      */
     function isSpacePage() {
 
@@ -127,8 +149,21 @@
 
         for (const selector of selectors) {
 
-            const found =
-                document.querySelectorAll(selector);
+            let found;
+
+            try {
+
+                found =
+                    document.querySelectorAll(selector);
+
+            } catch {
+
+                /*
+                 * 未対応セレクタは黙って飛ばす
+                 */
+                continue;
+            }
+
 
             if (found.length) {
                 return [...found];
@@ -146,6 +181,120 @@
                 element.querySelector(selector) ||
                 element.matches?.(selector)
         );
+    }
+
+
+    // ============================================================
+    // CSSによる先回り（:has）
+    // ============================================================
+
+    /*
+     * :has が使えるかどうか。
+     * Chrome 105 / Safari 15.4 以降なら通る
+     */
+    function supportsHas() {
+
+        try {
+
+            return CSS.supports('selector(:has(a))');
+
+        } catch {
+
+            return false;
+        }
+    }
+
+
+    function buildCss() {
+
+        const rules = [];
+
+
+        for (const cellSelector of CELL_SELECTORS) {
+
+            /*
+             * 「スペースへのリンクを持ち、投稿本体を持たないセル」だけを隠す。
+             * スペースに言及しただけの投稿は :not(:has(article)) で除外される
+             */
+            rules.push(
+                `${cellSelector}` +
+                `:has(${SPACE_LINK_SELECTOR})` +
+                `:not(:has(article))`
+            );
+        }
+
+
+        if (HIDE_AUDIO_DOCK) {
+            rules.push(...AUDIO_DOCK_SELECTORS);
+        }
+
+
+        return (
+            rules.join(',\n') +
+            ' {\n    display: none !important;\n}\n'
+        );
+    }
+
+
+    function ensureStyle() {
+
+        if (!supportsHas()) {
+            return;
+        }
+
+
+        const root =
+            document.head ||
+            document.documentElement;
+
+        if (!root) {
+            return;
+        }
+
+
+        if (
+            styleElement &&
+            styleElement.isConnected
+        ) {
+            return;
+        }
+
+
+        styleElement =
+            document.getElementById(STYLE_ID);
+
+
+        if (!styleElement) {
+
+            styleElement =
+                document.createElement('style');
+
+            styleElement.id = STYLE_ID;
+
+            /*
+             * innerHTML は Trusted Types で弾かれるため使わない
+             */
+            styleElement.textContent = buildCss();
+        }
+
+
+        root.appendChild(styleElement);
+
+        log('スタイルを注入');
+    }
+
+
+    /*
+     * スペースのページでは CSS ごと止める
+     */
+    function syncStyleEnabled() {
+
+        if (!styleElement) {
+            return;
+        }
+
+
+        styleElement.disabled = isSpacePage();
     }
 
 
@@ -205,6 +354,11 @@
 
         if (matchesAny(cell, SPACE_MARK_SELECTORS)) {
             return true;
+        }
+
+
+        if (!USE_TEXT_FALLBACK) {
+            return false;
         }
 
 
@@ -323,6 +477,11 @@
 
 
         try {
+
+            ensureStyle();
+
+            syncStyleEnabled();
+
 
             const changed =
                 processCells() +
@@ -443,18 +602,97 @@
 
     function startObserver() {
 
-        if (!document.body) {
+        const root =
+            document.body ||
+            document.documentElement;
+
+        if (!root) {
             return;
         }
 
 
         observer.observe(
-            document.body,
+            root,
             {
                 childList: true,
                 subtree: true
             }
         );
+    }
+
+
+    // ============================================================
+    // 診断
+    // ============================================================
+
+    /*
+     * うまくいかないときの調査用。
+     * コンソールで __tmSpacesBar.dump() を実行する
+     */
+    const diagnostics = {
+
+        dump() {
+
+            const cells =
+                queryAll(CELL_SELECTORS);
+
+
+            const rows =
+                cells.map((cell, index) => ({
+                    index,
+
+                    隠した:
+                        cell.hasAttribute(HIDDEN_ATTR),
+
+                    判定:
+                        isSpaceBar(cell),
+
+                    投稿:
+                        matchesAny(cell, TWEET_SELECTORS),
+
+                    リンク:
+                        !!cell.querySelector(
+                            SPACE_LINK_SELECTOR
+                        ),
+
+                    テキスト:
+                        (cell.textContent || '')
+                            .trim()
+                            .slice(0, 40)
+                }));
+
+
+            console.table(rows);
+
+
+            console.log(
+                'セル数:', cells.length,
+                '/ :has対応:', supportsHas(),
+                '/ スタイル:',
+                styleElement?.isConnected ?
+                    (styleElement.disabled ? '無効' : '有効') :
+                    '未注入',
+                '/ ドック:',
+                queryAll(AUDIO_DOCK_SELECTORS).length
+            );
+
+
+            return rows;
+        },
+
+        css: buildCss
+    };
+
+
+    try {
+
+        window.__tmSpacesBar = diagnostics;
+
+    } catch {
+
+        /*
+         * 参照できない環境では諦める
+         */
     }
 
 
@@ -468,6 +706,9 @@
     );
 
 
+    ensureStyle();
+
+
     if (document.body) {
 
         startObserver();
@@ -476,7 +717,14 @@
 
         document.addEventListener(
             'DOMContentLoaded',
-            startObserver,
+            () => {
+
+                ensureStyle();
+
+                startObserver();
+
+                process();
+            },
             { once: true }
         );
     }

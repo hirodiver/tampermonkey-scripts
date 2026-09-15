@@ -110,6 +110,37 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ヘッドレスChromium上でXのカード構造を模したDOMにスクリプトを流し込み、検出・URL解決・ボタン設置を確認する（50項目、Playwright が必要）。
 ただしXの実DOMやiOSのUniversal Linkの挙動は再現していないため、**実機確認の代わりにはならない**。
 
+## X スペース帯非表示 について（ファイル: `x-hide-spaces-bar.user.js`）
+
+タイムラインに差し込まれる音声スペースの帯を隠す。二段構え。
+
+1. **CSS（`:has`）**: `document-start` で `<style>` を注入する。要素が生まれた瞬間から
+   効くので「一瞬見えてから消える」が起きない。狙うのは
+   `cellInnerDiv:has(a[href*="/i/spaces/"]):not(:has(article))` ——
+   スペースへのリンクを持ち、**投稿本体を含まない**セルだけ。
+   これでスペースに言及しただけの投稿は巻き込まれない。
+2. **JavaScript**: 取りこぼしの保険。`:has` 非対応環境、リンクを持たない帯
+   （テキストのみで判定）、画面下部の再生バー（オーディオドック）を見る。
+
+非表示は削除ではなく `display:none`。X はスクロール時にセル要素を使い回すため、
+毎回すべて判定し直し、帯でなくなった要素は表示へ戻す。`/i/spaces/...` を開いている
+間はスタイルごと無効化する。
+
+**効かない／消えすぎるとき**は、コンソールで `__tmSpacesBar.dump()` を実行すると
+セルごとの判定結果が表で出る。そのまま報告に使える。
+設定は先頭の `HIDE_AUDIO_DOCK`（下部の再生バーも隠すか）と
+`USE_TEXT_FALLBACK`（テキスト判定を使うか。誤爆するなら `false`）。
+
+### 検証
+
+```
+node --check x-hide-spaces-bar.user.js
+NODE_PATH=$(npm root -g) node test/x-hide-spaces-bar.test.js
+```
+
+タイムライン構造を模したDOMで17項目（帯が消える／投稿が消えない／セル使い回し／
+スペースページでの復帰／後入りの帯）を確認する。
+
 ## X Status Auto Reload について（ファイル: `x-status-page-auto-reload.user.js`）
 
 タイムラインから個別ポストへ遷移した際、Control Panel for Twitter 等の拡張との競合で
