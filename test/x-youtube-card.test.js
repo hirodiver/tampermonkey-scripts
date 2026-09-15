@@ -843,6 +843,74 @@ function check(name, cond, extra) {
     await page.locator('.hiroYtOpen-btn').count() === 1,
     { count: await page.locator('.hiroYtOpen-btn').count() });
 
+  // ===================================================================
+  // 31-33. 引用ポスト（引用元にYouTubeリンク）
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = window.mkTweet({
+      user: 'quoter', id: '1000000000000000031',
+      text: 'これ見て',
+    });
+    const quote = document.createElement('div');
+    quote.setAttribute('role', 'link');
+    quote.innerHTML =
+      '<div data-testid="tweetText">配信します ' +
+      '<a href="https://t.co/quoted1">youtube.com/watch?v=QUOTEDVID01</a></div>';
+    art.appendChild(quote);
+  });
+  await rescan();
+  check('31: 引用元の本文にあるYouTubeリンクでボタンが出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+  check('31: href は表示テキストから復元した確定URL',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
+      'https://www.youtube.com/watch?v=QUOTEDVID01',
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+  check('31: 引用ブロック本文の直後（引用ブロックの中身は無傷）に設置',
+    await page.evaluate(() => {
+      const b = document.querySelector('.hiroYtOpen-btn');
+      const t = document.querySelector('div[role="link"] [data-testid="tweetText"]');
+      return t.nextSibling === b;
+    }));
+
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = window.mkTweet({
+      user: 'quoter', id: '1000000000000000032',
+      text: 'これ見て',
+      cards: ['<a href="https://www.youtube.com/watch?v=OUTERVIDEO">t</a><span>youtube.com</span>'],
+    });
+    const quote = document.createElement('div');
+    quote.setAttribute('role', 'link');
+    quote.innerHTML =
+      '<div data-testid="tweetText">元 ' +
+      '<a href="https://t.co/quoted2">youtube.com/watch?v=QUOTEDVID2</a></div>';
+    art.appendChild(quote);
+  });
+  await rescan();
+  check('32: 引用した側にYouTubeカードがあるときは引用ブロックに重ねて出さない',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    const art = window.mkTweet({
+      user: 'quoter', id: '1000000000000000033',
+      text: 'ふつうの引用',
+    });
+    const quote = document.createElement('div');
+    quote.setAttribute('role', 'link');
+    quote.innerHTML =
+      '<div data-testid="tweetText">ただの文章 ' +
+      '<a href="https://t.co/other3">example.com/article</a></div>';
+    art.appendChild(quote);
+  });
+  await rescan();
+  check('33: YouTubeリンクの無い引用にはボタンを出さない',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
