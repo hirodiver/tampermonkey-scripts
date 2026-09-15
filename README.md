@@ -156,9 +156,24 @@ Tampermonkey のダッシュボードから、コードを触らずに機能単�
 
 ### 共通の作り
 
-X には YouTube の `yt-navigate-finish` に相当する遷移イベントが無いため、`pushState` /
-`replaceState` をラップして SPA 遷移を検知している。加えて `MutationObserver` と
-デバウンスの組み合わせで再描画に追随する。
+X には YouTube の `yt-navigate-finish` に相当する遷移イベントが無い。`pushState` /
+`replaceState` をラップする手もあるが、**iOS の Tampermonkey はスクリプトを
+isolated world で実行するため、書き換えた `history` はページ側の呼び出しを捕捉できない**。
+そのため history には触らず、`MutationObserver` のコールバックの中で
+`location.pathname` の変化を見ている（`locationChanged()`）。実行環境に依存しない。
+
+### 使い分け（2026-09 時点）
+
+| 環境 | 構成 |
+|---|---|
+| デスクトップ Chrome | Control Panel for Twitter を使う |
+| iOS Safari | CfT はオフ。`x-following-tab.user.js` を使う |
+
+デスクトップの X は余計な表示が多く、CfT の恩恵が大きいのでそのまま使う。
+iOS の X は元々表示がシンプルで CfT の利点が薄いうえ、挙動が不安定なため、
+必要な機能だけの軽いスクリプトに置き換える。
+
+**CfT とスクリプトを同じ環境で同時に有効にしないこと。** どちらもタブを操作するため競合する。
 
 ## 出前館 到着確認 について（ファイル: `demae-can-confirm.user.js`）
 

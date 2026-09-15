@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X ノート通知非表示 v1.0.0
+// @name         X ノート通知非表示 v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.1.0
 // @description  X の通知タブからコミュニティノート関連の通知を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -61,6 +61,9 @@
     // ============================================================
 
     let rebuildTimer = null;
+
+    // 最後に処理したパス（SPA遷移の検知に使う）
+    let lastPath = location.pathname;
 
     let processing = false;
     let reprocessRequested = false;
@@ -260,31 +263,25 @@
     // ============================================================
 
     /*
-     * X は history API で画面を切り替えるため、
-     * pushState / replaceState を包んで遷移を検知する
+     * X は history API で画面を切り替えるが、
+     * pushState / replaceState のラップは使わない。
+     *
+     * iOS の Tampermonkey はスクリプトを isolated world で実行するため、
+     * こちらで書き換えた history はページ側の呼び出しを捕捉できない。
+     * 代わりに、DOM監視のついでに URL の変化を見る。
+     * 実行環境に依存せず、コードも少なくて済む。
      */
-    function hookHistory() {
+    function locationChanged() {
 
-        for (const name of ['pushState', 'replaceState']) {
+        const path = location.pathname;
 
-            const original = history[name];
-
-            history[name] = function (...args) {
-
-                const result =
-                    original.apply(this, args);
-
-                scheduleProcess(NAV_DELAY);
-
-                return result;
-            };
+        if (path === lastPath) {
+            return false;
         }
 
+        lastPath = path;
 
-        window.addEventListener(
-            'popstate',
-            () => scheduleProcess(NAV_DELAY)
-        );
+        return true;
     }
 
 
@@ -294,6 +291,17 @@
 
     const observer =
         new MutationObserver(mutations => {
+
+            /*
+             * 通知ページへの出入りをここで拾う
+             */
+            if (locationChanged()) {
+
+                scheduleProcess(NAV_DELAY);
+
+                return;
+            }
+
 
             for (const mutation of mutations) {
 
@@ -349,7 +357,10 @@
     // 起動
     // ============================================================
 
-    hookHistory();
+    window.addEventListener(
+        'popstate',
+        () => scheduleProcess(NAV_DELAY)
+    );
 
 
     if (document.body) {
