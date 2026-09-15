@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X YouTube Card v3.10.0
+// @name         X YouTube Card v3.9.1
 // @namespace    local.hiro.tools
-// @version      3.10.0
+// @version      3.9.1
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -39,17 +39,6 @@
   // カード自体のボタンには影響しない。
   const ENABLE_IMAGE_POST_SUPPORT = true;
 
-  // 引用ポスト（引用ブロック）への対応。
-  // 引用した側の本文にYouTube URLが無く、引用元の本文にある場合に、
-  // 引用ブロックの本文直後へボタンを追加する。
-  // 問題が出たら、ここを false にすれば他の機能に触れずに無効化できる。
-  const ENABLE_QUOTE_SUPPORT = true;
-
-  // 引用ブロックの本文からURLが読めないとき（引用の引用など、
-  // 表示テキストにYouTubeリンクが出てこない場合）に、
-  // React内部stateまで探しに行くか。
-  const QUOTE_DEEP_LOOKUP = true;
-
   // カードが表示領域に近づいた時点でURL取得を先行させる
   const PREFETCH_ON_VIEW = true;
   const MAX_INFLIGHT = 3;
@@ -85,9 +74,6 @@
     // 画像付き投稿の対象判定にのみ使う。ボタンの設置先には使わない
     // （画像要素を操作して壊した前歴があるため）。
     tweetPhoto: '[data-testid="tweetPhoto"]',
-    // 引用ブロック。X は引用部分を「クリックできる入れ子の塊」として
-    // role="link" の div で描画する。クラス名は頻繁に変わるので使わない。
-    quote: 'div[role="link"]',
   };
 
   const YT_RE =
@@ -825,102 +811,6 @@
   }
 
   // -----------------------------------------------------------------------
-  // 引用ポストのURL検出
-  // -----------------------------------------------------------------------
-  //
-  // 引用した側の投稿にYouTubeリンクが無く、引用元の投稿にある場合、
-  // Xは引用ブロックの中にカードを作らない（カードは1投稿につき最大1枚で、
-  // 引用ブロックは入れ子の簡易表示のため）。そのため従来のカード走査でも
-  // 画像付き投稿の走査でも拾えず、ボタンがまったく出ない。
-  //
-  // 引用ブロックの本文には、引用元本文のリンクが t.co のまま残り、
-  // 表示テキストは元URL（収まらなければ末尾省略）になる。
-  // 画像付き投稿と同じ読み取り方がそのまま使える。
-  //
-  // 「引用の引用」は、さらに内側の投稿が一切描画されないため本文からは
-  // 読めない。その場合だけ React内部state を引用ブロックの範囲に限って
-  // 探す（QUOTE_DEEP_LOOKUP）。見つからなければボタンは出さない。
-
-  /** 要素が属する引用ブロック（無ければnull） */
-  function quoteBlockOf(node) {
-    let current = node && node.parentElement;
-
-    for (let up = 0; current && up < 10; up++) {
-      if (current.matches && current.matches(SELECTOR.quote)) {
-        return current;
-      }
-
-      if (current.tagName === 'ARTICLE') {
-        return null;
-      }
-
-      current = current.parentElement;
-    }
-
-    return null;
-  }
-
-  /**
-   * article内の引用ブロックを列挙する。
-   *
-   * role="link" の div は引用以外にも使われうるので、
-   * 本文（tweetText）を内側に持つものだけを引用とみなす。
-   * 入れ子になっている場合は外側だけを採る。
-   */
-  function findQuoteBlocks(article) {
-    const candidates = Array.from(article.querySelectorAll(SELECTOR.quote));
-
-    return candidates.filter((block) => {
-      if (!block.querySelector(SELECTOR.tweetText)) {
-        return false;
-      }
-
-      return !candidates.some(
-        (other) => other !== block && other.contains(block)
-      );
-    });
-  }
-
-  /**
-   * resolveFromDom と同じ形（{ url, weak } / null）で返す、引用ブロック用の
-   * 解決関数。addButton() の resolveSync としてそのまま渡せる。
-   *
-   * 優先順位：
-   * 1. 引用ブロック本文の表示テキスト（完全に読めれば確定）
-   * 2. React内部state（引用ブロックの範囲に限定）
-   * 3. 表示テキストのリンクの実href（t.co・weak）
-   */
-  function resolveFromQuote(target, article) {
-    const quote = quoteBlockOf(target) || target;
-    const found = findYouTubeTextLink(quote);
-
-    if (found && found.complete) {
-      return {
-        url: `https://www.youtube.com/watch?v=${found.id}`,
-        weak: false,
-      };
-    }
-
-    // 外側の投稿のURLを拾わないよう、引用ブロックの外へは出ない。
-    const fromReact = QUOTE_DEEP_LOOKUP
-      ? urlFromReact(quote, quote.parentElement)
-      : null;
-
-    if (fromReact) {
-      return { url: normalizeYtUrl(fromReact), weak: false };
-    }
-
-    if (found) {
-      return { url: found.anchor.href, weak: true };
-    }
-
-    // 引用ブロック内の t.co を無条件に拾う保険は置かない。
-    // 引用元の本文にある「ただのリンク」もすべて t.co なので、
-    // YouTubeと無関係な引用にまでボタンが出てしまう。
-    return null;
-  }
-
-  // -----------------------------------------------------------------------
   // URL解決（DOM／React）
   // -----------------------------------------------------------------------
 
@@ -1540,7 +1430,6 @@
     });
 
     scanCardlessImagePosts();
-    scanQuotedPosts();
   }
 
   /**
@@ -1614,83 +1503,6 @@
       placeButton(target, target, article, true, resolveFromPostText);
 
       log('button added (image post)', state.url || '(URL未解決)');
-    });
-  }
-
-  /**
-   * 引用ポストのうち、引用した側にYouTubeリンクが無く、
-   * 引用元（引用ブロック）側にあるもの。
-   *
-   * 状態管理・先読み・クリック処理・開き方は通常のカードと同じ経路を
-   * 再利用する（引用ブロックの本文要素を「card」として cardState /
-   * cardButton に載せる）。異なるのは判定・解決の中身だけ。
-   *
-   * ボタンは引用ブロック本文の直後（insertAfter: true）に置く。
-   * 引用ブロック自身やその子要素には手を加えない。
-   */
-  function scanQuotedPosts() {
-    if (!ENABLE_QUOTE_SUPPORT) {
-      return;
-    }
-
-    document.querySelectorAll('article').forEach((article) => {
-      // 通常のYouTubeカードがあるなら、そちらのボタンで足りる
-      if (hasYouTubeCardInArticle(article)) {
-        return;
-      }
-
-      findQuoteBlocks(article).forEach((quote) => {
-        // 引用ブロック内にカードがある構成なら、カード走査側の担当
-        if (quote.querySelector(SELECTOR.card)) {
-          return;
-        }
-
-        const target = quote.querySelector(SELECTOR.tweetText);
-
-        if (!target) {
-          return;
-        }
-
-        const state = stateOf(target, article);
-
-        // isYtCard の意味はここでは「引用元にYouTubeリンクがある」。
-        // 一度trueと判定したら、同じツイートである間は再判定しない。
-        if (!state.isYtCard) {
-          const resolved = resolveFromQuote(target, article);
-
-          if (!resolved) {
-            return;
-          }
-
-          state.isYtCard = true;
-          state.url = resolved.url;
-          state.weak = resolved.weak;
-        }
-
-        watchForPrefetch(target, state);
-
-        if (state.needsRefetch) {
-          state.needsRefetch = false;
-          prefetch(target);
-        }
-
-        if (!state.url) {
-          const resolved = resolveFromQuote(target, article);
-
-          if (resolved) {
-            state.url = resolved.url;
-            state.weak = resolved.weak;
-          }
-        }
-
-        if (!target.parentElement) {
-          return;
-        }
-
-        placeButton(target, target, article, true, resolveFromQuote);
-
-        log('button added (quote)', state.url || '(URL未解決)');
-      });
     });
   }
 
