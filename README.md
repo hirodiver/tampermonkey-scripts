@@ -8,7 +8,8 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 |---|---|---|
 | `x-youtube-card-open-in-browser.user.js` | X YouTube Card | x.com / twitter.com |
 | `x-status-page-auto-reload.user.js` | X Status Auto Reload | x.com / twitter.com |
-| `x-timeline-declutter.user.js` | X タイムライン整理 | x.com / twitter.com |
+| `x-following-tab.user.js` | X フォロー中固定 | x.com / twitter.com |
+| `x-hide-note-notice.user.js` | X ノート通知非表示 | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
@@ -26,7 +27,8 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-youtube-card-open-in-browser.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-status-page-auto-reload.user.js
-- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-timeline-declutter.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-following-tab.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-note-notice.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
@@ -117,35 +119,46 @@ SPA内遷移が固まり、いつまでも読み込まれないことがある�
 
 体感で誤発火・遅発火する場合は、スクリプト冒頭のこの2つの定数を調整すること。
 
-## X タイムライン整理 について（ファイル: `x-timeline-declutter.user.js`）
+## X フォロー中固定 / X ノート通知非表示 について
 
-Control Panel for Twitter のうち常用する3機能だけを実装したもの。CfT は多機能な分、
-X 側の変更で壊れたときに原因箇所を特定しづらいため、必要な機能だけを自前で持つ。
+Control Panel for Twitter のうち常用する機能だけを、**機能ごとに独立したスクリプト**として
+実装したもの。CfT は多機能な分、X 側の変更で壊れたときに原因箇所を特定しづらい。
 
-1. ホームの「おすすめ」タブを隠し、選択されていれば「フォロー中」を自動クリックする
-2. タイムラインの広告（プロモーション）ポストを隠す
-3. 通知タブのコミュニティノート関連の通知を隠す
+**あえて1ファイルにまとめていない理由**
 
-スクリプト冒頭の `ENABLE_FOLLOWING_TAB` / `ENABLE_HIDE_PROMOTED` /
-`ENABLE_HIDE_NOTE_NOTICE` で機能ごとに個別に無効化できる。
+Tampermonkey のダッシュボードから、コードを触らずに機能単位でオン・オフできるようにするため。
+スクリプト内の定数で切り替える方式だと、切り替えのたびにエディタを開く必要があるうえ、
+次の自動更新で書き戻されてしまう。2つは処理の中身（タブ操作 / セル走査）が全く別なので、
+分割によるコード重複もほとんど生じない。
 
-**設計上の要点**
+なお**広告の非表示は別の拡張機能に任せているため、ここには実装していない**。
+
+### X フォロー中固定（`x-following-tab.user.js`）
+
+ホームの「おすすめ」タブ（英語UIでは `For you`）を隠し、選択されていれば「フォロー中」タブを
+自動クリックする。
+
+- 「フォロー中」タブが見つからないときは、おすすめタブを隠さない。タブ構成が変わったときに
+  どちらも見られなくなるのを防ぐため
+- 自動クリックは `TAB_CLICK_INTERVAL`（既定1.5秒）のクールダウン付き。X 側の再描画と競合して
+  連打になるのを防ぐ
+- ラベルが変わったら冒頭の `FOR_YOU_LABELS` / `FOLLOWING_LABELS` を直す。判定時に空白は
+  除去するが、大文字小文字は区別する
+
+### X ノート通知非表示（`x-hide-note-notice.user.js`）
+
+通知タブのコミュニティノート関連の通知を隠す。
 
 - 非表示は要素の削除ではなく `display:none`。誤爆時に DevTools で元要素を確認できる
-- X はスクロール時に `cellInnerDiv` を別のポストへ使い回す。そのため毎回すべての
-  セルを判定し直し、条件から外れた要素は表示に戻す（隠しっぱなしにしない）
-- 広告判定は `[data-testid="placementTracking"]` を第一候補とし、無ければ
-  「子要素を持たない短い span の完全一致」でラベルを探す。本文（`tweetText`）内は
-  見ないので、本文に「広告」と書かれたポストは消えない
-- 「フォロー中」タブが見つからないときはおすすめタブを隠さない。タブ構成が変わった
-  ときに、どちらも見られなくなるのを防ぐため
-- タブ構成やラベル文字列が変わったら、冒頭の `FOR_YOU_LABELS` / `FOLLOWING_LABELS` /
-  `PROMOTED_LABELS` / `COMMUNITY_NOTE_KEYWORDS` を直す
+- X はスクロール時に `cellInnerDiv` を別の通知へ使い回す。そのため毎回すべてのセルを
+  判定し直し、条件から外れた要素は表示に戻す（隠しっぱなしにしない）
+- 判定文字列は冒頭の `COMMUNITY_NOTE_KEYWORDS` にある（部分一致）
 
-**既知の制約**
+### 共通の作り
 
-広告の非表示は表示上の処理であり、読み込み自体は止めていない。また X 側が広告ラベルを
-変更した場合は `PROMOTED_LABELS` の追記が必要になる。
+X には YouTube の `yt-navigate-finish` に相当する遷移イベントが無いため、`pushState` /
+`replaceState` をラップして SPA 遷移を検知している。加えて `MutationObserver` と
+デバウンスの組み合わせで再描画に追随する。
 
 ## 出前館 到着確認 について（ファイル: `demae-can-confirm.user.js`）
 
