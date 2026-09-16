@@ -20,7 +20,10 @@ const SCRIPT = fs.readFileSync(
 );
 
 const HTML = `<!doctype html><html dark><meta charset="utf-8"><title>live-chat-mock</title>
-<body><div id="items"></div></body></html>`;
+<body>
+<yt-live-chat-header-renderer id="header" style="display:block;height:64px;"></yt-live-chat-header-renderer>
+<div id="items"></div>
+</body></html>`;
 
 const results = [];
 function check(name, cond, extra) {
@@ -182,14 +185,39 @@ function check(name, cond, extra) {
   await page.evaluate(() => document.querySelector('.tm-ychide-open').click());
   await page.waitForTimeout(100);
   check('パネル: 登録した人数が並ぶ', (await page.evaluate(() => document.querySelectorAll('#tm-ychide-panel .tm-ychide-row').length)) === 3);
-  check('パネル: ボタンが画面の上側にある', await page.evaluate(() => {
+  check('位置: ボタンが画面の上側にある', await page.evaluate(() => {
     const r = document.querySelector('.tm-ychide-open').getBoundingClientRect();
     return r.top < window.innerHeight / 2;
+  }));
+  check('位置: ボタンが見出し帯より下にある', await page.evaluate(() => {
+    const head = document.getElementById('header').getBoundingClientRect();
+    const btn = document.querySelector('.tm-ychide-open').getBoundingClientRect();
+    return btn.top >= head.bottom;
+  }), await page.evaluate(() => ({
+    headerBottom: document.getElementById('header').getBoundingClientRect().bottom,
+    buttonTop: document.querySelector('.tm-ychide-open').getBoundingClientRect().top
+  })));
+  check('位置: パネルがボタンより下にある', await page.evaluate(() => {
+    const btn = document.querySelector('.tm-ychide-open').getBoundingClientRect();
+    const p = document.getElementById('tm-ychide-panel').getBoundingClientRect();
+    return p.top >= btn.top;
   }));
   check('パネル: 消し方の切り替えボタンがある', await page.evaluate(() => {
     const row = document.querySelectorAll('#tm-ychide-panel .tm-ychide-row')[0];
     const btn = row.querySelector('.tm-ychide-mode');
     return !!btn && (btn.textContent === '全部' || btn.textContent === '文だけ');
+  }));
+
+  // --- 見出し帯の高さが変わったら追従する ---
+  await page.evaluate(() => {
+    document.getElementById('header').style.height = '120px';
+    document.getElementById('items').appendChild(document.createElement('div'));
+  });
+  await page.waitForTimeout(1200);
+  check('位置: 帯が高くなるとボタンも下がる', await page.evaluate(() => {
+    const head = document.getElementById('header').getBoundingClientRect();
+    const btn = document.querySelector('.tm-ychide-open').getBoundingClientRect();
+    return btn.top >= head.bottom;
   }));
 
   // --- 解除 ---
