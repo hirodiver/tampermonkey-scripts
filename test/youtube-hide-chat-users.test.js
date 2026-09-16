@@ -100,10 +100,11 @@ function check(name, cond, extra) {
   check('初期: 何も登録していなければ全部見える', (await shown('m1')) === true && (await shown('m2')) === true);
 
   // --- ボタンの設置 ---
-  check('ボタン: 発言ごとに非表示ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn')));
+  check('ボタン: 発言ごとに「非表示」ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn-all')));
+  check('ボタン: 発言ごとに「文だけ」ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn-text')));
 
-  // --- ボタンで追加 ---
-  await page.evaluate(() => document.querySelector('#m1 > .tm-ychide-btn').click());
+  // --- ボタンで追加（まるごと消す） ---
+  await page.evaluate(() => document.querySelector('#m1 > .tm-ychide-btn-all').click());
   await page.waitForTimeout(150);
   check('追加: 押した相手の発言が消える', (await shown('m1')) === false);
   check('追加: 他人の発言は残る', (await shown('m2')) === true);
@@ -148,20 +149,57 @@ function check(name, cond, extra) {
   await page.waitForTimeout(150);
   check('一時解除の解除: また消える', (await shown('m1')) === false);
 
+  // --- 名前を残して本文だけ消す ---
+  await page.evaluate(() => {
+    window.mkMessage('t1msg', 'UC_EEE', '本文だけ消す人', '消える本文');
+  });
+  await page.waitForTimeout(150);
+  await page.evaluate(() => document.querySelector('#t1msg > .tm-ychide-btn-text').click());
+  await page.waitForTimeout(200);
+  check('文だけ: 発言そのものは残る', (await shown('t1msg')) === true);
+  check('文だけ: 名前は見える', await page.evaluate(() => {
+    const el = document.querySelector('#t1msg #author-name');
+    return !!el && getComputedStyle(el).display !== 'none';
+  }));
+  check('文だけ: 本文は消える', await page.evaluate(() => {
+    const el = document.querySelector('#t1msg #message');
+    return !!el && getComputedStyle(el).display === 'none';
+  }));
+  check('文だけ: 代わりに（非表示）が出る', await page.evaluate(() => {
+    const el = document.querySelector('#t1msg .tm-ychide-mask');
+    return !!el && getComputedStyle(el).display !== 'none' && el.textContent === '（非表示）';
+  }));
+
+  // 同じ相手に「非表示」を押したら、二重登録ではなく切り替えになる
+  const beforeSwitch = await page.evaluate(() => window.__tmChatHide.list().length);
+  await page.evaluate(() => document.querySelector('#t1msg > .tm-ychide-btn-all').click());
+  await page.waitForTimeout(200);
+  check('切替: 文だけ→全部に変えると発言ごと消える', (await shown('t1msg')) === false);
+  check('切替: 二重登録にならない', (await page.evaluate(() => window.__tmChatHide.list().length)) === beforeSwitch);
+
   // --- パネル ---
   check('パネル: 開くボタンがある', await page.evaluate(() => !!document.querySelector('.tm-ychide-open')));
   await page.evaluate(() => document.querySelector('.tm-ychide-open').click());
   await page.waitForTimeout(100);
-  check('パネル: 登録した人数が並ぶ', (await page.evaluate(() => document.querySelectorAll('#tm-ychide-panel .tm-ychide-row').length)) === 2);
+  check('パネル: 登録した人数が並ぶ', (await page.evaluate(() => document.querySelectorAll('#tm-ychide-panel .tm-ychide-row').length)) === 3);
+  check('パネル: ボタンが画面の上側にある', await page.evaluate(() => {
+    const r = document.querySelector('.tm-ychide-open').getBoundingClientRect();
+    return r.top < window.innerHeight / 2;
+  }));
+  check('パネル: 消し方の切り替えボタンがある', await page.evaluate(() => {
+    const row = document.querySelectorAll('#tm-ychide-panel .tm-ychide-row')[0];
+    const btn = row.querySelector('.tm-ychide-mode');
+    return !!btn && (btn.textContent === '全部' || btn.textContent === '文だけ');
+  }));
 
   // --- 解除 ---
   await page.evaluate(() => {
     const rows = document.querySelectorAll('#tm-ychide-panel .tm-ychide-row');
-    rows[0].querySelector('button').click();
+    rows[0].querySelector('.tm-ychide-remove').click();
   });
   await page.waitForTimeout(200);
   check('解除: 発言が表示に戻る', (await shown('m1')) === true && (await shown('m3')) === true);
-  check('解除: リストからも消える', (await page.evaluate(() => window.__tmChatHide.list().length)) === 1);
+  check('解除: リストからも消える', (await page.evaluate(() => window.__tmChatHide.list().length)) === 2, await page.evaluate(() => window.__tmChatHide.list()));
 
   // --- 重複追加 ---
   await page.evaluate(() => {
