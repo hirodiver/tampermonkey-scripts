@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.0
+// @name         YouTube チャット非表示 v1.1
 // @namespace    https://www.youtube.com/
-// @version      1.0
-// @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（チャンネルID単位・スパチャ/メンバー加入/上部ティッカーも対象）
+// @version      1.1
+// @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（まるごと消す／名前を残して本文だけ消すの2種類・チャンネルID単位・スパチャ/メンバー加入/上部ティッカーも対象）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
 // @grant        none
@@ -26,12 +26,21 @@
      * 非表示は「相手に分かる」ブロック機能とは無関係で、
      * こちらの画面から display:none で消すだけ。
      * YouTube 側には何も送らない。
+     *
+     * 消し方は2種類。
+     *   'all'  … 発言をまるごと消す
+     *   'text' … 名前は残して本文だけ消す
+     *            （誰が喋ったかは分かる。会話の流れを
+     *              見失いたくないときのため）
      */
 
     const STORE_KEY = 'tm-yt-chat-hide-users';
     const STYLE_ID = 'tm-ychide-style';
     const PANEL_ID = 'tm-ychide-panel';
     const HIDDEN_CLASS = 'tm-ychide-hidden';
+    const TEXT_CLASS = 'tm-ychide-textonly';
+    const MASK_CLASS = 'tm-ychide-mask';
+    const MASK_TEXT = '（非表示）';
     const SWEEP_MS = 1000;
 
     // 発言1件を表す要素。スパチャ・メンバー加入・
@@ -59,10 +68,21 @@
         'yt-live-chat-legacy-paid-message-renderer'
     ].join(',');
 
-    // [{ id, name, addedAt }]
+    /*
+     * 上部のティッカーは本文を持たない（名前と金額だけ）。
+     * 'text' はあくまで「本文を消す」設定なので、
+     * ティッカーは 'all' のときだけ消す。
+     */
+    const TICKER_SELECTOR = [
+        'yt-live-chat-ticker-paid-message-item-renderer',
+        'yt-live-chat-ticker-sponsor-item-renderer',
+        'yt-live-chat-ticker-paid-sticker-item-renderer'
+    ].join(',');
+
+    // [{ id, name, mode, addedAt }]  mode: 'all' | 'text'
     let entries = loadEntries();
-    let idSet = new Set();
-    let nameSet = new Set();
+    let idModes = new Map();
+    let nameModes = new Map();
     rebuildIndex();
 
     // 一時解除（保存しない。タブを閉じると戻る）
@@ -86,6 +106,11 @@
                 .map(e => ({
                     id: String(e.id || ''),
                     name: String(e.name || ''),
+
+                    // v1.0 で保存した分には mode が無い。
+                    // 当時の挙動（まるごと消す）に揃える。
+                    mode: e.mode === 'text' ? 'text' : 'all',
+
                     addedAt: Number(e.addedAt) || 0
                 }));
         } catch {
@@ -103,19 +128,18 @@
     }
 
     function rebuildIndex() {
-        idSet = new Set(
-            entries
-                .filter(e => e.id)
-                .map(e => e.id)
-        );
+        idModes = new Map();
+        nameModes = new Map();
 
-        // チャンネルIDが取れなかった相手のための保険。
-        // 表示名は変わりうるので、あくまで補助。
-        nameSet = new Set(
-            entries
-                .filter(e => !e.id && e.name)
-                .map(e => e.name.toLowerCase())
-        );
+        for (const entry of entries) {
+            if (entry.id) {
+                idModes.set(entry.id, entry.mode);
+            } else if (entry.name) {
+                // チャンネルIDが取れなかった相手のための保険。
+                // 表示名は変わりうるので、あくまで補助。
+                nameModes.set(entry.name.toLowerCase(), entry.mode);
+            }
+        }
     }
 
     /* ------------------------------------------------ 判定 */
@@ -179,12 +203,14 @@
         return '';
     }
 
-    function isBlocked(el) {
+    // '' | 'all' | 'text'
+    function modeOf(el) {
         const id = authorIdOf(el);
-        if (id) return idSet.has(id);
+        if (id) return idModes.get(id) || '';
 
         const name = authorNameOf(el);
-        return !!name && nameSet.has(name.toLowerCase());
+        if (!name) return '';
+        return nameModes.get(name.toLowerCase()) || '';
     }
 
     /* ------------------------------------------------ 適用 */
@@ -197,15 +223,29 @@
      * （隠しっぱなしにしない）。
      */
     function apply() {
-        const nodes = document.querySelectorAll(MESSAGE_SELECTOR);
+        for (const el of document.querySelectorAll(MESSAGE_SELECTOR)) {
+            const mode = paused ? '' : modeOf(el);
+            const isTicker = el.matches(TICKER_SELECTOR);
 
-        for (const el of nodes) {
-            const hide = !paused && isBlocked(el);
-            el.classList.toggle(HIDDEN_CLASS, hide);
+            // ティッカーには本文が無いので
+            // 'text' では触らない。
+            el.classList.toggle(
+                HIDDEN_CLASS,
+                mode === 'all'
+            );
+
+            el.classList.toggle(
+                TEXT_CLASS,
+                mode === 'text' && !isTicker
+            );
+
+            if (mode === 'text' && !isTicker) {
+                ensureMask(el);
+            }
         }
 
         for (const el of document.querySelectorAll(BUTTON_SELECTOR)) {
-            ensureButton(el);
+            ensureButtons(el);
         }
     }
 
@@ -218,22 +258,62 @@
         });
     }
 
+    /*
+     * 本文を消したとき、そこが空白になると
+     * 何が起きたのか分からなくなる。
+     * 代わりに「（非表示）」と置いておく。
+     */
+    function ensureMask(el) {
+        if (el.querySelector('.' + MASK_CLASS)) return;
+
+        const mask = document.createElement('span');
+        mask.className = MASK_CLASS;
+        mask.textContent = MASK_TEXT;
+
+        const message = el.querySelector('#message');
+        if (message && message.parentNode) {
+            message.parentNode.insertBefore(
+                mask,
+                message.nextSibling
+            );
+        } else {
+            el.appendChild(mask);
+        }
+    }
+
     /* ------------------------------------------------ 追加・削除 */
 
-    function addAuthor(id, name) {
+    function addAuthor(id, name, mode) {
         if (!id && !name) return;
 
-        const already = entries.some(e =>
+        const wanted = mode === 'text' ? 'text' : 'all';
+
+        const existing = entries.find(e =>
             id ? e.id === id : !e.id && e.name === name
         );
-        if (already) return;
 
-        entries.push({
-            id: id || '',
-            name: name || '',
-            addedAt: Date.now()
-        });
+        if (existing) {
+            // 同じ相手にもう一方のボタンを押したときは、
+            // 二重登録ではなく消し方の切り替えとして扱う。
+            existing.mode = wanted;
+        } else {
+            entries.push({
+                id: id || '',
+                name: name || '',
+                mode: wanted,
+                addedAt: Date.now()
+            });
+        }
 
+        saveEntries();
+        rebuildIndex();
+        renderList();
+        apply();
+    }
+
+    function setMode(index, mode) {
+        if (!entries[index]) return;
+        entries[index].mode = mode === 'text' ? 'text' : 'all';
         saveEntries();
         rebuildIndex();
         renderList();
@@ -260,12 +340,26 @@
                 display: none !important;
             }
 
+            .${MASK_CLASS} {
+                display: none;
+            }
+
+            .${TEXT_CLASS} #message,
+            .${TEXT_CLASS} #sticker {
+                display: none !important;
+            }
+
+            .${TEXT_CLASS} .${MASK_CLASS} {
+                display: inline;
+                opacity: .45;
+            }
+
             #${PANEL_ID} {
                 position: fixed;
                 right: 8px;
-                bottom: 48px;
+                top: 40px;
                 z-index: 9999;
-                width: 240px;
+                width: 250px;
                 max-height: 60vh;
                 overflow-y: auto;
                 padding: 8px;
@@ -291,7 +385,7 @@
             #${PANEL_ID} .tm-ychide-row {
                 display: flex;
                 align-items: center;
-                gap: 6px;
+                gap: 4px;
                 padding: 3px 0;
             }
 
@@ -305,7 +399,7 @@
             .tm-ychide-open {
                 position: fixed;
                 right: 8px;
-                bottom: 8px;
+                top: 8px;
                 z-index: 9999;
                 padding: 3px 8px;
                 border-radius: 12px;
@@ -329,7 +423,6 @@
             .tm-ychide-btn {
                 position: absolute;
                 top: 2px;
-                right: 2px;
                 z-index: 5;
                 display: none;
                 padding: 0 5px;
@@ -340,6 +433,14 @@
                 font-size: 11px;
                 line-height: 16px;
                 cursor: pointer;
+            }
+
+            .tm-ychide-btn-all {
+                right: 2px;
+            }
+
+            .tm-ychide-btn-text {
+                right: 44px;
             }
 
             html[dark] .tm-ychide-btn {
@@ -361,23 +462,47 @@
     /*
      * 発言の右上に出す小さなボタン。
      * ふだんは隠れていて、発言にカーソルを載せたときだけ出る。
+     *
+     *   「非表示」 … 発言をまるごと消す
+     *   「文だけ」 … 名前を残して本文だけ消す
      */
-    function ensureButton(el) {
+    function ensureButtons(el) {
         if (el.querySelector(':scope > .tm-ychide-btn')) return;
 
+        el.appendChild(
+            makeButton(
+                el,
+                'all',
+                '非表示',
+                'この人の発言をまるごと消す'
+            )
+        );
+
+        el.appendChild(
+            makeButton(
+                el,
+                'text',
+                '文だけ',
+                '名前は残して、本文だけ消す'
+            )
+        );
+    }
+
+    function makeButton(el, mode, label, title) {
         const btn = document.createElement('button');
-        btn.className = 'tm-ychide-btn';
+        btn.className =
+            'tm-ychide-btn tm-ychide-btn-' + mode;
         btn.type = 'button';
-        btn.textContent = '非表示';
-        btn.title = 'このユーザーの発言を自分の画面から消す';
+        btn.textContent = label;
+        btn.title = title;
 
         btn.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            addAuthor(authorIdOf(el), authorNameOf(el));
+            addAuthor(authorIdOf(el), authorNameOf(el), mode);
         });
 
-        el.appendChild(btn);
+        return btn;
     }
 
     function buildPanel() {
@@ -439,7 +564,7 @@
         if (!entries.length) {
             const empty = document.createElement('div');
             empty.textContent =
-                '空です。発言にカーソルを載せると出る「非表示」ボタンで追加します。';
+                '空です。発言にカーソルを載せると出るボタンで追加します。';
             empty.style.opacity = '.7';
             listBox.appendChild(empty);
             return;
@@ -456,13 +581,30 @@
                 ? entry.name + ' (' + entry.id + ')'
                 : entry.name + '（表示名で判定）';
 
+            // 押すたびに「全部」と「文だけ」が入れ替わる
+            const modeBtn = document.createElement('button');
+            modeBtn.className = 'tm-ychide-mode';
+            modeBtn.type = 'button';
+            modeBtn.textContent =
+                entry.mode === 'text' ? '文だけ' : '全部';
+            modeBtn.title = '消し方を切り替える';
+            modeBtn.style.cursor = 'pointer';
+            modeBtn.addEventListener('click', () =>
+                setMode(
+                    index,
+                    entry.mode === 'text' ? 'all' : 'text'
+                )
+            );
+
             const del = document.createElement('button');
+            del.className = 'tm-ychide-remove';
             del.type = 'button';
             del.textContent = '解除';
             del.style.cursor = 'pointer';
             del.addEventListener('click', () => removeAt(index));
 
             row.appendChild(name);
+            row.appendChild(modeBtn);
             row.appendChild(del);
             listBox.appendChild(row);
         });
@@ -512,8 +654,10 @@
     // チャンネルIDを直接足したりできる。
     window.__tmChatHide = {
         list: () => entries.slice(),
-        add: (id, name) => addAuthor(id || '', name || ''),
+        add: (id, name, mode) =>
+            addAuthor(id || '', name || '', mode),
         remove: index => removeAt(index),
+        mode: (index, value) => setMode(index, value),
         pause: value => {
             paused = !!value;
             apply();
@@ -525,7 +669,9 @@
                 tag: el.tagName.toLowerCase(),
                 id: authorIdOf(el),
                 name: authorNameOf(el),
-                hidden: el.classList.contains(HIDDEN_CLASS)
+                mode: modeOf(el),
+                hidden: el.classList.contains(HIDDEN_CLASS),
+                textHidden: el.classList.contains(TEXT_CLASS)
             }))
     };
 })();
