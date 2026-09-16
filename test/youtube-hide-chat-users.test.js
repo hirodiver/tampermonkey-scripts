@@ -22,6 +22,7 @@ const SCRIPT = fs.readFileSync(
 const HTML = `<!doctype html><html dark><meta charset="utf-8"><title>live-chat-mock</title>
 <body>
 <yt-live-chat-header-renderer id="header" style="display:block;height:64px;"></yt-live-chat-header-renderer>
+<yt-live-chat-banner-manager id="wrapper" style="display:block;height:500px;"></yt-live-chat-banner-manager>
 <div id="items"></div>
 </body></html>`;
 
@@ -197,6 +198,17 @@ function check(name, cond, extra) {
     headerBottom: document.getElementById('header').getBoundingClientRect().bottom,
     buttonTop: document.querySelector('.tm-ychide-open').getBoundingClientRect().top
   })));
+  check('位置: 背の高い器に引きずられない', await page.evaluate(() => {
+    const btn = document.querySelector('.tm-ychide-open').getBoundingClientRect();
+    return btn.top <= window.innerHeight * 0.3 + 1;
+  }), await page.evaluate(() => ({
+    buttonTop: document.querySelector('.tm-ychide-open').getBoundingClientRect().top,
+    limit: window.innerHeight * 0.3
+  })));
+  check('位置: 入力欄のある下半分には出ない', await page.evaluate(() => {
+    const btn = document.querySelector('.tm-ychide-open').getBoundingClientRect();
+    return btn.bottom < window.innerHeight / 2;
+  }));
   check('位置: パネルがボタンより下にある', await page.evaluate(() => {
     const btn = document.querySelector('.tm-ychide-open').getBoundingClientRect();
     const p = document.getElementById('tm-ychide-panel').getBoundingClientRect();
@@ -219,6 +231,23 @@ function check(name, cond, extra) {
     const btn = document.querySelector('.tm-ychide-open').getBoundingClientRect();
     return btn.top >= head.bottom;
   }));
+
+  // 帯そのものが異常に高い場合は「帯ではない」と見なす
+  await page.evaluate(() => {
+    document.getElementById('header').style.height = '600px';
+    document.getElementById('items').appendChild(document.createElement('div'));
+  });
+  await page.waitForTimeout(1200);
+  check('位置: 帯が異常に高くても下へ落ちない', await page.evaluate(() => {
+    const btn = document.querySelector('.tm-ychide-open').getBoundingClientRect();
+    return btn.top <= window.innerHeight * 0.3 + 1;
+  }));
+
+  await page.evaluate(() => {
+    document.getElementById('header').style.height = '64px';
+    document.getElementById('items').appendChild(document.createElement('div'));
+  });
+  await page.waitForTimeout(1200);
 
   // --- 解除 ---
   await page.evaluate(() => {

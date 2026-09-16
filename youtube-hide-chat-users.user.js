@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.2
+// @name         YouTube チャット非表示 v1.3
 // @namespace    https://www.youtube.com/
-// @version      1.2
+// @version      1.3
 // @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（まるごと消す／名前を残して本文だけ消すの2種類・チャンネルID単位・スパチャ/メンバー加入/上部ティッカーも対象）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -50,14 +50,23 @@
      * 重なると操作の邪魔になるので、帯の高さを実測して
      * そのすぐ下へ置く。帯が見つからないときは
      * OPEN_FALLBACK_TOP を使う。
+     *
+     * v1.2 では対象に yt-live-chat-banner-manager を含めていたが、
+     * これはチャット全体を包む器で、下端が画面の最下部になりうる。
+     * その結果ボタンが入力欄の上に落ちたため、対象を見出し帯だけに
+     * 絞り、さらに次の2つの歯止めを入れた。
+     *
+     *   OPEN_MAX_RATIO  … 画面の何割より下へは絶対に置かない
+     *   HEADER_MAX_RATIO… これより背の高い要素は「帯」と見なさない
      */
     const HEADER_SELECTOR = [
         'yt-live-chat-header-renderer',
-        '#chat-header',
-        'yt-live-chat-banner-manager'
+        '#chat-header'
     ].join(',');
     const OPEN_GAP = 6;
     const OPEN_FALLBACK_TOP = 56;
+    const OPEN_MAX_RATIO = 0.3;
+    const HEADER_MAX_RATIO = 0.4;
 
     // 発言1件を表す要素。スパチャ・メンバー加入・
     // 上部に流れるティッカーまで含めて消す。
@@ -533,14 +542,28 @@
     function positionPanel() {
         if (!openBtn || !panel) return;
 
+        const viewport = window.innerHeight || 0;
         let top = OPEN_FALLBACK_TOP;
 
         for (const header of document.querySelectorAll(HEADER_SELECTOR)) {
             const rect = header.getBoundingClientRect();
-            if (rect.height > 0 && rect.bottom + OPEN_GAP > top) {
+
+            // 高さゼロ（未描画）と、背が高すぎる器は帯ではない
+            if (rect.height <= 0) continue;
+            if (viewport && rect.height > viewport * HEADER_MAX_RATIO) {
+                continue;
+            }
+
+            if (rect.bottom + OPEN_GAP > top) {
                 top = rect.bottom + OPEN_GAP;
             }
         }
+
+        // 何かを読み違えても、画面の下の方へは行かせない
+        if (viewport) {
+            top = Math.min(top, viewport * OPEN_MAX_RATIO);
+        }
+        top = Math.max(top, 0);
 
         openBtn.style.top = top + 'px';
         panel.style.top = (top + 30) + 'px';
