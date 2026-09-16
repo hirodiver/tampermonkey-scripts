@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.1
+// @name         YouTube チャット非表示 v1.2
 // @namespace    https://www.youtube.com/
-// @version      1.1
+// @version      1.2
 // @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（まるごと消す／名前を残して本文だけ消すの2種類・チャンネルID単位・スパチャ/メンバー加入/上部ティッカーも対象）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -42,6 +42,22 @@
     const MASK_CLASS = 'tm-ychide-mask';
     const MASK_TEXT = '（非表示）';
     const SWEEP_MS = 1000;
+
+    /*
+     * 「非表示リスト」ボタンを置く位置。
+     *
+     * チャット上部の見出し帯（チャンネル名やメンバー章が並ぶ帯）に
+     * 重なると操作の邪魔になるので、帯の高さを実測して
+     * そのすぐ下へ置く。帯が見つからないときは
+     * OPEN_FALLBACK_TOP を使う。
+     */
+    const HEADER_SELECTOR = [
+        'yt-live-chat-header-renderer',
+        '#chat-header',
+        'yt-live-chat-banner-manager'
+    ].join(',');
+    const OPEN_GAP = 6;
+    const OPEN_FALLBACK_TOP = 56;
 
     // 発言1件を表す要素。スパチャ・メンバー加入・
     // 上部に流れるティッカーまで含めて消す。
@@ -89,6 +105,7 @@
     let paused = false;
 
     let panel = null;
+    let openBtn = null;
     let listBox = null;
     let sweepTimer = null;
     let scheduled = false;
@@ -247,6 +264,8 @@
         for (const el of document.querySelectorAll(BUTTON_SELECTOR)) {
             ensureButtons(el);
         }
+
+        positionPanel();
     }
 
     function schedule() {
@@ -357,7 +376,7 @@
             #${PANEL_ID} {
                 position: fixed;
                 right: 8px;
-                top: 40px;
+                top: ${OPEN_FALLBACK_TOP + 30}px;
                 z-index: 9999;
                 width: 250px;
                 max-height: 60vh;
@@ -399,7 +418,7 @@
             .tm-ychide-open {
                 position: fixed;
                 right: 8px;
-                top: 8px;
+                top: ${OPEN_FALLBACK_TOP}px;
                 z-index: 9999;
                 padding: 3px 8px;
                 border-radius: 12px;
@@ -505,11 +524,34 @@
         return btn;
     }
 
+    /*
+     * 見出し帯の下端を測って、ボタンとパネルの位置を決める。
+     *
+     * 帯の高さは配信によって変わる（メンバー章の行が増える等）ため、
+     * 固定値ではなく毎回測る。
+     */
+    function positionPanel() {
+        if (!openBtn || !panel) return;
+
+        let top = OPEN_FALLBACK_TOP;
+
+        for (const header of document.querySelectorAll(HEADER_SELECTOR)) {
+            const rect = header.getBoundingClientRect();
+            if (rect.height > 0 && rect.bottom + OPEN_GAP > top) {
+                top = rect.bottom + OPEN_GAP;
+            }
+        }
+
+        openBtn.style.top = top + 'px';
+        panel.style.top = (top + 30) + 'px';
+    }
+
     function buildPanel() {
         if (document.getElementById(PANEL_ID)) return;
         if (!document.body) return;
 
         const open = document.createElement('button');
+        openBtn = open;
         open.className = 'tm-ychide-open';
         open.type = 'button';
         open.textContent = '非表示リスト';
@@ -633,6 +675,8 @@
          * 別タブ・別ウィンドウ（ポップアウトしたチャット）で
          * 追加した分をその場で反映する。
          */
+        window.addEventListener('resize', positionPanel);
+
         window.addEventListener('storage', event => {
             if (event.key !== STORE_KEY) return;
             entries = loadEntries();
