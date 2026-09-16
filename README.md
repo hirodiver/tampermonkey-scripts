@@ -13,6 +13,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `x-hide-spaces-bar.user.js` | X スペース帯非表示 | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
+| `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 
 **`@name` は短く、末尾に `@version` と同じ値を付ける。** Tampermonkeyの一覧画面は
@@ -39,6 +40,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-spaces-bar.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 
 ## 自動更新の仕組み
@@ -140,6 +142,46 @@ NODE_PATH=$(npm root -g) node test/x-hide-spaces-bar.test.js
 
 タイムライン構造を模したDOMで17項目（帯が消える／投稿が消えない／セル使い回し／
 スペースページでの復帰／後入りの帯）を確認する。
+
+## YouTube チャット非表示 について（ファイル: `youtube-hide-chat-users.user.js`）
+
+ライブチャットで、特定のユーザーの発言を**自分の画面からだけ**消す。
+YouTube の「ユーザーをブロック」と違い、YouTube 側へは何も送らないため
+**相手には一切分からない**し、相手側の表示も変わらない。
+
+### 使い方
+
+1. 消したい発言にカーソルを載せると、右上に「非表示」ボタンが出る。押すと登録される
+2. 右下の「非表示リスト」ボタンでパネルが開く。登録済みの一覧と「解除」、
+   および「一時的に表示する」（保存しない。タブを閉じると戻る）がある
+
+### 作りの要点
+
+- **チャットは watch ページ内の iframe（`/live_chat`）**。そのため `@match` は
+  `https://www.youtube.com/live_chat*` と `live_chat_replay*` だけで、watch ページ本体には
+  入れていない。ポップアウトしたチャットも同じURLなので、そのまま動く
+- 判定は**チャンネルID**（`author-external-channel-id` 属性）を第一とする。表示名は
+  変えられるため。属性を持たない上部のティッカーは Polymer の `__data` を浅く掘って探し、
+  それも取れない相手は**表示名（小文字化して完全一致）**で判定する
+- 消す対象は通常の発言・スーパーチャット・スーパーステッカー・メンバー加入・メンバーギフト、
+  および上部に流れるティッカーの各要素
+- 非表示は削除ではなく `display:none`。チャットは要素を使い回すため、毎回すべて判定し直し、
+  条件から外れた要素は表示へ戻す
+- 設定は `localStorage`（キー `tm-yt-chat-hide-users`）。`storage` イベントを見ているので、
+  ポップアウト側で追加した分は埋め込み側にも即反映される
+- **効かないときは**、コンソールで `__tmChatHide.dump()` を実行すると、発言ごとに
+  取得できたチャンネルID・表示名・非表示かどうかが出る。`__tmChatHide.add('UCxxxx')` で
+  チャンネルIDを直接登録することもできる
+
+### 検証
+
+```
+node --check youtube-hide-chat-users.user.js
+NODE_PATH=$(npm root -g) node test/youtube-hide-chat-users.test.js
+```
+
+チャット欄の構造を模したDOMで21項目（対象だけ消える／新着・スパチャ・ティッカー／
+表示名での指定／一時解除／パネルからの解除／再読み込み後の保持）を確認する。
 
 ## X Status Auto Reload について（ファイル: `x-status-page-auto-reload.user.js`）
 
