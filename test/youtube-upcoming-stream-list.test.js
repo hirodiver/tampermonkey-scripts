@@ -242,6 +242,33 @@ async function readPanel(page) {
 
   check('保存した強調ワードを復元する', restored.highlighted === 1, String(restored.highlighted));
 
+  // ボタン位置がラベル切り替えでずれないこと
+  const positions = await page.evaluate(() => {
+    const panel = document.getElementById('tm-upcoming-stream-list');
+    const [highlightButton, toggle] = panel.querySelectorAll('button');
+
+    const snapshot = () => ({
+      highlight: highlightButton.getBoundingClientRect().left,
+      toggle: toggle.getBoundingClientRect().left,
+      label: toggle.textContent
+    });
+
+    const before = snapshot();
+    toggle.click();
+    const after = snapshot();
+    toggle.click();
+
+    return { before, after };
+  });
+
+  check(
+    'リストの表示/非表示ボタンの位置が切り替えでずれない',
+    positions.before.toggle === positions.after.toggle &&
+      positions.before.highlight === positions.after.highlight &&
+      positions.before.label !== positions.after.label,
+    JSON.stringify(positions)
+  );
+
   await browser.close();
 
   const failed = checks.filter(c => !c.ok).length;

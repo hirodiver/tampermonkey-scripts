@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube 配信予定リスト v4.6
+// @name         YouTube 配信予定リスト v4.7
 // @namespace    https://www.youtube.com/
-// @version      4.6
+// @version      4.7
 // @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示（本日5時以降・区切り表示・前回リストの保持・キーワード強調）
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -897,8 +897,16 @@
         const highlightButton =
             makeChipButton('強調ワード');
 
+        highlightButton.style.marginLeft = 'auto';
+
         const toggle =
             makeChipButton('リストを非表示');
+
+        /*
+         * ラベルの文字数で位置がずれないよう
+         * 幅を固定する。
+         */
+        toggle.style.minWidth = '9em';
 
         headingRow.append(
             heading,
@@ -1066,6 +1074,7 @@
                 fontFamily: 'inherit',
                 fontSize: '14px',
                 fontWeight: '600',
+                textAlign: 'center',
                 cursor: 'pointer'
             }
         );
@@ -1085,9 +1094,6 @@
             'aria-expanded',
             collapsed ? 'false' : 'true'
         );
-
-        els.highlightButton.style.marginLeft =
-            'auto';
 
         els.body.style.display =
             collapsed ? 'none' : '';
