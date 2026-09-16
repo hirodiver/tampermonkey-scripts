@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube 配信予定リスト v4.7
+// @name         YouTube 配信予定リスト v4.8
 // @namespace    https://www.youtube.com/
-// @version      4.7
+// @version      4.8
 // @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示（本日5時以降・区切り表示・前回リストの保持・キーワード強調）
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -847,6 +847,18 @@
         Object.assign(
             panel.style,
             {
+                /*
+                 * 親がflex/gridでも幅が中身に
+                 * つられて縮まないようにする。
+                 * 折りたたみで横位置がずれるため。
+                 */
+                display: 'block',
+                boxSizing: 'border-box',
+                width: 'auto',
+                alignSelf: 'stretch',
+                flex: '1 1 100%',
+                gridColumn: '1 / -1',
+
                 margin: '16px 24px 24px',
                 padding: '18px 22px',
                 borderRadius: '12px',

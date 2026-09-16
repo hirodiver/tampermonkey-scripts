@@ -31,7 +31,7 @@ const VIDEOS = {
 
 const PAGE_HTML = `<!doctype html><html><head><meta charset="utf-8"></head><body>
 <ytd-browse page-subtype="subscriptions">
-  <ytd-rich-grid-renderer>
+  <ytd-rich-grid-renderer style="display:flex;flex-wrap:wrap;justify-content:center">
     ${Object.entries(VIDEOS)
       .map(
         ([id, v]) => `
@@ -253,9 +253,12 @@ async function readPanel(page) {
       label: toggle.textContent
     });
 
-    const before = snapshot();
+    const panelWidth = () =>
+      panel.getBoundingClientRect().width;
+
+    const before = { ...snapshot(), width: panelWidth() };
     toggle.click();
-    const after = snapshot();
+    const after = { ...snapshot(), width: panelWidth() };
     toggle.click();
 
     return { before, after };
@@ -263,7 +266,8 @@ async function readPanel(page) {
 
   check(
     'リストの表示/非表示ボタンの位置が切り替えでずれない',
-    positions.before.toggle === positions.after.toggle &&
+    positions.before.width === positions.after.width &&
+      positions.before.toggle === positions.after.toggle &&
       positions.before.highlight === positions.after.highlight &&
       positions.before.label !== positions.after.label,
     JSON.stringify(positions)
