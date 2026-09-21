@@ -11,6 +11,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `x-following-tab.user.js` | X フォロー中固定 | x.com / twitter.com |
 | `x-hide-note-notice.user.js` | X ノート通知非表示 | x.com / twitter.com |
 | `x-hide-spaces-bar.user.js` | X スペース帯非表示 | x.com / twitter.com |
+| `x-bottom-bar-opaque.user.js` | X 下部メニュー不透明化 | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
@@ -39,6 +40,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-following-tab.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-note-notice.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-spaces-bar.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-bottom-bar-opaque.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
@@ -144,6 +146,38 @@ NODE_PATH=$(npm root -g) node test/x-hide-spaces-bar.test.js
 
 タイムライン構造を模したDOMで17項目（帯が消える／投稿が消えない／セル使い回し／
 スペースページでの復帰／後入りの帯）を確認する。
+
+## X 下部メニュー不透明化 について（ファイル: `x-bottom-bar-opaque.user.js`）
+
+iOS SafariでXのタイムラインをスクロールすると、下部のホーム/検索/通知/DM帯が
+半透明になる。これを常に不透明のまま固定する。
+
+1. **CSS**: `document-start` で `<style>` を注入し、下部メニュー帯
+   （`[data-testid="BottomBar"]`）に `opacity: 1 !important` を常時当てる。
+   要素が生まれた瞬間から効くので、スクロール中に一瞬透けるコマ落ちが起きない。
+2. **JavaScript**: `data-testid` がXのアプリ更新で変わった場合の保険。
+   「画面下端に固定・横幅いっぱい・ナビリンク3〜8個」という構造で下部メニュー帯を
+   探し、見つけた要素には目印の属性（`data-tm-bottombar-marked`）を付ける。
+   その属性にも同じCSSルールを当てているので、恒久的にopacity:1を保護できる。
+
+**インラインstyleへ直接 `!important` を書く方式は採っていない。** 一度書いても、
+Xが後から `!important` 無しの値で上書きすると宣言ごと入れ替わり、importantフラグが
+消えて元の木阿弥になる（CSSOMの `setProperty` は既存宣言を丸ごと置き換えるため）。
+代わりに、恒久的に保護したいセレクタ自体を増やす（マーク属性）方式にしている。
+
+**効かない・帯が見つからないとき**は、コンソールで `__tmBottomBar.dump()` を実行すると
+`data-testid` 検出／構造検出それぞれの成否とopacity値が出る。
+
+### 検証
+
+```
+node --check x-bottom-bar-opaque.user.js
+NODE_PATH=$(npm root -g) node test/x-bottom-bar-opaque.test.js
+```
+
+下部メニュー帯の構造を模したDOMで8項目（スタイル注入／スクロール中の連続書き換え
+でも常にopacity 1／testid変更時の構造検出とマーク付与／SPA再描画への追従／
+対象外要素への非影響／診断関数）を確認する。
 
 ## YouTube チャット非表示 について（ファイル: `youtube-hide-chat-users.user.js`）
 
