@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.6.0
+// @name         X スペース帯非表示 v1.7.0
 // @namespace    local.hiro.tools
-// @version      1.6.0
+// @version      1.7.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -418,6 +418,30 @@
             `[data-testid="placementTracking"]` +
             `:has(${SPACE_LINK_SELECTOR})` +
             `:not(:has(article))`
+        );
+
+
+        /*
+         * 実機の帯。JS を待つと一瞬見えてしまうので、
+         * nav 直下の帯ごと CSS で消す。
+         * 「新しいポストを表示」（pillLabel）は残す
+         */
+        const pillCondition =
+            `:has(${PILL_SELECTOR})` +
+            `:not(:has(${KEEP_PILL_SELECTOR}))` +
+            `:not(:has(article))`;
+
+
+        rules.push(
+            `nav > div${pillCondition}`,
+
+            `nav > div > div${pillCondition}`,
+
+            ...PILL_LIST_SELECTORS.map(
+                selector => `${selector}${pillCondition}`
+            ),
+
+            `${PILL_TRACK_SELECTOR}${pillCondition}`
         );
 
 
@@ -1350,6 +1374,128 @@
 
 
     // ============================================================
+    // 残った高さを潰す
+    // ============================================================
+
+    /*
+     * 帯を消しても、それを包む入れ物が高さを持ったままだと
+     * 空白が残る。
+     *
+     * 帯の親を遡り、「中身がもう何も見えていないのに
+     * 高さだけある」要素を畳む。
+     * 見えている中身が1つでもあれば触らない
+     */
+    function hasVisibleContent(element) {
+
+        if (textOf(element)) {
+            return true;
+        }
+
+
+        for (const child of element.children) {
+
+            if (child.hasAttribute(HIDDEN_ATTR)) {
+                continue;
+            }
+
+
+            if (child.id === PANEL_ID) {
+                continue;
+            }
+
+
+            let display = '';
+
+            try {
+
+                display =
+                    getComputedStyle(child).display;
+
+            } catch {
+
+                /*
+                 * 取れない場合は「見えている」とみなす
+                 */
+                return true;
+            }
+
+
+            if (display === 'none') {
+                continue;
+            }
+
+
+            const rect =
+                child.getBoundingClientRect();
+
+            if (rect.width > 0 && rect.height > 0) {
+                return true;
+            }
+        }
+
+
+        return false;
+    }
+
+
+    function collapseEmptyAncestors(element) {
+
+        let current = element.parentElement;
+
+        let changed = 0;
+
+
+        for (let i = 0; i < 6 && current; i++) {
+
+            if (
+                current === document.body ||
+                current === document.documentElement
+            ) {
+                break;
+            }
+
+
+            /*
+             * タイムライン本体まで畳むと投稿ごと消える
+             */
+            if (
+                current.matches?.(
+                    'main, [role="main"], [role="region"], section'
+                )
+            ) {
+                break;
+            }
+
+
+            if (hasVisibleContent(current)) {
+                break;
+            }
+
+
+            const rect =
+                current.getBoundingClientRect();
+
+
+            /*
+             * 高さが残っているものだけ畳む
+             */
+            if (rect.height >= 1) {
+
+                if (setHidden(current, true)) {
+                    changed++;
+                }
+            }
+
+
+            current = current.parentElement;
+        }
+
+
+        return changed;
+    }
+
+
+    // ============================================================
     // メイン
     // ============================================================
 
@@ -1393,6 +1539,15 @@
             if (setHidden(bar, true)) {
                 changed++;
             }
+        }
+
+
+        /*
+         * 消した帯の分の空白を潰す
+         */
+        for (const bar of bars) {
+
+            changed += collapseEmptyAncestors(bar);
         }
 
 
@@ -1805,7 +1960,7 @@
         );
 
         lines.push(
-            'バージョン: 1.6.0' +
+            'バージョン: 1.7.0' +
             ' / :has対応: ' + supportsHas() +
             ' / スタイル: ' +
             (styleElement?.isConnected ?

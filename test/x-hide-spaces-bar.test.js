@@ -167,6 +167,7 @@ function check(name, cond, extra) {
     window.mkPill = (nav, id, label, opts = {}) => {
       const outer = document.createElement('div');
       outer.id = id;
+      // 実機と同じく入れ物が高さを持つ（帯を消しても空白が残る作り）
       outer.setAttribute('style', 'width: 100%; height: 52px;');
 
       const swipeable = document.createElement('div');
@@ -237,6 +238,8 @@ function check(name, cond, extra) {
   check('CSS: 帯は即座に消える（JS待ちなし）', (await shown('bar')) === false);
   check('CSS: 投稿は消えない', (await shown('tweet')) === true);
   check('CSS: スペース言及の投稿は消えない', (await shown('tweetSpace')) === true);
+  check('CSS: スペースピルが即座に消える（一瞬も見せない）', (await shown('spacePill')) === false);
+  check('CSS: 「新しいポストを表示」は即座には消さない', (await shown('newPostsPill')) === true);
 
   // JS パスの結果を待つ
   await page.waitForTimeout(900);
@@ -248,6 +251,15 @@ function check(name, cond, extra) {
   check('色: 紫の帯を含む投稿は消えない', (await shown('purpleTweet')) === true);
   check('ピル: 実機構造のスペースピルが消える', (await shown('spacePill')) === false);
   check('ピル: 「新しいポストを表示」は残る', (await shown('newPostsPill')) === true);
+  check('空白: 帯の入れ物に高さが残らない', await page.evaluate(() => {
+    const nav = document.getElementById('headerNav');
+    const pill = document.getElementById('spacePill');
+    return pill.getBoundingClientRect().height === 0 &&
+      nav.getBoundingClientRect().height ===
+        document.getElementById('newPostsPill').getBoundingClientRect().height;
+  }));
+  check('空白: 中身が見えている入れ物は畳まない', await page.evaluate(() =>
+    document.getElementById('newPostsPill').getBoundingClientRect().height > 0));
   check('JS: 再生バーが消える', (await shown('dock')) === false);
   check('JS: 投稿は消えたままにならない', (await shown('tweet')) === true);
   check('JS: スペース言及の投稿は消えない', (await shown('tweetSpace')) === true);
