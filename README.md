@@ -136,6 +136,18 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
    （`rgb(120,86,255)` 系）で塗られているので、
    **紫 × 横長 × 低い × 投稿本体を含まない**で狙う。これが実機での主な経路。
 
+5. **ピル（実機で確認した本命）**: 実機の帯はタイムラインのセルではなく、
+   **ヘッダの `nav` の中にある横スクロールのピル**だった。
+
+   ```
+   nav > div > div[ScrollSnap-SwipeableList] > div[ScrollSnap-List]
+       > div[placementTracking] > button > div > div[pill-contents-container]
+   ```
+
+   `pill-contents-container` を起点に `nav` の直下まで遡って消す
+   （ピルだけ消すと高さ52pxの空の帯が残るため）。
+   同じ仕組みで出る「新しいポストを表示」は `pillLabel` を持つので残す。
+
 X はスペースを配信（broadcasts）側へ寄せつつあるため、`/i/spaces/` に加えて
 `/i/broadcasts/` へのリンクと、`audiospace` を含む `data-testid` も目印に入れている。
 
@@ -186,10 +198,11 @@ node --check x-hide-spaces-bar.user.js
 NODE_PATH=$(npm root -g) node test/x-hide-spaces-bar.test.js
 ```
 
-iPhone 相当のビューポート（390px）で29項目。帯が消える／リンクの無い帯も消える／
+iPhone 相当のビューポート（390px）で31項目。帯が消える／リンクの無い帯も消える／
 投稿は消えない／セル使い回しで戻る／スペースページでの復帰／診断パネル／
 色と形での検出（実機の紫バーが消える／紫でも小さいボタンは消えない／
-紫の帯を含む投稿は消えない）／タップ指定（覚える・読み込み直しても効く・
+紫の帯を含む投稿は消えない）／ピル（実機構造のスペースピルが消える／
+「新しいポストを表示」は残る）／タップ指定（覚える・読み込み直しても効く・
 投稿に化けたら戻す）、を確認する。
 
 ## X Status Auto Reload について（ファイル: `x-status-page-auto-reload.user.js`）

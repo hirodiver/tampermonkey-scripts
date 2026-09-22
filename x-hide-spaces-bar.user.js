@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.5.0
+// @name         X スペース帯非表示 v1.6.0
 // @namespace    local.hiro.tools
-// @version      1.5.0
+// @version      1.6.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -98,6 +98,31 @@
         '[data-testid*="audiospace" i]',
         '[data-testid*="AudioSpace" i]'
     ];
+
+    /*
+     * 実機（iPhone）で確認した帯の構造。
+     *
+     *   nav > div > div[ScrollSnap-SwipeableList] > div[ScrollSnap-List]
+     *       > div[placementTracking] > button > div > div[pill-contents-container]
+     *         「+23・ライトノベル雑談（このラノとか）」
+     *
+     * タイムラインのセルではなく、ヘッダの nav の中にある
+     * 横スクロールのピル（丸い札）。セルを見る処理では届かない
+     */
+    const PILL_SELECTOR = '[data-testid="pill-contents-container"]';
+
+    const PILL_TRACK_SELECTOR = '[data-testid="placementTracking"]';
+
+    const PILL_LIST_SELECTORS = [
+        '[data-testid="ScrollSnap-SwipeableList"]',
+        '[data-testid="ScrollSnap-List"]'
+    ];
+
+    /*
+     * 同じピルの仕組みで出る「新しいポストを表示」は残す。
+     * こちらは pillLabel を持つ
+     */
+    const KEEP_PILL_SELECTOR = '[data-testid="pillLabel"]';
 
     // 画面下部の再生バー
     const AUDIO_DOCK_SELECTORS = [
@@ -750,6 +775,7 @@
             ...collectByShape(),
             ...collectByCellText(),
             ...collectByColor(),
+            ...collectByPill(),
             ...collectByRules()
         ];
 
@@ -768,6 +794,113 @@
                         other.contains(root)
                 )
         );
+    }
+
+
+    // ============================================================
+    // ピル（ヘッダ内の横スクロール札）の探索
+    // ============================================================
+
+    /*
+     * 帯そのものは小さなピルだが、
+     * それだけ消すと nav の中に空の帯が残る。
+     * スワイプリスト、無ければ nav の直下の要素まで遡って消す
+     */
+    function findPillRoot(element) {
+
+        /*
+         * nav の直下まで遡る。
+         *
+         * スワイプリストだけを消すと、
+         * それを包む高さ52pxの帯が空のまま残るため、
+         * nav の直下（＝帯そのもの）を優先する
+         */
+        let current = element;
+
+        for (let i = 0; i < 6 && current; i++) {
+
+            const parent = current.parentElement;
+
+            if (!parent) {
+                break;
+            }
+
+            if (parent.tagName === 'NAV') {
+                return current;
+            }
+
+            current = parent;
+        }
+
+
+        /*
+         * nav が見つからない作りのとき
+         */
+        for (const selector of PILL_LIST_SELECTORS) {
+
+            const list =
+                element.closest?.(selector);
+
+            if (list) {
+                return list;
+            }
+        }
+
+
+        return element;
+    }
+
+
+    function collectByPill() {
+
+        const pills =
+            queryAll([PILL_SELECTOR]);
+
+
+        const roots = [];
+
+
+        for (const pill of pills) {
+
+            /*
+             * 投稿の中のものには触らない
+             */
+            if (
+                CELL_SELECTORS.some(
+                    selector => pill.closest?.(selector)
+                ) ||
+                hasTweet(pill)
+            ) {
+                continue;
+            }
+
+
+            const track =
+                pill.closest?.(PILL_TRACK_SELECTOR) || pill;
+
+
+            /*
+             * 「新しいポストを表示」は同じ仕組みで出るので残す
+             */
+            if (track.querySelector(KEEP_PILL_SELECTOR)) {
+                continue;
+            }
+
+
+            const root =
+                findPillRoot(track);
+
+
+            if (hasTweet(root)) {
+                continue;
+            }
+
+
+            roots.push(root);
+        }
+
+
+        return roots;
     }
 
 
@@ -1462,6 +1595,20 @@
             hidden:
                 element.hasAttribute(HIDDEN_ATTR),
 
+            表示:
+                (() => {
+
+                    try {
+
+                        return getComputedStyle(element)
+                            .display;
+
+                    } catch {
+
+                        return '?';
+                    }
+                })(),
+
             path:
                 path.join(' < '),
 
@@ -1658,7 +1805,7 @@
         );
 
         lines.push(
-            'バージョン: 1.5.0' +
+            'バージョン: 1.6.0' +
             ' / :has対応: ' + supportsHas() +
             ' / スタイル: ' +
             (styleElement?.isConnected ?

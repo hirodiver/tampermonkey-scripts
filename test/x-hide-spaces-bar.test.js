@@ -154,6 +154,48 @@ function check(name, cond, extra) {
       return cell;
     };
 
+    // 実機レポートのとおりの構造を組む。
+    // nav > div > [ScrollSnap-SwipeableList] > [ScrollSnap-List]
+    //   > [placementTracking] > button > div > [pill-contents-container]
+    window.mkHeaderNav = () => {
+      const nav = document.createElement('nav');
+      nav.id = 'headerNav';
+      document.body.insertBefore(nav, document.body.firstChild);
+      return nav;
+    };
+
+    window.mkPill = (nav, id, label, opts = {}) => {
+      const outer = document.createElement('div');
+      outer.id = id;
+      outer.setAttribute('style', 'width: 100%; height: 52px;');
+
+      const swipeable = document.createElement('div');
+      swipeable.setAttribute('data-testid', 'ScrollSnap-SwipeableList');
+
+      const list = document.createElement('div');
+      list.setAttribute('data-testid', 'ScrollSnap-List');
+
+      const track = document.createElement('div');
+      track.setAttribute('data-testid', 'placementTracking');
+      track.setAttribute('style', 'width: 386px; height: 36px;');
+
+      const button = document.createElement('button');
+      const inner = document.createElement('div');
+
+      const contents = document.createElement('div');
+      contents.setAttribute('data-testid', opts.keep ? 'pillLabel' : 'pill-contents-container');
+      contents.textContent = label;
+
+      inner.appendChild(contents);
+      button.appendChild(inner);
+      track.appendChild(button);
+      list.appendChild(track);
+      swipeable.appendChild(list);
+      outer.appendChild(swipeable);
+      nav.appendChild(outer);
+      return outer;
+    };
+
     // 画面下部の再生バー
     window.mkDock = () => {
       const dock = document.createElement('div');
@@ -169,6 +211,10 @@ function check(name, cond, extra) {
     window.fillRealBar(window.mkCell('realBar'));
     window.fillPurpleTweet(window.mkCell('purpleTweet'));
     window.mkPurpleButton();
+
+    const nav = window.mkHeaderNav();
+    window.mkPill(nav, 'spacePill', '+23・ライトノベル雑談（このラノとか）');
+    window.mkPill(nav, 'newPostsPill', '新しいポストを表示', { keep: true });
     window.fillBareBar(window.mkCell('bare'));
     window.fillTweet(window.mkCell('tweet'), 'ふつうの投稿');
     window.fillTweetWithSpaceLink(window.mkCell('tweetSpace'));
@@ -200,6 +246,8 @@ function check(name, cond, extra) {
   check('色: 実機の紫バー（「スペース」の語なし）が消える', (await shown('realBar')) === false);
   check('色: 紫でも小さいボタンは消えない', (await shown('purpleButton')) === true);
   check('色: 紫の帯を含む投稿は消えない', (await shown('purpleTweet')) === true);
+  check('ピル: 実機構造のスペースピルが消える', (await shown('spacePill')) === false);
+  check('ピル: 「新しいポストを表示」は残る', (await shown('newPostsPill')) === true);
   check('JS: 再生バーが消える', (await shown('dock')) === false);
   check('JS: 投稿は消えたままにならない', (await shown('tweet')) === true);
   check('JS: スペース言及の投稿は消えない', (await shown('tweetSpace')) === true);
