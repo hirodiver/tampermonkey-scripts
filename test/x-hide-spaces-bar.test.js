@@ -118,6 +118,42 @@ function check(name, cond, extra) {
       return cell;
     };
 
+    // 実機（iPhone）で確認された帯そのもの。
+    // 紫の角丸、横長で低い、文中に「スペース」の語が無い
+    window.fillRealBar = (cell) => {
+      cell.replaceChildren();
+      const bar = document.createElement('div');
+      bar.id = 'realInner';
+      bar.setAttribute('style', 'background-color: rgb(120, 86, 255); border-radius: 28px; height: 56px; width: 100%; display: flex; align-items: center;');
+      const avatar = document.createElement('img');
+      const label = document.createElement('span');
+      label.textContent = '+25 ・ ライトノベル雑談（このラノとか）';
+      bar.append(avatar, label);
+      cell.appendChild(bar);
+      return cell;
+    };
+
+    // 紫だが小さいボタン（消してはいけない）
+    window.mkPurpleButton = () => {
+      const button = document.createElement('div');
+      button.id = 'purpleButton';
+      button.setAttribute('role', 'button');
+      button.setAttribute('style', 'background-color: rgb(120, 86, 255); width: 80px; height: 36px;');
+      button.textContent = 'フォロー';
+      document.body.appendChild(button);
+      return button;
+    };
+
+    // 紫の帯を含む「投稿」（消してはいけない）
+    window.fillPurpleTweet = (cell) => {
+      window.fillTweet(cell, 'スペースの告知です');
+      const bar = document.createElement('div');
+      bar.setAttribute('style', 'background-color: rgb(120, 86, 255); height: 56px; width: 100%;');
+      bar.textContent = '+3 ・ 告知カード';
+      cell.querySelector('article').appendChild(bar);
+      return cell;
+    };
+
     // 画面下部の再生バー
     window.mkDock = () => {
       const dock = document.createElement('div');
@@ -130,6 +166,9 @@ function check(name, cond, extra) {
 
     window.fillSpaceBar(window.mkCell('bar'));
     window.fillButtonBar(window.mkCell('buttonBar'));
+    window.fillRealBar(window.mkCell('realBar'));
+    window.fillPurpleTweet(window.mkCell('purpleTweet'));
+    window.mkPurpleButton();
     window.fillBareBar(window.mkCell('bare'));
     window.fillTweet(window.mkCell('tweet'), 'ふつうの投稿');
     window.fillTweetWithSpaceLink(window.mkCell('tweetSpace'));
@@ -158,6 +197,9 @@ function check(name, cond, extra) {
 
   check('JS: 目印なしの帯も消える', (await shown('bare')) === false);
   check('JS: リンクの無い帯（iPhone版想定）も消える', (await shown('buttonBar')) === false);
+  check('色: 実機の紫バー（「スペース」の語なし）が消える', (await shown('realBar')) === false);
+  check('色: 紫でも小さいボタンは消えない', (await shown('purpleButton')) === true);
+  check('色: 紫の帯を含む投稿は消えない', (await shown('purpleTweet')) === true);
   check('JS: 再生バーが消える', (await shown('dock')) === false);
   check('JS: 投稿は消えたままにならない', (await shown('tweet')) === true);
   check('JS: スペース言及の投稿は消えない', (await shown('tweetSpace')) === true);
@@ -224,6 +266,10 @@ function check(name, cond, extra) {
     inner.id = 'unknownInner';
     inner.textContent = '🎧 いま話し中';
     cell.appendChild(inner);
+    // 実機と同じく帯は画面上部にある（パネルは下半分を覆う）
+    const timeline = document.getElementById('timeline');
+    timeline.insertBefore(cell, timeline.firstChild);
+    window.scrollTo(0, 0);
   });
   await page.waitForTimeout(700);
   check('手動指定: 正体不明の帯は自動では消えない（想定どおり）', (await shown('unknownBar')) === true);
@@ -252,6 +298,7 @@ function check(name, cond, extra) {
     inner.id = 'unknownInner';
     inner.textContent = '🎧 別の人が話し中';
     cell.appendChild(inner);
+    window.scrollTo(0, 0);
   });
   await page.evaluate(SCRIPT);
   await page.waitForTimeout(900);

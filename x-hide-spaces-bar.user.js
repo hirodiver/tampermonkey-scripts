@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.4.0
+// @name         X スペース帯非表示 v1.5.0
 // @namespace    local.hiro.tools
-// @version      1.4.0
+// @version      1.5.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -137,6 +137,22 @@
 
     // 帯とみなすテキストの最大文字数（長い＝投稿）
     const BAR_MAX_LENGTH = 120;
+
+    /*
+     * スペースの帯は X が他で使わない紫で塗られている。
+     * 文言も data-testid も当てにならなかったため、これを主な手がかりにする。
+     *
+     *   実機の例: 「+25 ・ ライトノベル雑談（このラノとか）」
+     *   ——「スペース」の語が一度も出てこない
+     */
+    const SPACE_PURPLES = [
+        [120, 86, 255],   // #7856FF 現行のスペース紫
+        [110, 86, 226],   // 旧トーン
+        [93, 60, 200]     // 暗めの派生
+    ];
+
+    // 紫と認めるRGB距離
+    const PURPLE_TOLERANCE = 70;
 
     // 帯とみなす高さの範囲（ピクセル）
     const BAR_MIN_HEIGHT = 20;
@@ -733,6 +749,7 @@
             ...collectByMark(),
             ...collectByShape(),
             ...collectByCellText(),
+            ...collectByColor(),
             ...collectByRules()
         ];
 
@@ -751,6 +768,145 @@
                         other.contains(root)
                 )
         );
+    }
+
+
+    // ============================================================
+    // 色による探索
+    // ============================================================
+
+    function parseRgb(value) {
+
+        const matched =
+            /rgba?\(([^)]+)\)/.exec(value || '');
+
+        if (!matched) {
+            return null;
+        }
+
+
+        const parts =
+            matched[1]
+                .split(',')
+                .map(part => parseFloat(part));
+
+
+        if (parts.length < 3) {
+            return null;
+        }
+
+
+        /*
+         * 透明なら塗られていないのと同じ
+         */
+        if (parts.length >= 4 && parts[3] < 0.5) {
+            return null;
+        }
+
+
+        return parts.slice(0, 3);
+    }
+
+
+    function isSpacePurple(value) {
+
+        const rgb = parseRgb(value);
+
+        if (!rgb) {
+            return false;
+        }
+
+
+        return SPACE_PURPLES.some(target => {
+
+            const distance =
+                Math.sqrt(
+                    (rgb[0] - target[0]) ** 2 +
+                    (rgb[1] - target[1]) ** 2 +
+                    (rgb[2] - target[2]) ** 2
+                );
+
+            return distance <= PURPLE_TOLERANCE;
+        });
+    }
+
+
+    /*
+     * 紫に塗られた横長の帯を探す。
+     *
+     * 全要素に getComputedStyle をかけると重いので、
+     * 背景色を持ちうる要素に絞ってから見る
+     */
+    function collectByColor() {
+
+        const candidates =
+            queryAll([
+                '[style*="background"]',
+                '[role="button"]',
+                '[role="link"]',
+                '[data-testid]',
+                ...CELL_SELECTORS
+            ]);
+
+
+        const roots = [];
+
+
+        for (const candidate of candidates) {
+
+            if (hasTweet(candidate)) {
+                continue;
+            }
+
+
+            let background;
+
+            try {
+
+                background =
+                    getComputedStyle(candidate)
+                        .backgroundColor;
+
+            } catch {
+
+                continue;
+            }
+
+
+            if (!isSpacePurple(background)) {
+                continue;
+            }
+
+
+            if (!looksLikeBarShape(candidate)) {
+                continue;
+            }
+
+
+            /*
+             * 塗られている要素そのものが帯。
+             * セルごと消せるならそちらを優先する
+             */
+            const cell =
+                CELL_SELECTORS
+                    .map(
+                        selector =>
+                            candidate.closest?.(selector)
+                    )
+                    .find(Boolean);
+
+
+            const root =
+                cell && !hasTweet(cell) ?
+                    cell :
+                    candidate;
+
+
+            roots.push(root);
+        }
+
+
+        return roots;
     }
 
 
@@ -979,7 +1135,13 @@
             document.getElementById(PANEL_ID);
 
         if (overlay) {
-            overlay.style.opacity = '0.15';
+
+            /*
+             * 指定中は小さくして、帯が隠れないようにする
+             */
+            overlay.style.opacity = '0.25';
+
+            overlay.style.maxHeight = '52px';
         }
 
 
@@ -987,6 +1149,27 @@
 
             event.preventDefault();
             event.stopPropagation();
+
+
+            const point =
+                event.touches?.[0] || event;
+
+
+            const touched =
+                document.elementFromPoint(
+                    point.clientX,
+                    point.clientY
+                ) || event.target;
+
+
+            /*
+             * 診断パネル自身に触れた場合は指定として扱わない。
+             * パネルが画面下半分を覆うため、
+             * 帯が隠れていると誤って掴んでしまう
+             */
+            if (touched?.closest?.(`#${PANEL_ID}`)) {
+                return;
+            }
 
 
             document.removeEventListener(
@@ -998,31 +1181,23 @@
             pickingMode = false;
 
 
-            const point =
-                event.touches?.[0] || event;
-
-
-            const target =
-                document.elementFromPoint(
-                    point.clientX,
-                    point.clientY
-                ) || event.target;
-
-
-            if (!target) {
+            if (!touched) {
                 return;
             }
 
 
             const root =
-                findBarRoot(target);
+                findBarRoot(touched);
 
 
             addRule(root);
 
 
             if (overlay) {
+
                 overlay.style.opacity = '';
+
+                overlay.style.maxHeight = '';
             }
 
 
@@ -1242,9 +1417,29 @@
         }
 
 
+        let background = '';
+
+        try {
+
+            background =
+                getComputedStyle(element)
+                    .backgroundColor;
+
+        } catch {
+
+            /*
+             * 取れない場合は空のまま
+             */
+        }
+
+
         return {
             tag:
                 element.tagName.toLowerCase(),
+
+            bg:
+                background +
+                (isSpacePurple(background) ? '(紫)' : ''),
 
             testid:
                 element.getAttribute?.('data-testid') || '',
@@ -1463,7 +1658,7 @@
         );
 
         lines.push(
-            'バージョン: 1.4.0' +
+            'バージョン: 1.5.0' +
             ' / :has対応: ' + supportsHas() +
             ' / スタイル: ' +
             (styleElement?.isConnected ?
