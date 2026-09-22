@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.1.0
+// @name         X スペース帯非表示 v1.2.0
 // @namespace    local.hiro.tools
-// @version      1.1.0
+// @version      1.2.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -16,22 +16,29 @@
 /*
  * タイムラインに差し込まれる音声スペースの帯を隠す。
  *
- * 二段構えにしている。
+ * 三段構えにしている。上から順に確実だが、対象が狭い。
  *
  *   1. CSS（:has）— document-start で <style> を注入する。
- *      要素が生まれた瞬間から効くので、一瞬見えてから消える現象が起きない。
- *      スペースへのリンクを含み、投稿本体を含まないセルだけを狙う。
+ *      スペースへのリンクを持ち、投稿本体を含まないセルを消す。
+ *      要素が生まれた瞬間から効くので、一瞬見えてから消えない。
  *
- *   2. JavaScript — CSS で取り切れない分の保険。
- *      :has 非対応環境、リンクを持たない帯、下部の再生バーを見る。
+ *   2. リンク起点の探索 — a[href*="/i/spaces/"] から上へ辿り、
+ *      投稿本体を含まない範囲の一番外側を帯とみなして消す。
+ *      タイムラインのセル構造に依存しない。
+ *
+ *   3. 構造＋テキストの探索 — iPhone版のXは帯をリンクではなく
+ *      ボタンで描くことがあり、href が無い。そこで
+ *      「横に広く・縦に低く・投稿本体を含まず・スペース関連の語を持つ」
+ *      という見た目の条件で帯を探す。
  *
  * 非表示は要素の削除ではなく display:none で行う。
  * 誤爆したときに DevTools で元の要素を確認できるようにするため。
  *
- * 効かない・消えすぎる場合は、コンソールで次を実行すると
- * 候補要素の一覧が出る。そのまま報告に使える。
- *
- *   __tmSpacesBar.dump()
+ * ■ iPhone で調べる方法
+ *   URL の末尾に #tmspaces を付けて開くと、画面上に診断パネルが出る。
+ *   （例: https://x.com/home#tmspaces ）
+ *   「コピー」を押すとレポートがクリップボードに入るので、そのまま報告に使える。
+ *   コンソールが使える環境なら __tmSpacesBar.dump() でも同じ情報が出る。
  */
 
 (function () {
@@ -47,8 +54,11 @@
     // 画面下部に居座る再生バー（オーディオドック）も隠すか
     const HIDE_AUDIO_DOCK = true;
 
-    // 目印が無い帯を表示テキストで判定するか（誤爆が出るなら false）
-    const USE_TEXT_FALLBACK = true;
+    // リンクを持たない帯を、見た目とテキストで探すか
+    const USE_SHAPE_FALLBACK = true;
+
+    // 診断パネルを出す URL ハッシュ
+    const DIAGNOSTIC_HASH = 'tmspaces';
 
     // DOM変化後の再処理までの待ち時間（ミリ秒）
     const REBUILD_DELAY = 250;
@@ -65,7 +75,7 @@
         'section[role="region"] > div > div > div'
     ];
 
-    // スペースの帯だと判断する目印（いずれかに当たれば該当）
+    // スペースの帯だと判断する目印
     const SPACE_MARK_SELECTORS = [
         SPACE_LINK_SELECTOR,
         'a[href^="/i/spaces"]',
@@ -81,27 +91,56 @@
         'div[data-testid="AudioDockSpace"]'
     ];
 
-    // 目印が取れないとき最後に見る表示テキスト（部分一致）
-    const SPACE_KEYWORDS = [
-        'スペース',
-        'Spaces'
-    ];
-
-    // 投稿本体の要素（これを含むセルは投稿なので隠さない）
+    // 投稿本体の要素（これを含む範囲は投稿なので隠さない）
     const TWEET_SELECTORS = [
         'article[data-testid="tweet"]',
         'article[role="article"]',
         'article'
     ];
 
-    // テキスト判定に回すセルの最大文字数（長い＝投稿とみなす）
-    const KEYWORD_MAX_LENGTH = 120;
+    /*
+     * 帯のテキスト判定。
+     * 「スペース」だけだと投稿に誤爆するため、
+     * 状態を表す語との組み合わせを要求する
+     */
+    const SPACE_WORDS = [
+        'スペース',
+        'Space'
+    ];
+
+    const STATE_WORDS = [
+        'ライブ',
+        'LIVE',
+        'Live',
+        '聞く',
+        '再生',
+        '録音',
+        'リスナー',
+        'ホスト',
+        '開始'
+    ];
+
+    // 帯とみなすテキストの最大文字数（長い＝投稿）
+    const BAR_MAX_LENGTH = 120;
+
+    // 帯とみなす高さの範囲（ピクセル）
+    const BAR_MIN_HEIGHT = 20;
+    const BAR_MAX_HEIGHT = 220;
+
+    // 帯とみなす幅（画面幅に対する割合）
+    const BAR_MIN_WIDTH_RATIO = 0.5;
+
+    // リンクから上へ辿る最大段数
+    const MAX_CLIMB = 10;
 
     // 本スクリプトが非表示にした要素の目印
     const HIDDEN_ATTR = 'data-tm-space-hidden';
 
     // 注入する <style> の id
     const STYLE_ID = 'tm-hide-spaces-bar-style';
+
+    // 診断パネルの id
+    const PANEL_ID = 'tm-hide-spaces-bar-panel';
 
 
     // ============================================================
@@ -117,6 +156,9 @@
     let reprocessRequested = false;
 
     let styleElement = null;
+
+    // 直近の判定結果（診断パネル用）
+    let lastReport = null;
 
 
     // ============================================================
@@ -141,45 +183,114 @@
     }
 
 
-    /*
-     * サイト側の DOM 変更に耐えるため、
-     * セレクタを順に試して最初に当たったものを返す
-     */
     function queryAll(selectors) {
+
+        const found = [];
+
 
         for (const selector of selectors) {
 
-            let found;
-
             try {
 
-                found =
-                    document.querySelectorAll(selector);
+                found.push(
+                    ...document.querySelectorAll(selector)
+                );
 
             } catch {
 
                 /*
                  * 未対応セレクタは黙って飛ばす
                  */
-                continue;
-            }
-
-
-            if (found.length) {
-                return [...found];
             }
         }
 
-        return [];
+
+        return [...new Set(found)];
     }
 
 
-    function matchesAny(element, selectors) {
+    function hasTweet(element) {
 
-        return selectors.some(
+        return TWEET_SELECTORS.some(
             selector =>
                 element.querySelector(selector) ||
-                element.matches?.(selector)
+                element.closest?.(selector)
+        );
+    }
+
+
+    function textOf(element) {
+
+        return (element.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+
+    /*
+     * スペースの帯らしい文言か
+     */
+    function looksLikeSpaceText(text) {
+
+        if (!text || text.length > BAR_MAX_LENGTH) {
+            return false;
+        }
+
+
+        const hasSpaceWord =
+            SPACE_WORDS.some(
+                word => text.includes(word)
+            );
+
+        if (!hasSpaceWord) {
+            return false;
+        }
+
+
+        return STATE_WORDS.some(
+            word => text.includes(word)
+        );
+    }
+
+
+    /*
+     * 帯らしい形か（横に広く、縦に低い）
+     */
+    function looksLikeBarShape(element) {
+
+        const rect =
+            element.getBoundingClientRect?.();
+
+        if (!rect) {
+            return false;
+        }
+
+
+        /*
+         * 画面外・未描画のものは判定しない
+         */
+        if (!rect.width || !rect.height) {
+            return false;
+        }
+
+
+        const viewportWidth =
+            window.innerWidth ||
+            document.documentElement.clientWidth ||
+            0;
+
+        if (!viewportWidth) {
+            return false;
+        }
+
+
+        return (
+            rect.width >=
+                viewportWidth * BAR_MIN_WIDTH_RATIO &&
+
+            rect.height >= BAR_MIN_HEIGHT &&
+
+            rect.height <= BAR_MAX_HEIGHT
         );
     }
 
@@ -188,10 +299,6 @@
     // CSSによる先回り（:has）
     // ============================================================
 
-    /*
-     * :has が使えるかどうか。
-     * Chrome 105 / Safari 15.4 以降なら通る
-     */
     function supportsHas() {
 
         try {
@@ -213,8 +320,7 @@
         for (const cellSelector of CELL_SELECTORS) {
 
             /*
-             * 「スペースへのリンクを持ち、投稿本体を持たないセル」だけを隠す。
-             * スペースに言及しただけの投稿は :not(:has(article)) で除外される
+             * 「スペースへのリンクを持ち、投稿本体を持たないセル」だけを隠す
              */
             rules.push(
                 `${cellSelector}` +
@@ -222,6 +328,13 @@
                 `:not(:has(article))`
             );
         }
+
+
+        rules.push(
+            `[data-testid="placementTracking"]` +
+            `:has(${SPACE_LINK_SELECTOR})` +
+            `:not(:has(article))`
+        );
 
 
         if (HIDE_AUDIO_DOCK) {
@@ -284,9 +397,6 @@
     }
 
 
-    /*
-     * スペースのページでは CSS ごと止める
-     */
     function syncStyleEnabled() {
 
         if (!styleElement) {
@@ -305,7 +415,7 @@
     /*
      * X はスクロール時に同じ DOM 要素を別の項目に使い回す。
      * 一度隠した要素をそのままにすると、通常の投稿が消えてしまう。
-     * そのため毎回すべてのセルを判定し直し、表示側にも戻す。
+     * そのため毎回すべて判定し直し、表示側にも戻す。
      */
     function setHidden(element, hidden) {
 
@@ -317,7 +427,11 @@
 
             element.setAttribute(HIDDEN_ATTR, '1');
 
-            element.style.display = 'none';
+            element.style.setProperty(
+                'display',
+                'none',
+                'important'
+            );
 
             return true;
         }
@@ -327,7 +441,7 @@
 
             element.removeAttribute(HIDDEN_ATTR);
 
-            element.style.display = '';
+            element.style.removeProperty('display');
 
             return true;
         }
@@ -337,49 +451,257 @@
     }
 
 
-    // ============================================================
-    // 判定
-    // ============================================================
+    function restoreAll() {
 
-    function isSpaceBar(cell) {
-
-        /*
-         * 投稿本体を含むセルは対象外。
-         * スペースに言及しただけの投稿を巻き込まないため
-         */
-        if (matchesAny(cell, TWEET_SELECTORS)) {
-            return false;
-        }
+        let changed = 0;
 
 
-        if (matchesAny(cell, SPACE_MARK_SELECTORS)) {
-            return true;
-        }
-
-
-        if (!USE_TEXT_FALLBACK) {
-            return false;
-        }
-
-
-        /*
-         * 目印が取れない場合の最終手段。
-         * 短いセルに限ってテキストで判定する
-         */
-        const text =
-            (cell.textContent || '').trim();
-
-
-        if (
-            !text ||
-            text.length > KEYWORD_MAX_LENGTH
+        for (
+            const element of
+            document.querySelectorAll(`[${HIDDEN_ATTR}]`)
         ) {
-            return false;
+
+            if (setHidden(element, false)) {
+                changed++;
+            }
         }
 
 
-        return SPACE_KEYWORDS.some(
-            keyword => text.includes(keyword)
+        return changed;
+    }
+
+
+    // ============================================================
+    // 帯の探索
+    // ============================================================
+
+    /*
+     * 起点から上へ辿り、
+     * 投稿本体を含まない範囲の一番外側を帯とみなす。
+     *
+     * セル（cellInnerDiv）に当たればそこで止める。
+     * タイムライン外に置かれた帯でも、
+     * 形が崩れる手前まで広げて掴めるようにしている
+     */
+    function findBarRoot(start) {
+
+        let current = start;
+        let best = start;
+
+
+        for (let i = 0; i < MAX_CLIMB; i++) {
+
+            const parent = current.parentElement;
+
+
+            if (
+                !parent ||
+                parent === document.body ||
+                parent === document.documentElement
+            ) {
+                break;
+            }
+
+
+            if (hasTweet(parent)) {
+                break;
+            }
+
+
+            /*
+             * main や region まで広げると画面全体を消してしまう
+             */
+            if (
+                parent.matches?.(
+                    'main, [role="main"], [role="region"], header, nav'
+                )
+            ) {
+                break;
+            }
+
+
+            const text = textOf(parent);
+
+            if (text.length > BAR_MAX_LENGTH) {
+                break;
+            }
+
+
+            best = parent;
+            current = parent;
+
+
+            /*
+             * セルまで来たらそこが帯の単位
+             */
+            if (
+                CELL_SELECTORS.some(
+                    selector => parent.matches?.(selector)
+                )
+            ) {
+                break;
+            }
+        }
+
+
+        return best;
+    }
+
+
+    /*
+     * 1. 目印のある要素（リンク等）から
+     */
+    function collectByMark() {
+
+        const marks =
+            queryAll(SPACE_MARK_SELECTORS);
+
+
+        const roots = [];
+
+
+        for (const mark of marks) {
+
+            if (hasTweet(mark)) {
+                continue;
+            }
+
+
+            roots.push(findBarRoot(mark));
+        }
+
+
+        return roots;
+    }
+
+
+    /*
+     * 2. 見た目とテキストから（iPhone版のボタン描画対策）
+     */
+    function collectByShape() {
+
+        if (!USE_SHAPE_FALLBACK) {
+            return [];
+        }
+
+
+        const roots = [];
+
+
+        /*
+         * テキストを持つ末端付近の要素だけを見る。
+         * 全要素を走査すると重いので、
+         * ボタン・リンク・見出しに絞る
+         */
+        const candidates =
+            queryAll([
+                '[role="button"]',
+                '[role="link"]',
+                '[aria-label*="スペース"]',
+                '[aria-label*="Space"]',
+                '[data-testid="placementTracking"]',
+                'a[href*="/i/spaces"]'
+            ]);
+
+
+        for (const candidate of candidates) {
+
+            if (hasTweet(candidate)) {
+                continue;
+            }
+
+
+            if (!looksLikeSpaceText(textOf(candidate))) {
+                continue;
+            }
+
+
+            const root =
+                findBarRoot(candidate);
+
+
+            if (hasTweet(root)) {
+                continue;
+            }
+
+
+            /*
+             * 形が帯らしくないものは見送る。
+             * 未描画（幅ゼロ）の場合も形が取れないので見送り、
+             * 次の巡回に任せる
+             */
+            if (
+                !looksLikeBarShape(root) &&
+                !looksLikeBarShape(candidate)
+            ) {
+                continue;
+            }
+
+
+            roots.push(root);
+        }
+
+
+        return roots;
+    }
+
+
+    /*
+     * 3. セル単位のテキストから
+     *    （目印もリンクも無い帯の最終手段）
+     */
+    function collectByCellText() {
+
+        if (!USE_SHAPE_FALLBACK) {
+            return [];
+        }
+
+
+        const roots = [];
+
+
+        for (const cell of queryAll(CELL_SELECTORS)) {
+
+            if (hasTweet(cell)) {
+                continue;
+            }
+
+
+            if (!looksLikeSpaceText(textOf(cell))) {
+                continue;
+            }
+
+
+            roots.push(cell);
+        }
+
+
+        return roots;
+    }
+
+
+    function collectBars() {
+
+        const roots = [
+            ...collectByMark(),
+            ...collectByShape(),
+            ...collectByCellText()
+        ];
+
+
+        /*
+         * 入れ子になったものは外側だけ残す
+         */
+        const unique = [...new Set(roots)];
+
+
+        return unique.filter(
+            root =>
+                !unique.some(
+                    other =>
+                        other !== root &&
+                        other.contains(root)
+                )
         );
     }
 
@@ -388,38 +710,53 @@
     // メイン
     // ============================================================
 
-    function processCells() {
+    function processBars() {
 
-        const cells =
-            queryAll(CELL_SELECTORS);
-
-        if (!cells.length) {
-            return 0;
-        }
+        const bars =
+            collectBars();
 
 
-        /*
-         * スペースのページへ移動した場合は、
-         * 使い回された要素が隠れたままにならないよう表示へ戻す
-         */
-        const active =
-            !isSpacePage();
+        const wanted =
+            new Set(bars);
 
 
         let changed = 0;
 
 
-        for (const cell of cells) {
+        /*
+         * 帯でなくなった要素を表示へ戻す（セル使い回し対策）
+         */
+        for (
+            const element of
+            document.querySelectorAll(`[${HIDDEN_ATTR}]`)
+        ) {
 
-            const hide =
-                active &&
-                isSpaceBar(cell);
+            if (
+                !wanted.has(element) &&
+                !AUDIO_DOCK_SELECTORS.some(
+                    selector => element.matches?.(selector)
+                )
+            ) {
+
+                if (setHidden(element, false)) {
+                    changed++;
+                }
+            }
+        }
 
 
-            if (setHidden(cell, hide)) {
+        for (const bar of bars) {
+
+            if (setHidden(bar, true)) {
                 changed++;
             }
         }
+
+
+        lastReport = {
+            time: new Date().toISOString(),
+            bars: bars.length
+        };
 
 
         return changed;
@@ -436,21 +773,13 @@
         const docks =
             queryAll(AUDIO_DOCK_SELECTORS);
 
-        if (!docks.length) {
-            return 0;
-        }
-
-
-        const active =
-            !isSpacePage();
-
 
         let changed = 0;
 
 
         for (const dock of docks) {
 
-            if (setHidden(dock, active)) {
+            if (setHidden(dock, true)) {
                 changed++;
             }
         }
@@ -483,14 +812,29 @@
             syncStyleEnabled();
 
 
-            const changed =
-                processCells() +
-                processAudioDock();
+            let changed = 0;
+
+
+            if (isSpacePage()) {
+
+                /*
+                 * スペースのページでは全部表示へ戻す
+                 */
+                changed += restoreAll();
+
+            } else {
+
+                changed += processBars();
+                changed += processAudioDock();
+            }
 
 
             if (changed) {
                 log('表示状態を変更:', changed, '件');
             }
+
+
+            syncPanel();
 
         } catch (error) {
 
@@ -520,6 +864,422 @@
 
         rebuildTimer =
             setTimeout(process, delay);
+    }
+
+
+    // ============================================================
+    // 診断
+    // ============================================================
+
+    /*
+     * iPhone ではコンソールが開けないので、
+     * URL に #tmspaces を付けると画面上にレポートを出す
+     */
+    function wantsPanel() {
+
+        return location.hash
+            .toLowerCase()
+            .includes(DIAGNOSTIC_HASH);
+    }
+
+
+    function describe(element) {
+
+        const rect =
+            element.getBoundingClientRect?.() ||
+            { width: 0, height: 0 };
+
+
+        const path = [];
+
+        let current = element;
+
+        for (let i = 0; i < 4 && current; i++) {
+
+            path.push(
+                current.tagName.toLowerCase() +
+                (current.getAttribute?.('data-testid') ?
+                    `[${current.getAttribute('data-testid')}]` :
+                    '')
+            );
+
+            current = current.parentElement;
+        }
+
+
+        return {
+            tag:
+                element.tagName.toLowerCase(),
+
+            testid:
+                element.getAttribute?.('data-testid') || '',
+
+            aria:
+                element.getAttribute?.('aria-label') || '',
+
+            role:
+                element.getAttribute?.('role') || '',
+
+            href:
+                element.getAttribute?.('href') || '',
+
+            w:
+                Math.round(rect.width),
+
+            h:
+                Math.round(rect.height),
+
+            hidden:
+                element.hasAttribute(HIDDEN_ATTR),
+
+            path:
+                path.join(' < '),
+
+            text:
+                textOf(element).slice(0, 60)
+        };
+    }
+
+
+    /*
+     * 「スペース」という語を含む最小の要素を集める。
+     * 帯が見つからないとき、何を手がかりにできるかを見るため
+     */
+    function findSpaceMentions(limit = 12) {
+
+        const found = [];
+
+
+        const walker =
+            document.createTreeWalker(
+                document.body,
+                NodeFilter.SHOW_TEXT
+            );
+
+
+        while (walker.nextNode()) {
+
+            const node = walker.currentNode;
+
+            const text =
+                (node.nodeValue || '').trim();
+
+
+            if (
+                !SPACE_WORDS.some(
+                    word => text.includes(word)
+                )
+            ) {
+                continue;
+            }
+
+
+            const element =
+                node.parentElement;
+
+            if (!element) {
+                continue;
+            }
+
+
+            found.push(element);
+
+
+            if (found.length >= limit) {
+                break;
+            }
+        }
+
+
+        return found;
+    }
+
+
+    function buildReport() {
+
+        const bars =
+            collectBars();
+
+
+        const lines = [];
+
+
+        lines.push('=== Xスペース帯非表示 診断 ===');
+
+        lines.push(
+            'URL: ' + location.pathname + location.hash
+        );
+
+        lines.push(
+            'バージョン: 1.2.0' +
+            ' / :has対応: ' + supportsHas() +
+            ' / スタイル: ' +
+            (styleElement?.isConnected ?
+                (styleElement.disabled ? '無効' : '有効') :
+                '未注入')
+        );
+
+        lines.push(
+            '画面幅: ' + window.innerWidth
+        );
+
+        lines.push(
+            'セル数: ' +
+            queryAll(CELL_SELECTORS).length +
+            ' / ドック: ' +
+            queryAll(AUDIO_DOCK_SELECTORS).length +
+            ' / スペースリンク: ' +
+            document.querySelectorAll(
+                SPACE_LINK_SELECTOR
+            ).length
+        );
+
+
+        lines.push('');
+        lines.push('■ 帯として検出（' + bars.length + '件）');
+
+        if (!bars.length) {
+            lines.push('（なし）');
+        }
+
+        for (const bar of bars) {
+            lines.push(JSON.stringify(describe(bar)));
+        }
+
+
+        lines.push('');
+        lines.push('■「スペース」を含む要素');
+
+        const mentions =
+            findSpaceMentions();
+
+        if (!mentions.length) {
+            lines.push('（なし。帯が画面に出ていない可能性）');
+        }
+
+        for (const mention of mentions) {
+
+            lines.push(JSON.stringify(describe(mention)));
+
+            const root =
+                findBarRoot(mention);
+
+            if (root !== mention) {
+                lines.push(
+                    '  → 帯候補: ' +
+                    JSON.stringify(describe(root))
+                );
+            }
+        }
+
+
+        return lines.join('\n');
+    }
+
+
+    function syncPanel() {
+
+        const existing =
+            document.getElementById(PANEL_ID);
+
+
+        if (!wantsPanel()) {
+
+            existing?.remove();
+
+            return;
+        }
+
+
+        if (!document.body) {
+            return;
+        }
+
+
+        const report =
+            buildReport();
+
+
+        let panel = existing;
+
+
+        if (!panel) {
+
+            panel =
+                document.createElement('div');
+
+            panel.id = PANEL_ID;
+
+
+            Object.assign(
+                panel.style,
+                {
+                    position: 'fixed',
+                    left: '8px',
+                    right: '8px',
+                    bottom: '8px',
+                    maxHeight: '60vh',
+                    overflow: 'auto',
+                    zIndex: '2147483647',
+                    padding: '10px',
+                    borderRadius: '10px',
+                    border: '1px solid #888',
+                    background: '#000',
+                    color: '#fff',
+                    font: '12px/1.5 -apple-system, sans-serif',
+                    boxSizing: 'border-box'
+                }
+            );
+
+
+            document.body.appendChild(panel);
+        }
+
+
+        panel.replaceChildren();
+
+
+        // --------------------------------------------------------
+        // 操作ボタン
+        // --------------------------------------------------------
+
+        const bar =
+            document.createElement('div');
+
+        Object.assign(
+            bar.style,
+            {
+                display: 'flex',
+                gap: '8px',
+                marginBottom: '8px'
+            }
+        );
+
+
+        function makeButton(label, onClick) {
+
+            const button =
+                document.createElement('button');
+
+            button.textContent = label;
+
+            Object.assign(
+                button.style,
+                {
+                    flex: '1',
+                    padding: '10px',
+                    borderRadius: '8px',
+                    border: '1px solid #666',
+                    background: '#222',
+                    color: '#fff',
+                    font: 'inherit'
+                }
+            );
+
+            button.addEventListener('click', onClick);
+
+            return button;
+        }
+
+
+        const copyButton =
+            makeButton('コピー', async () => {
+
+                try {
+
+                    await navigator.clipboard
+                        .writeText(report);
+
+                    copyButton.textContent = 'コピーした';
+
+                } catch {
+
+                    /*
+                     * 権限が無い場合は選択してもらう
+                     */
+                    const area =
+                        panel.querySelector('textarea');
+
+                    area?.focus();
+                    area?.select();
+
+                    copyButton.textContent = '長押しでコピー';
+                }
+            });
+
+
+        bar.append(
+            copyButton,
+
+            makeButton('閉じる', () => {
+
+                panel.remove();
+            })
+        );
+
+
+        panel.appendChild(bar);
+
+
+        // --------------------------------------------------------
+        // 本文
+        // --------------------------------------------------------
+
+        const area =
+            document.createElement('textarea');
+
+        area.value = report;
+
+        area.readOnly = true;
+
+        Object.assign(
+            area.style,
+            {
+                width: '100%',
+                height: '40vh',
+                background: '#111',
+                color: '#eee',
+                border: '1px solid #444',
+                borderRadius: '6px',
+                font: '11px/1.4 ui-monospace, monospace',
+                boxSizing: 'border-box'
+            }
+        );
+
+
+        panel.appendChild(area);
+    }
+
+
+    const diagnostics = {
+
+        dump() {
+
+            const report =
+                buildReport();
+
+            console.log(report);
+
+            return report;
+        },
+
+        panel: syncPanel,
+
+        css: buildCss,
+
+        last: () => lastReport
+    };
+
+
+    try {
+
+        window.__tmSpacesBar = diagnostics;
+
+    } catch {
+
+        /*
+         * 参照できない環境では諦める
+         */
     }
 
 
@@ -556,9 +1316,6 @@
     const observer =
         new MutationObserver(mutations => {
 
-            /*
-             * ページの出入りをここで拾う
-             */
             if (locationChanged()) {
 
                 scheduleProcess(NAV_DELAY);
@@ -579,15 +1336,19 @@
                 }
 
 
-                /*
-                 * 自分が隠した要素の中の変更は無視する
-                 * （無限ループ防止）
-                 */
                 const target = mutation.target;
 
+
+                /*
+                 * 自分が隠した要素・診断パネルの中の変更は無視する
+                 * （無限ループ防止）
+                 */
                 if (
                     target instanceof Element &&
-                    target.closest?.(`[${HIDDEN_ATTR}]`)
+                    (
+                        target.closest?.(`[${HIDDEN_ATTR}]`) ||
+                        target.closest?.(`#${PANEL_ID}`)
+                    )
                 ) {
                     continue;
                 }
@@ -622,87 +1383,28 @@
 
 
     // ============================================================
-    // 診断
-    // ============================================================
-
-    /*
-     * うまくいかないときの調査用。
-     * コンソールで __tmSpacesBar.dump() を実行する
-     */
-    const diagnostics = {
-
-        dump() {
-
-            const cells =
-                queryAll(CELL_SELECTORS);
-
-
-            const rows =
-                cells.map((cell, index) => ({
-                    index,
-
-                    隠した:
-                        cell.hasAttribute(HIDDEN_ATTR),
-
-                    判定:
-                        isSpaceBar(cell),
-
-                    投稿:
-                        matchesAny(cell, TWEET_SELECTORS),
-
-                    リンク:
-                        !!cell.querySelector(
-                            SPACE_LINK_SELECTOR
-                        ),
-
-                    テキスト:
-                        (cell.textContent || '')
-                            .trim()
-                            .slice(0, 40)
-                }));
-
-
-            console.table(rows);
-
-
-            console.log(
-                'セル数:', cells.length,
-                '/ :has対応:', supportsHas(),
-                '/ スタイル:',
-                styleElement?.isConnected ?
-                    (styleElement.disabled ? '無効' : '有効') :
-                    '未注入',
-                '/ ドック:',
-                queryAll(AUDIO_DOCK_SELECTORS).length
-            );
-
-
-            return rows;
-        },
-
-        css: buildCss
-    };
-
-
-    try {
-
-        window.__tmSpacesBar = diagnostics;
-
-    } catch {
-
-        /*
-         * 参照できない環境では諦める
-         */
-    }
-
-
-    // ============================================================
     // 起動
     // ============================================================
 
     window.addEventListener(
         'popstate',
         () => scheduleProcess(NAV_DELAY)
+    );
+
+
+    window.addEventListener(
+        'hashchange',
+        () => scheduleProcess(100)
+    );
+
+
+    /*
+     * スクロールで帯が現れる作りにも追従する
+     */
+    window.addEventListener(
+        'scroll',
+        () => scheduleProcess(400),
+        { passive: true }
     );
 
 

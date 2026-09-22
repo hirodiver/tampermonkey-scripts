@@ -19,7 +19,15 @@ const SCRIPT = fs.readFileSync(
   'utf8'
 );
 
-const HTML = `<!doctype html><meta charset="utf-8"><title>x-mock</title><body>
+const HTML = `<!doctype html><meta charset="utf-8"><title>x-mock</title>
+<style>
+  body { margin: 0; }
+  #timeline { width: 100%; }
+  [data-testid="cellInnerDiv"] { width: 100%; }
+  .bar { width: 100%; height: 60px; }
+  article { width: 100%; min-height: 120px; }
+</style>
+<body>
 <div id="timeline" role="region"></div>
 </body>`;
 
@@ -31,7 +39,7 @@ function check(name, cond, extra) {
 
 (async () => {
   const browser = await chromium.launch();
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
 
   // x.com のパス判定を効かせるため、実URLとして配信する
   await page.route('https://x.com/**', (route) =>
@@ -96,6 +104,20 @@ function check(name, cond, extra) {
       return cell;
     };
 
+    // iPhone版のX を模した帯（href が無く role=button で描かれる）
+    window.fillButtonBar = (cell) => {
+      cell.replaceChildren();
+      const wrap = document.createElement('div');
+      wrap.className = 'bar';
+      wrap.setAttribute('role', 'button');
+      wrap.setAttribute('aria-label', 'スペース');
+      const label = document.createElement('span');
+      label.textContent = 'スペース  ライブ中  税務のはなし';
+      wrap.appendChild(label);
+      cell.appendChild(wrap);
+      return cell;
+    };
+
     // 画面下部の再生バー
     window.mkDock = () => {
       const dock = document.createElement('div');
@@ -107,6 +129,7 @@ function check(name, cond, extra) {
     };
 
     window.fillSpaceBar(window.mkCell('bar'));
+    window.fillButtonBar(window.mkCell('buttonBar'));
     window.fillBareBar(window.mkCell('bare'));
     window.fillTweet(window.mkCell('tweet'), 'ふつうの投稿');
     window.fillTweetWithSpaceLink(window.mkCell('tweetSpace'));
@@ -134,6 +157,7 @@ function check(name, cond, extra) {
   await page.waitForTimeout(900);
 
   check('JS: 目印なしの帯も消える', (await shown('bare')) === false);
+  check('JS: リンクの無い帯（iPhone版想定）も消える', (await shown('buttonBar')) === false);
   check('JS: 再生バーが消える', (await shown('dock')) === false);
   check('JS: 投稿は消えたままにならない', (await shown('tweet')) === true);
   check('JS: スペース言及の投稿は消えない', (await shown('tweetSpace')) === true);
@@ -173,7 +197,23 @@ function check(name, cond, extra) {
   check('復帰: 再生バーがまた消える', (await shown('dock')) === false);
 
   // --- 診断関数 ---
-  check('診断: __tmSpacesBar.dump() が動く', await page.evaluate(() => Array.isArray(window.__tmSpacesBar.dump())));
+  check('診断: __tmSpacesBar.dump() が動く', await page.evaluate(() => (window.__tmSpacesBar.dump() || '').includes('帯として検出')));
+
+  // --- 診断パネル（iPhone ではコンソールが使えないため） ---
+  await page.evaluate(() => { location.hash = '#tmspaces'; });
+  await page.waitForTimeout(700);
+  check('診断パネル: #tmspaces で画面に出る', await page.evaluate(() => !!document.getElementById('tm-hide-spaces-bar-panel')));
+  check('診断パネル: レポートに帯の情報が載る', await page.evaluate(() => {
+    const area = document.querySelector('#tm-hide-spaces-bar-panel textarea');
+    return !!area && area.value.includes('帯として検出');
+  }));
+  check('診断パネル: 閉じられる', await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('#tm-hide-spaces-bar-panel button')];
+    buttons.find((b) => b.textContent === '閉じる').click();
+    return !document.getElementById('tm-hide-spaces-bar-panel');
+  }));
+  await page.evaluate(() => { location.hash = ''; });
+  await page.waitForTimeout(400);
 
   // --- 後から追加された帯 ---
   await page.evaluate(() => window.fillSpaceBar(window.mkCell('later')));
