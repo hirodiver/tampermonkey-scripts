@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.2.0
+// @name         X スペース帯非表示 v1.3.0
 // @namespace    local.hiro.tools
-// @version      1.2.0
+// @version      1.3.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -69,6 +69,12 @@
     // スペースへのリンク
     const SPACE_LINK_SELECTOR = 'a[href*="/i/spaces/"]';
 
+    /*
+     * X はスペースを配信（broadcasts）側へ寄せつつある。
+     * 帯が /i/broadcasts/ を指す場合もあるので両方見る
+     */
+    const BROADCAST_LINK_SELECTOR = 'a[href*="/i/broadcasts/"]';
+
     // タイムライン1件分の要素（上から順に試す）
     const CELL_SELECTORS = [
         'div[data-testid="cellInnerDiv"]',
@@ -81,7 +87,10 @@
         'a[href^="/i/spaces"]',
         '[data-testid="audioSpaceRoot"]',
         '[data-testid="AudioSpacePill"]',
-        '[data-testid="placementTracking"] a[href*="/i/spaces/"]'
+        '[data-testid="placementTracking"] a[href*="/i/spaces/"]',
+        BROADCAST_LINK_SELECTOR,
+        '[data-testid*="audiospace" i]',
+        '[data-testid*="AudioSpace" i]'
     ];
 
     // 画面下部の再生バー
@@ -216,6 +225,19 @@
                 element.querySelector(selector) ||
                 element.closest?.(selector)
         );
+    }
+
+
+    /*
+     * 帯は文字を持たず aria-label だけのことがある。
+     * 判定にはラベルも足して見る
+     */
+    function signalTextOf(element) {
+
+        const label =
+            element.getAttribute?.('aria-label') || '';
+
+        return (label + ' ' + textOf(element)).trim();
     }
 
 
@@ -611,7 +633,11 @@
             }
 
 
-            if (!looksLikeSpaceText(textOf(candidate))) {
+            if (
+                !looksLikeSpaceText(
+                    signalTextOf(candidate)
+                )
+            ) {
                 continue;
             }
 
@@ -982,6 +1008,16 @@
             }
 
 
+            /*
+             * ページのデータ部分は手がかりにならない
+             */
+            if (
+                element.closest?.('script, style, noscript')
+            ) {
+                continue;
+            }
+
+
             found.push(element);
 
 
@@ -992,6 +1028,113 @@
 
 
         return found;
+    }
+
+
+    /*
+     * 語に頼らず、帯が居そうな場所を構造で列挙する。
+     * 実機の構造が分からないうちは、こちらが手がかりになる
+     */
+    function collectStructuralHints() {
+
+        const hints = [];
+
+
+        // 先頭のセル（帯はたいてい一番上に入る）
+        const cells =
+            queryAll(CELL_SELECTORS);
+
+        cells.slice(0, 4).forEach((cell, index) => {
+
+            hints.push({
+                種別: 'セル' + index,
+                情報: describe(cell),
+                内側:
+                    [
+                        ...cell.querySelectorAll('[data-testid]')
+                    ]
+                        .slice(0, 8)
+                        .map(
+                            el =>
+                                el.getAttribute('data-testid')
+                        )
+            });
+        });
+
+
+        // それらしい testid を持つ要素
+        const suspects =
+            [...document.querySelectorAll('[data-testid]')]
+                .filter(
+                    el =>
+                        /audio|space|dock|pill|live|broadcast|placement/i
+                            .test(
+                                el.getAttribute('data-testid') || ''
+                            )
+                )
+                .slice(0, 12);
+
+        for (const suspect of suspects) {
+
+            hints.push({
+                種別: 'testid該当',
+                情報: describe(suspect)
+            });
+        }
+
+
+        // 画面に固定されている低い要素（帯の典型）
+        const pinned =
+            [...document.querySelectorAll('div')]
+                .filter(el => {
+
+                    const style =
+                        getComputedStyle(el);
+
+                    if (
+                        style.position !== 'fixed' &&
+                        style.position !== 'sticky'
+                    ) {
+                        return false;
+                    }
+
+                    const rect =
+                        el.getBoundingClientRect();
+
+                    return (
+                        rect.height >= BAR_MIN_HEIGHT &&
+                        rect.height <= BAR_MAX_HEIGHT &&
+                        rect.width >=
+                            window.innerWidth *
+                            BAR_MIN_WIDTH_RATIO
+                    );
+                })
+                .slice(0, 8);
+
+        for (const element of pinned) {
+
+            hints.push({
+                種別: '固定要素',
+                情報: describe(element)
+            });
+        }
+
+
+        // /i/ を指すリンク（spaces も broadcasts も拾う）
+        const links =
+            [...document.querySelectorAll('a[href*="/i/"]')]
+                .slice(0, 12);
+
+        for (const link of links) {
+
+            hints.push({
+                種別: 'iリンク',
+                情報: describe(link)
+            });
+        }
+
+
+        return hints;
     }
 
 
@@ -1011,7 +1154,7 @@
         );
 
         lines.push(
-            'バージョン: 1.2.0' +
+            'バージョン: 1.3.0' +
             ' / :has対応: ' + supportsHas() +
             ' / スタイル: ' +
             (styleElement?.isConnected ?
@@ -1044,6 +1187,21 @@
 
         for (const bar of bars) {
             lines.push(JSON.stringify(describe(bar)));
+        }
+
+
+        lines.push('');
+        lines.push('■ 構造からの手がかり');
+
+        const hints =
+            collectStructuralHints();
+
+        if (!hints.length) {
+            lines.push('（なし）');
+        }
+
+        for (const hint of hints) {
+            lines.push(JSON.stringify(hint));
         }
 
 
