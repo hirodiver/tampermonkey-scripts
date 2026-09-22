@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.3.0
+// @name         X スペース帯非表示 v1.4.0
 // @namespace    local.hiro.tools
-// @version      1.3.0
+// @version      1.4.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -33,6 +33,12 @@
  *
  * 非表示は要素の削除ではなく display:none で行う。
  * 誤爆したときに DevTools で元の要素を確認できるようにするため。
+ *
+ * ■ 自動で消えないとき（iPhone だけで完結する）
+ *   URL の末尾に #tmspaces を付けて開き、「タップで指定」を押してから
+ *   消したい帯を指でタップする。その要素の居場所を覚えて以後は自動で消す。
+ *   覚えた内容は localStorage に残るので、次に開いたときも効く。
+ *   間違えたら「取り消し」または「全解除」。
  *
  * ■ iPhone で調べる方法
  *   URL の末尾に #tmspaces を付けて開くと、画面上に診断パネルが出る。
@@ -151,6 +157,15 @@
     // 診断パネルの id
     const PANEL_ID = 'tm-hide-spaces-bar-panel';
 
+    // 手動で指定した帯の記憶先
+    const STORAGE_KEY = 'tm-hide-spaces-bar-rules';
+
+    // 記憶できる件数の上限
+    const MAX_RULES = 20;
+
+    // 診断パネルを開いている間の自動更新間隔（ミリ秒）
+    const PANEL_REFRESH_MS = 1500;
+
 
     // ============================================================
     // 状態
@@ -168,6 +183,12 @@
 
     // 直近の判定結果（診断パネル用）
     let lastReport = null;
+
+    // 手動指定モードか
+    let pickingMode = false;
+
+    // 診断パネルの自動更新タイマー
+    let panelTimer = null;
 
 
     // ============================================================
@@ -711,7 +732,8 @@
         const roots = [
             ...collectByMark(),
             ...collectByShape(),
-            ...collectByCellText()
+            ...collectByCellText(),
+            ...collectByRules()
         ];
 
 
@@ -728,6 +750,293 @@
                         other !== root &&
                         other.contains(root)
                 )
+        );
+    }
+
+
+    // ============================================================
+    // 手動で指定した帯の記憶
+    // ============================================================
+
+    /*
+     * Xの DOM を当てにいくのをやめ、
+     * 「これを消して」と指で示してもらった要素の居場所を覚える。
+     *
+     * 覚えるのは文言ではなく、
+     * 「どの入れ子のどこに居るか」（親を遡った data-testid とタグの並び）と
+     * role / aria-label。
+     * 文言や配信者が変わっても効き続けるようにするため
+     */
+    function signatureOf(element) {
+
+        const path = [];
+
+        let current = element;
+
+
+        for (let i = 0; i < 6 && current; i++) {
+
+            const testid =
+                current.getAttribute?.('data-testid');
+
+            path.push(
+                testid ?
+                    `@${testid}` :
+                    current.tagName.toLowerCase()
+            );
+
+
+            if (
+                current.parentElement === document.body ||
+                !current.parentElement
+            ) {
+                break;
+            }
+
+            current = current.parentElement;
+        }
+
+
+        return [
+            path.join('<'),
+
+            element.getAttribute?.('role') || '',
+
+            element.getAttribute?.('aria-label') || ''
+        ].join('|');
+    }
+
+
+    function loadRules() {
+
+        try {
+
+            const raw =
+                localStorage.getItem(STORAGE_KEY);
+
+            const parsed =
+                raw ? JSON.parse(raw) : [];
+
+            return Array.isArray(parsed) ? parsed : [];
+
+        } catch {
+
+            /*
+             * 読めない環境（プライベートブラウズ等）では
+             * 記憶なしとして動く
+             */
+            return [];
+        }
+    }
+
+
+    function saveRules(rules) {
+
+        try {
+
+            localStorage.setItem(
+                STORAGE_KEY,
+
+                JSON.stringify(
+                    rules.slice(-MAX_RULES)
+                )
+            );
+
+            return true;
+
+        } catch {
+
+            return false;
+        }
+    }
+
+
+    function addRule(element) {
+
+        const rules = loadRules();
+
+
+        const rule = {
+            sig:
+                signatureOf(element),
+
+            memo:
+                textOf(element).slice(0, 30),
+
+            at:
+                new Date().toISOString()
+        };
+
+
+        /*
+         * 同じものは重ねない
+         */
+        if (
+            rules.some(item => item.sig === rule.sig)
+        ) {
+            return rule;
+        }
+
+
+        rules.push(rule);
+
+        saveRules(rules);
+
+
+        return rule;
+    }
+
+
+    function removeLastRule() {
+
+        const rules = loadRules();
+
+        rules.pop();
+
+        saveRules(rules);
+
+        restoreAll();
+    }
+
+
+    function clearRules() {
+
+        saveRules([]);
+
+        restoreAll();
+    }
+
+
+    /*
+     * 記憶した居場所に当てはまる要素を集める。
+     *
+     * 総当たりは重いので、候補を
+     * 「目印を持つ要素・押せる要素・セル・画面に固定された要素」に絞る
+     */
+    function collectByRules() {
+
+        const rules = loadRules();
+
+        if (!rules.length) {
+            return [];
+        }
+
+
+        const wanted =
+            new Set(rules.map(rule => rule.sig));
+
+
+        const candidates =
+            queryAll([
+                '[data-testid]',
+                '[role="button"]',
+                '[role="link"]',
+                '[aria-label]',
+                ...CELL_SELECTORS
+            ]);
+
+
+        const roots = [];
+
+
+        for (const candidate of candidates) {
+
+            if (!wanted.has(signatureOf(candidate))) {
+                continue;
+            }
+
+
+            /*
+             * 投稿が入ってきたものは、
+             * 使い回しとみなして消さない
+             */
+            if (hasTweet(candidate)) {
+                continue;
+            }
+
+
+            roots.push(candidate);
+        }
+
+
+        return roots;
+    }
+
+
+    // ============================================================
+    // 手動指定モード
+    // ============================================================
+
+    /*
+     * 次の1タップで、触れた要素を帯として覚える
+     */
+    function startPicking() {
+
+        pickingMode = true;
+
+
+        const overlay =
+            document.getElementById(PANEL_ID);
+
+        if (overlay) {
+            overlay.style.opacity = '0.15';
+        }
+
+
+        const onPick = event => {
+
+            event.preventDefault();
+            event.stopPropagation();
+
+
+            document.removeEventListener(
+                'click',
+                onPick,
+                true
+            );
+
+            pickingMode = false;
+
+
+            const point =
+                event.touches?.[0] || event;
+
+
+            const target =
+                document.elementFromPoint(
+                    point.clientX,
+                    point.clientY
+                ) || event.target;
+
+
+            if (!target) {
+                return;
+            }
+
+
+            const root =
+                findBarRoot(target);
+
+
+            addRule(root);
+
+
+            if (overlay) {
+                overlay.style.opacity = '';
+            }
+
+
+            scheduleProcess(50);
+        };
+
+
+        /*
+         * capture で拾い、X 側のタップ処理へ渡さない
+         */
+        document.addEventListener(
+            'click',
+            onPick,
+            true
         );
     }
 
@@ -1154,7 +1463,7 @@
         );
 
         lines.push(
-            'バージョン: 1.3.0' +
+            'バージョン: 1.4.0' +
             ' / :has対応: ' + supportsHas() +
             ' / スタイル: ' +
             (styleElement?.isConnected ?
@@ -1188,6 +1497,11 @@
         for (const bar of bars) {
             lines.push(JSON.stringify(describe(bar)));
         }
+
+
+        lines.push(
+            '手動記憶: ' + loadRules().length + '件'
+        );
 
 
         lines.push('');
@@ -1291,6 +1605,37 @@
 
 
             document.body.appendChild(panel);
+
+
+            /*
+             * 開いている間は定期的に取り直す。
+             * 読み込み直後の古い内容のまま報告されるのを防ぐ
+             */
+            clearInterval(panelTimer);
+
+            panelTimer =
+                setInterval(
+                    () => {
+
+                        if (
+                            !document.getElementById(PANEL_ID)
+                        ) {
+
+                            clearInterval(panelTimer);
+
+                            panelTimer = null;
+
+                            return;
+                        }
+
+
+                        if (!pickingMode) {
+                            syncPanel();
+                        }
+                    },
+
+                    PANEL_REFRESH_MS
+                );
         }
 
 
@@ -1367,9 +1712,18 @@
 
 
         bar.append(
+            makeButton('タップで指定', () => {
+
+                startPicking();
+            }),
+
             copyButton,
 
             makeButton('閉じる', () => {
+
+                clearInterval(panelTimer);
+
+                panelTimer = null;
 
                 panel.remove();
             })
@@ -1380,8 +1734,79 @@
 
 
         // --------------------------------------------------------
+        // 記憶の管理
+        // --------------------------------------------------------
+
+        const rules = loadRules();
+
+
+        const ruleBar =
+            document.createElement('div');
+
+        Object.assign(
+            ruleBar.style,
+            {
+                display: 'flex',
+                gap: '8px',
+                alignItems: 'center',
+                marginBottom: '8px'
+            }
+        );
+
+
+        const ruleLabel =
+            document.createElement('span');
+
+        ruleLabel.textContent =
+            '記憶: ' + rules.length + '件';
+
+        ruleLabel.style.flex = '1';
+
+
+        ruleBar.append(
+            ruleLabel,
+
+            makeButton('取り消し', () => {
+
+                removeLastRule();
+
+                scheduleProcess(50);
+            }),
+
+            makeButton('全解除', () => {
+
+                clearRules();
+
+                scheduleProcess(50);
+            })
+        );
+
+
+        panel.appendChild(ruleBar);
+
+
+        // --------------------------------------------------------
         // 本文
         // --------------------------------------------------------
+
+        const guide =
+            document.createElement('div');
+
+        guide.textContent =
+            pickingMode ?
+                '消したい帯を1回タップしてください' :
+                '自動で消えないときは「タップで指定」→ 帯をタップ';
+
+        Object.assign(
+            guide.style,
+            {
+                marginBottom: '6px',
+                color: pickingMode ? '#ff8' : '#9cf'
+            }
+        );
+
+        panel.appendChild(guide);
+
 
         const area =
             document.createElement('textarea');
@@ -1424,6 +1849,12 @@
         panel: syncPanel,
 
         css: buildCss,
+
+        pick: startPicking,
+
+        rules: loadRules,
+
+        clear: clearRules,
 
         last: () => lastReport
     };

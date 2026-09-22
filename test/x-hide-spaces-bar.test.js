@@ -215,6 +215,61 @@ function check(name, cond, extra) {
   await page.evaluate(() => { location.hash = ''; });
   await page.waitForTimeout(400);
 
+  // --- 手動指定（自動判定に当たらない帯を、タップで覚えさせる） ---
+  // どのルールにも引っかからない帯を置く（文言も testid も手がかり無し）
+  await page.evaluate(() => {
+    const cell = window.mkCell('unknownBar');
+    const inner = document.createElement('div');
+    inner.className = 'bar';
+    inner.id = 'unknownInner';
+    inner.textContent = '🎧 いま話し中';
+    cell.appendChild(inner);
+  });
+  await page.waitForTimeout(700);
+  check('手動指定: 正体不明の帯は自動では消えない（想定どおり）', (await shown('unknownBar')) === true);
+
+  await page.evaluate(() => { location.hash = '#tmspaces'; });
+  await page.waitForTimeout(700);
+  await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('#tm-hide-spaces-bar-panel button')];
+    buttons.find((b) => b.textContent === 'タップで指定').click();
+  });
+  // 帯をタップ
+  await page.click('#unknownInner', { force: true });
+  await page.waitForTimeout(700);
+  check('手動指定: タップした帯が消える', (await shown('unknownBar')) === false);
+  check('手動指定: 記憶が保存される', await page.evaluate(() => JSON.parse(localStorage.getItem('tm-hide-spaces-bar-rules') || '[]').length === 1));
+
+  // 再読み込み相当: DOMを作り直してスクリプトを流し直す
+  await page.evaluate(() => {
+    document.getElementById('timeline').replaceChildren();
+    document.getElementById('tm-hide-spaces-bar-panel')?.remove();
+    document.getElementById('tm-hide-spaces-bar-style')?.remove();
+    location.hash = '';
+    const cell = window.mkCell('unknownBar');
+    const inner = document.createElement('div');
+    inner.className = 'bar';
+    inner.id = 'unknownInner';
+    inner.textContent = '🎧 別の人が話し中';
+    cell.appendChild(inner);
+  });
+  await page.evaluate(SCRIPT);
+  await page.waitForTimeout(900);
+  check('手動指定: 読み込み直しても覚えている（文言が変わっても効く）', (await shown('unknownBar')) === false);
+
+  // 使い回しで投稿になったら消さない
+  await page.evaluate(() => {
+    window.fillTweet(document.getElementById('unknownBar'), '使い回された投稿');
+    document.getElementById('timeline').appendChild(document.createElement('div'));
+  });
+  await page.waitForTimeout(900);
+  check('手動指定: 投稿に化けたら表示へ戻る', (await shown('unknownBar')) === true);
+
+  // 全解除
+  await page.evaluate(() => {
+    localStorage.removeItem('tm-hide-spaces-bar-rules');
+  });
+
   // --- 後から追加された帯 ---
   await page.evaluate(() => window.fillSpaceBar(window.mkCell('later')));
   await page.waitForTimeout(100);
