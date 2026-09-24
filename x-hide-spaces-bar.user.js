@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.8.0
+// @name         X スペース帯非表示 v1.9.0
 // @namespace    local.hiro.tools
-// @version      1.8.0
+// @version      1.9.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -33,6 +33,12 @@
  *
  * 非表示は要素の削除ではなく display:none で行う。
  * 誤爆したときに DevTools で元の要素を確認できるようにするため。
+ *
+ * 帯を消したあとに空白の帯が残る場合も、同じ「タップで指定」で消せる。
+ * 残った空白をタップすればよい。
+ *
+ * （自動で畳む処理は入れていない。実機で効かないまま複雑さだけが残ったため、
+ *  v1.9.0 で削除した。確実なのは指で示してもらう方式）
  *
  * ■ 自動で消えないとき（iPhone だけで完結する）
  *   URL の末尾に #tmspaces を付けて開き、「タップで指定」を押してから
@@ -180,21 +186,13 @@
     const PURPLE_TOLERANCE = 70;
 
     /*
-     * 帯を消したあと、入れ物にアイコンだけが残ることがある。
-     * （実機では下向き矢印が残り、空白の帯として見えていた）
-     *
-     * 文字を持たないアイコンだけなら畳む。
-     * ただし下の要素を含む入れ物は、機能が失われるので残す
+     * 「新しいポストを表示」は帯と同じ仕組みで出る。
+     * これを含む入れ物は消さない
      */
-    const COLLAPSE_ICON_ONLY = true;
-
     const KEEP_CONTENT_SELECTORS = [
         KEEP_PILL_SELECTOR,
         '[aria-label*="新しいポスト"]',
-        '[aria-label*="New posts"]',
-        'input',
-        'textarea',
-        'video'
+        '[aria-label*="New posts"]'
     ];
 
     // 帯とみなす高さの範囲（ピクセル）
@@ -1280,12 +1278,20 @@
             new Set(rules.map(rule => rule.sig));
 
 
+        /*
+         * 帯の名残は data-testid も role も持たない、
+         * ただの div のことがある（実機の空白がこれ）。
+         * nav / header の直下と孫まで候補に入れる
+         */
         const candidates =
             queryAll([
                 '[data-testid]',
                 '[role="button"]',
                 '[role="link"]',
                 '[aria-label]',
+                'nav > *',
+                'nav > * > *',
+                'header > *',
                 ...CELL_SELECTORS
             ]);
 
@@ -1391,6 +1397,12 @@
             addRule(root);
 
 
+            /*
+             * 覚えるだけでなく、その場で消す
+             */
+            setHidden(root, true);
+
+
             if (overlay) {
 
                 overlay.style.opacity = '';
@@ -1415,19 +1427,11 @@
 
 
     // ============================================================
-    // 残った高さを潰す
+    // 残しておくもの
     // ============================================================
 
     /*
-     * 帯を消しても、それを包む入れ物が高さを持ったままだと
-     * 空白が残る。
-     *
-     * 帯の親を遡り、「中身がもう何も見えていないのに
-     * 高さだけある」要素を畳む。
-     * 見えている中身が1つでもあれば触らない
-     */
-    /*
-     * 残しておくべき機能を含んでいるか
+     * 「新しいポストを表示」など、消してはいけない機能を含むか
      */
     function holdsKeeper(element) {
 
@@ -1445,132 +1449,6 @@
                 return false;
             }
         });
-    }
-
-
-    function hasVisibleContent(element) {
-
-        if (holdsKeeper(element)) {
-            return true;
-        }
-
-
-        /*
-         * 文字が残っているなら中身があるとみなす。
-         *
-         * 逆に、文字が無くアイコンだけの場合は
-         * 帯の名残とみなして畳む（矢印だけが残る現象への対処）
-         */
-        if (textOf(element)) {
-            return true;
-        }
-
-
-        if (COLLAPSE_ICON_ONLY) {
-            return false;
-        }
-
-
-        for (const child of element.children) {
-
-            if (child.hasAttribute(HIDDEN_ATTR)) {
-                continue;
-            }
-
-
-            if (child.id === PANEL_ID) {
-                continue;
-            }
-
-
-            let display = '';
-
-            try {
-
-                display =
-                    getComputedStyle(child).display;
-
-            } catch {
-
-                /*
-                 * 取れない場合は「見えている」とみなす
-                 */
-                return true;
-            }
-
-
-            if (display === 'none') {
-                continue;
-            }
-
-
-            const rect =
-                child.getBoundingClientRect();
-
-            if (rect.width > 0 && rect.height > 0) {
-                return true;
-            }
-        }
-
-
-        return false;
-    }
-
-
-    function collapseEmptyAncestors(element) {
-
-        let current = element.parentElement;
-
-        let changed = 0;
-
-
-        for (let i = 0; i < 6 && current; i++) {
-
-            if (
-                current === document.body ||
-                current === document.documentElement
-            ) {
-                break;
-            }
-
-
-            /*
-             * タイムライン本体まで畳むと投稿ごと消える
-             */
-            if (
-                current.matches?.(
-                    'main, [role="main"], [role="region"], section'
-                )
-            ) {
-                break;
-            }
-
-
-            if (hasVisibleContent(current)) {
-                break;
-            }
-
-
-            const rect =
-                current.getBoundingClientRect();
-
-
-            /*
-             * 高さが残っているものだけ畳む
-             */
-            if (rect.height >= 1) {
-
-                if (setHidden(current, true)) {
-                    changed++;
-                }
-            }
-
-
-            current = current.parentElement;
-        }
-
-
-        return changed;
     }
 
 
@@ -1620,14 +1498,6 @@
             }
         }
 
-
-        /*
-         * 消した帯の分の空白を潰す
-         */
-        for (const bar of bars) {
-
-            changed += collapseEmptyAncestors(bar);
-        }
 
 
         lastReport = {
@@ -2039,7 +1909,7 @@
         );
 
         lines.push(
-            'バージョン: 1.8.0' +
+            'バージョン: 1.9.0' +
             ' / :has対応: ' + supportsHas() +
             ' / スタイル: ' +
             (styleElement?.isConnected ?

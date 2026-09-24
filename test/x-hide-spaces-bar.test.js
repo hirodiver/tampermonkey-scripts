@@ -269,19 +269,12 @@ function check(name, cond, extra) {
   check('色: 紫の帯を含む投稿は消えない', (await shown('purpleTweet')) === true);
   check('ピル: 実機構造のスペースピルが消える', (await shown('spacePill')) === false);
   check('ピル: 「新しいポストを表示」は残る', (await shown('newPostsPill')) === true);
-  check('空白: 帯の入れ物に高さが残らない', await page.evaluate(() => {
-    const height = (id) => document.getElementById(id).getBoundingClientRect().height;
-    // nav の高さ = 残すべきピルの高さの合計（消した帯の分は残らない）
-    return height('spacePill') === 0 &&
-      document.getElementById('headerNav').getBoundingClientRect().height ===
-        height('newPostsPill') + height('keeperPill');
+  check('ピル: 「新しいポストを表示」が同居する入れ物は帯だけ消す', await page.evaluate(() => {
+    const outer = document.getElementById('keeperPill');
+    return outer.getBoundingClientRect().height > 0 &&
+      getComputedStyle(outer.querySelector('[data-testid="placementTracking"]')).display === 'none';
   }));
-  check('空白: 中身が見えている入れ物は畳まない', await page.evaluate(() =>
-    document.getElementById('newPostsPill').getBoundingClientRect().height > 0));
-  check('空白: 矢印アイコンだけが残った入れ物も畳む', await page.evaluate(() =>
-    document.getElementById('arrowPill').getBoundingClientRect().height === 0));
-  check('空白: 「新しいポストを表示」を含むなら畳まない', await page.evaluate(() =>
-    document.getElementById('keeperPill').getBoundingClientRect().height > 0));
+  check('ピル: 矢印だけの入れ物も帯ごと消える', (await shown('arrowPill')) === false);
   check('JS: 再生バーが消える', (await shown('dock')) === false);
   check('JS: 投稿は消えたままにならない', (await shown('tweet')) === true);
   check('JS: スペース言及の投稿は消えない', (await shown('tweetSpace')) === true);
@@ -393,6 +386,26 @@ function check(name, cond, extra) {
   });
   await page.waitForTimeout(900);
   check('手動指定: 投稿に化けたら表示へ戻る', (await shown('unknownBar')) === true);
+
+  // --- 帯を消したあとに残る空白の帯も、同じタップ指定で消せる ---
+  // （自動で畳む処理は v1.9.0 で削除した。実機で効かなかったため）
+  await page.evaluate(() => {
+    document.getElementById('timeline').replaceChildren();
+    const strip = document.createElement('div');
+    strip.id = 'leftoverStrip';
+    strip.setAttribute('style', 'width: 100%; height: 52px;');
+    document.getElementById('headerNav').appendChild(strip);
+    location.hash = '#tmspaces';
+    window.scrollTo(0, 0);
+  });
+  await page.waitForTimeout(700);
+  await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('#tm-hide-spaces-bar-panel button')];
+    buttons.find((b) => b.textContent === 'タップで指定').click();
+  });
+  await page.click('#leftoverStrip', { force: true });
+  await page.waitForTimeout(700);
+  check('残った空白: タップで指定すれば消える', (await shown('leftoverStrip')) === false);
 
   // 全解除
   await page.evaluate(() => {
