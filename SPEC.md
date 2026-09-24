@@ -1,6 +1,6 @@
 # X YouTube Card 仕様書
 
-- **バージョン**: 3.10.2（機能はv3.9.1相当＋引用ポストの誤URL修正）
+- **バージョン**: 3.10.3（機能はv3.9.1相当＋引用ポストの誤URL修正＋iOSタップ誤爆修正）
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -466,7 +466,7 @@ scan() のカード判定:
 NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ```
 
-ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。54項目。
+ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。57項目。
 
 | 項目 | 確認内容 |
 |---|---|
@@ -493,6 +493,7 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 | 29 | article単位の緩和が隣接する無関係なarticleへ越境しない |
 | 30 | 本文要素が丸ごと置き換わってもボタンが重複しない |
 | 31-32 | 引用ポスト：引用元の無関係なURLを掴まない／引用した側の本文のリンクを正しく採る |
+| 33-35 | iOSタップ誤爆対策：touch系イベントがボタンの外へ伝播しない／weakなURLをクリック直後に直接開かず非同期解決を待つ |
 
 **このテストが保証しないこと**
 
@@ -511,6 +512,12 @@ Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動
 ---
 
 ## 13. 変更履歴
+
+### v3.10.3
+- **実機報告: iOSでボタンをタップすると、YouTubeではなくXアプリが起動してそのポストが再び表示される不具合を修正**
+- 原因1: `mousedown` / `pointerdown` / `click` は伝播を止めていたが、**`touchstart` / `touchend` / `pointerup` は素通りしていた**。Xはポストの遷移をタッチ系イベントでも処理しており、そこへ伝播すると `x.com/<user>/status/<id>` への遷移が起き、iOSがそれをUniversal Linkとして解釈してXアプリを開いていた。対策としてこの3つも capture で `stopPropagation()` するようにした。`preventDefault()` はしない（`<a>` 要素の `touchend` で `preventDefault()` すると合成 `click` イベントが発火せず、ボタン自体が無反応になるため）
+- 原因2: クリックハンドラが `state.url` を **weak（t.co止まり、未確定）かどうか見ずに** そのまま開いていた。weakなURLはYouTubeのURLではなく `https://t.co/...` のことがあり、これを直接開くとiOSがXの他ドメインのリンクとして扱いうる。`ready` の判定に `!current.weak` を加え、weakしか無い場合は同期解決 → 非同期のsyndication APIで確定させてから開くようにした
+- 検証を57項目に拡充（touch系イベントの伝播が外へ漏れないこと、weakなURLをクリック直後に直接開かないこと）
 
 ### v3.10.2
 - **実機報告: 引用ポストで、引用した側にYouTube URLがあるのに、引用元の無関係なURL（YouTube以外）がボタンで開く不具合を修正**

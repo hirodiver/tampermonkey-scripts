@@ -895,6 +895,65 @@ function check(name, cond, extra) {
       'https://www.youtube.com/watch?v=OUTERVIDEO11',
     { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
 
+  // ===================================================================
+  // 33-35. タップ/クリック時にtouch系イベントで奪われない／weakなURLを直接開かない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened.length = 0;
+    window.__fetched.length = 0;
+    window.__api['1000000000000000033'] = ['https://www.youtube.com/watch?v=RESOLVEDLATE1'];
+    window.mkTweet({
+      user: 'dave', id: '1000000000000000033',
+      cards: ['<a href="https://t.co/weak33">t</a><span>youtube.com</span>'],
+    });
+  });
+  await rescan();
+  // ヘッドレスではIntersectionObserverによる先読みが走り、クリック前に
+  // 確定URLへ書き換わっていることがある（PREFETCH_ON_VIEW）。
+  // ここではhrefの状態は問わず、クリック結果だけを見る。
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(300);
+  check('33: クリック直後にt.coそのものを開かない',
+    await page.evaluate(() => !window.__opened.some((u) => /t\.co/.test(u))),
+    { opened: await page.evaluate(() => window.__opened) });
+  check('34: 非同期解決の確定URLを開く（weakのまま直開きしていない証拠）',
+    await page.evaluate(() =>
+      window.__opened.some((u) => /RESOLVEDLATE1/.test(u))
+    ),
+    { opened: await page.evaluate(() => window.__opened) });
+
+  // タッチ系イベントの伝播が止まっていることを確認
+  // （touchstart/touchend/pointerupがボタンの外へ伝わらない）
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened.length = 0;
+    window.mkTweet({
+      user: 'erin', id: '1000000000000000036',
+      cards: ['<a href="https://www.youtube.com/watch?v=TOUCHTEST123">t</a><span>youtube.com</span>'],
+    });
+  });
+  await rescan();
+  check('35: touchstart/touchend/pointerupがボタンの外へ伝播しない',
+    await page.evaluate(() => {
+      const btn = document.querySelector('.hiroYtOpen-btn');
+      const article = btn.closest('article') || document.querySelector('article');
+      let leaked = false;
+      article.addEventListener('touchstart', () => { leaked = true; });
+      article.addEventListener('touchend', () => { leaked = true; });
+      article.addEventListener('pointerup', () => { leaked = true; });
+
+      const fire = (type) => {
+        const ev = new Event(type, { bubbles: true, cancelable: true });
+        btn.dispatchEvent(ev);
+      };
+      fire('touchstart');
+      fire('touchend');
+      fire('pointerup');
+
+      return !leaked;
+    }));
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);

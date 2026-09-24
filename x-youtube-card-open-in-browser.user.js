@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X YouTube Card v3.10.2
+// @name         X YouTube Card v3.10.3
 // @namespace    local.hiro.tools
-// @version      3.10.2
+// @version      3.10.3
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -1304,6 +1304,26 @@
     button.addEventListener('mousedown', (e) => e.stopPropagation(), true);
     button.addEventListener('pointerdown', onPointerDown, true);
 
+    // iOSでタップすると稀に X アプリでポストが開き直されるバグへの対策。
+    //
+    // 止めていたのは mousedown / pointerdown / click だけで、
+    // touchstart / touchend / pointerup は素通りしていた。
+    // X はカード／ツイート本体のタップ遷移をタッチ系イベントでも
+    // 処理しており、そこへ伝播すると x.com/<user>/status/<id> への
+    // 遷移が起きる。iOSはそのURLをUniversal Linkとして解釈し、
+    // YouTubeではなくXアプリでポストを開き直してしまう。
+    //
+    // stopPropagation だけに留め、preventDefault はしない。
+    // <a> 要素の touchend で preventDefault すると合成 click イベントが
+    // 発火しなくなり、既存の click ハンドラ（openUrl呼び出し）が
+    // 動かなくなる（open処理が二重に走る心配も無くなる代わりに、
+    // ボタン自体が無反応になってしまう）。
+    const stopTouchPropagation = (e) => e.stopPropagation();
+
+    button.addEventListener('touchstart', stopTouchPropagation, true);
+    button.addEventListener('touchend', stopTouchPropagation, true);
+    button.addEventListener('pointerup', stopTouchPropagation, true);
+
     button.addEventListener(
       'click',
       (event) => {
@@ -1325,17 +1345,28 @@
 
         const current = stateOf(card, article);
 
-        // 記録済みURL、無ければその場でDOM／Reactから解決
-        let ready = current.url;
+        // 記録済みURL、無ければその場でDOM／Reactから解決。
+        //
+        // weak（t.co止まり）は確定していないURLなので、ここでは
+        // 採用しない。t.co をそのまま開くと、iOSではXの他ドメインの
+        // リンクとしてXアプリに奪われることがある。weakしか無い場合は
+        // 下の非同期経路（syndication API）で確定させてから開く。
+        let ready = current.url && !current.weak ? current.url : null;
 
         if (!ready) {
           const resolved = resolveSync(card, article);
 
-          if (resolved) {
+          if (resolved && !resolved.weak) {
             current.url = resolved.url;
-            current.weak = resolved.weak;
+            current.weak = false;
             ready = resolved.url;
             syncHref(card, ready);
+          } else if (resolved) {
+            // weak な解決結果は保持だけしておく（ボタン表示・後続の
+            // 先読みに使われる）。ここでは開かない。
+            current.url = resolved.url;
+            current.weak = true;
+            syncHref(card, current.url);
           }
         }
 
