@@ -35,7 +35,8 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>x-mock</title>
   .d2 { position: absolute; top: 0; left: 0; right: 0; height: 112px; padding-top: 56px; box-sizing: border-box; }
   .row { width: 100%; height: 52px; }
   .track { width: 386px; height: 36px; }
-  #timeline { padding-top: 163px; }
+  #banner { display: flex; flex-direction: column; }
+  #spacer { height: 162px; }
   [data-testid="cellInnerDiv"] { height: 120px; }
 </style>
 <body>
@@ -45,7 +46,10 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>x-mock</title>
     <nav id="headerNav"></nav>
   </div></div></div></div>
 </div>
+<main style="display:flex;flex-direction:column">
+<header role="banner" id="banner"><div id="spacer"></div></header>
 <section role="region" id="timeline"></section>
+</main>
 </body>`;
 
 const results = [];
@@ -163,6 +167,10 @@ function check(name, cond, extra) {
     document.getElementById('header').getBoundingClientRect().height === 51 &&
     getComputedStyle(document.getElementById('header')).overflow !== 'hidden'));
 
+  check('押し下げ: 最初の投稿が帯の分（56px）上がる', await page.evaluate(() =>
+    Math.round(document.getElementById('tweet1').getBoundingClientRect().top) === 106),
+    await page.evaluate(() => document.getElementById('tweet1').getBoundingClientRect().top));
+
   // --- 後から現れた帯 ---
   await page.evaluate(() => window.mkPill(document.getElementById('headerNav'), 'laterPill', '+5・雑談'));
   check('CSS: 後から現れた帯も待たずに消える', (await display('laterPill')) === 'none');
@@ -172,6 +180,8 @@ function check(name, cond, extra) {
     window.mkPill(document.getElementById('headerNav'), 'newPostsPill', '新しいポストを表示', { keep: true });
   });
   check('残す: 「新しいポストを表示」（pillLabel）は消えない', (await display('newPostsPill')) !== 'none');
+  check('残す: 「新しいポストを表示」が居るときは投稿を詰めない', await page.evaluate(() =>
+    Math.round(document.getElementById('tweet1').getBoundingClientRect().top) === 162));
 
   await page.evaluate(() => {
     window.mkPill(document.getElementById('headerNav'), 'sharedPill', '+3・雑談', { keeperArrow: true });

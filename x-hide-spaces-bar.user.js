@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v2.3.0
+// @name         X スペース帯非表示 v2.4.0
 // @namespace    local.hiro.tools
-// @version      2.3.0
+// @version      2.4.0
 // @description  X のタイムライン上部（タブの下）に出る音声スペースの帯を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -50,7 +50,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '2.3.0';
+    const VERSION = '2.4.0';
 
     // 帯の中身（実機で確認）
     const PILL_SELECTOR = '[data-testid="pill-contents-container"]';
@@ -72,6 +72,9 @@
         '[aria-label*="新しいポスト"]',
         '[aria-label*="New posts"]'
     ];
+
+    // 帯の枠の高さ（実機診断で確認、px）
+    const BAR_FRAME_HEIGHT = 56;
 
     // 注入する <style> の id
     const STYLE_ID = 'tm-hide-spaces-bar-style';
@@ -168,9 +171,29 @@
         ];
 
 
+        /*
+         * 投稿を押し下げている領域（実機診断 v2.3.0 で確定）。
+         *
+         *   header[role=banner]: relative, 162px（＝ヘッダ106 + 帯の枠56）
+         *   最初の投稿の上端: y162
+         *
+         * 枠を0にしても、この header が帯の分を含めた高さを保つので
+         * 投稿の位置が変わらなかった。帯があるときだけ下マージンで56px詰める。
+         *
+         * 条件は :has() を入れ子にせず、残すもの（pillLabel）が
+         * 帯の nav に居るときは外側の :not(:has()) で外す
+         */
+        const bannerRule =
+            `body:has(${framePath})` +
+            `:not(:has(div[role="grid"] > div > nav [data-testid="pillLabel"]))` +
+            ` header[role="banner"]`;
+
+
         return (
             rules.join(',\n') +
             ' {\n    display: none !important;\n}\n\n' +
+            bannerRule +
+            ` {\n    margin-bottom: -${BAR_FRAME_HEIGHT}px !important;\n}\n\n` +
             frameRules.join(',\n') +
             ' {\n    height: 0 !important;\n' +
             '    min-height: 0 !important;\n' +
