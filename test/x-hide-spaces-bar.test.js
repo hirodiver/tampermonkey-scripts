@@ -41,7 +41,7 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>x-mock</title>
 <body>
 <div id="header">
   <div id="tabs">フォロー中 リポスト 最推し達</div>
-  <div class="d4" id="d4"><div class="d3" id="d3"><div class="d2" id="d2"><div id="d1">
+  <div class="d4" id="d4"><div class="d3" id="d3"><div class="d2" id="d2" role="grid"><div id="d1">
     <nav id="headerNav"></nav>
   </div></div></div></div>
 </div>
@@ -149,12 +149,19 @@ function check(name, cond, extra) {
   const aloneDepth = /帯専用の一番外側: 深さ (\d+)/.exec(aloneReport);
   check('診断: 帯が1本だけなら、帯専用の範囲はヘッダ本体の手前（深さ11）まで伸びる',
     aloneDepth && aloneDepth[1] === '11', aloneDepth && aloneDepth[1]);
-  check('診断: 帯専用の枠（d4）の実測56pxが出る', aloneReport.includes('"実測":"390×56'));
   await page.evaluate(() => {
     document.getElementById('tm-hide-spaces-bar-panel')?.remove();
     location.hash = '';
   });
   await page.waitForTimeout(100);
+
+  check('枠: 帯専用の枠（深さ12）の高さが0になる', await page.evaluate(() =>
+    document.getElementById('d4').getBoundingClientRect().height === 0));
+  check('枠: タブ行は残る', await page.evaluate(() =>
+    document.getElementById('tabs').getBoundingClientRect().height === 51));
+  check('枠: タブを含むヘッダ本体は潰さない', await page.evaluate(() =>
+    document.getElementById('header').getBoundingClientRect().height === 51 &&
+    getComputedStyle(document.getElementById('header')).overflow !== 'hidden'));
 
   // --- 後から現れた帯 ---
   await page.evaluate(() => window.mkPill(document.getElementById('headerNav'), 'laterPill', '+5・雑談'));

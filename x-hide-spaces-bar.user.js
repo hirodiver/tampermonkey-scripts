@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v2.2.0
+// @name         X スペース帯非表示 v2.3.0
 // @namespace    local.hiro.tools
-// @version      2.2.0
+// @version      2.3.0
 // @description  X のタイムライン上部（タブの下）に出る音声スペースの帯を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -50,7 +50,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '2.2.0';
+    const VERSION = '2.3.0';
 
     // 帯の中身（実機で確認）
     const PILL_SELECTOR = '[data-testid="pill-contents-container"]';
@@ -133,9 +133,49 @@
         ];
 
 
+        /*
+         * 帯専用の枠（実機診断 v2.2.0 で確定）。
+         *
+         *   深さ12: absolute, 56px   ← 枠の一番外側
+         *   深さ11: relative, 56px, overflow hidden
+         *   深さ10: div[role=grid], absolute, padding-top 56px, 112px
+         *   深さ9:  div
+         *   深さ8:  nav
+         *
+         * 中身を消しても枠は56pxのまま残り、空白になっていた。
+         * 枠の高さそのものを0にする。本当に大きさが変わるので、
+         * Xが枠の大きさを見てタイムラインの位置を決めているなら追従する
+         */
+        /*
+         * :has() は入れ子にできない（入れ子にするとルールごと無効になる）。
+         * 帯の有無は子孫セレクタで見て、残すものの除外は外側に付ける
+         */
+        const framePath =
+            `div[role="grid"] > div > nav > div ${PILL_SELECTOR}`;
+
+        const keepOutside =
+            KEEP_SELECTORS
+                .map(selector => `:not(:has(${selector}))`)
+                .join('');
+
+        /*
+         * 深さ11（grid の親）と深さ12（その親）だけ。
+         * もう1段上（深さ13）はタブを含むヘッダ本体なので絶対に触らない
+         */
+        const frameRules = [
+            `div:has(> ${framePath})${keepOutside}`,
+            `div:has(> div > ${framePath})${keepOutside}`
+        ];
+
+
         return (
             rules.join(',\n') +
-            ' {\n    display: none !important;\n}\n'
+            ' {\n    display: none !important;\n}\n\n' +
+            frameRules.join(',\n') +
+            ' {\n    height: 0 !important;\n' +
+            '    min-height: 0 !important;\n' +
+            '    padding-top: 0 !important;\n' +
+            '    overflow: hidden !important;\n}\n'
         );
     }
 
