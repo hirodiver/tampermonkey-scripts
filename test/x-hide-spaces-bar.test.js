@@ -332,6 +332,26 @@ function check(name, cond, extra) {
   await page.evaluate(() => { location.hash = ''; });
   await page.waitForTimeout(400);
 
+  // --- 空白対策: 新しく隠したときだけ resize/scroll を送る ---
+  await page.evaluate(() => {
+    window.__resizeCount = 0;
+    window.__scrollCount = 0;
+    window.addEventListener('resize', () => { window.__resizeCount++; });
+    window.addEventListener('scroll', () => { window.__scrollCount++; }, { capture: true });
+  });
+  await page.evaluate(() => window.fillSpaceBar(window.mkCell('nudgeBar')));
+  await page.waitForTimeout(500);
+  check('空白対策: 新規に隠したら resize が飛ぶ', await page.evaluate(() => window.__resizeCount > 0));
+
+  const countsAfterFirst = await page.evaluate(() => window.__resizeCount);
+  // 変化がない巡回では再送しない
+  await page.evaluate(() => document.getElementById('timeline').appendChild(document.createElement('div')));
+  await page.waitForTimeout(900);
+  check('空白対策: 何も新しく隠していない巡回では再送しない', await page.evaluate(
+    (before) => window.__resizeCount === before,
+    countsAfterFirst
+  ));
+
   // --- 診断に空白の出どころが載る ---
   await page.evaluate(() => { location.hash = '#tmspaces'; });
   await page.waitForTimeout(700);

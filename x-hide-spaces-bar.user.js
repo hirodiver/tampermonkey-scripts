@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v2.0.0
+// @name         X スペース帯非表示 v2.1.0
 // @namespace    local.hiro.tools
-// @version      2.0.0
+// @version      2.1.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -34,6 +34,17 @@
  * 非表示は要素の削除ではなく display:none で行う。
  * 誤爆したときに DevTools で元の要素を確認できるようにするため。
  *
+ * ■ 帯を消したあとに残る空白について
+ *   実機の診断で、消した帯を囲む要素は「表示は none なのに
+ *   実測の高さの内訳が合わない」状態だった（子は0pxなのに親は112px等）。
+ *   DOM上は空なのに高さが残るということは、CSSやDOM操作の問題ではなく、
+ *   Xの仮想リスト側が帯を消す前に測った高さをまだ使い回している
+ *   可能性が高い。そのため、帯を新しく消したときは resize/scroll
+ *   イベントを送って再計測を促す（v2.1.0）。
+ *   これは仮説であり、Xの内部実装が変われば効かなくなる。
+ *   DOM操作でこの空白を畳む処理（v1.7〜v2.0で試して撤去済み）は
+ *   もう入れていない。
+ *
  * ■ iPhone で調べる方法
  *   URL の末尾に #tmspaces を付けて開くと、画面上に診断パネルが出る。
  *   （例: https://x.com/home#tmspaces ）
@@ -53,6 +64,16 @@
 
     // 画面下部に居座る再生バー（オーディオドック）も隠すか
     const HIDE_AUDIO_DOCK = true;
+
+    /*
+     * 帯を新しく消したとき、resize/scroll を発火させて
+     * Xの仮想リストに高さの再計測を促すか。
+     * 空白が消えないと分かった環境では false にして切り分けに使う
+     */
+    const NUDGE_LAYOUT = true;
+
+    // 再計測イベントを送るまでの待ち時間（ミリ秒）
+    const NUDGE_DELAY = 60;
 
     // リンクを持たない帯を、見た目とテキストで探すか
     const USE_SHAPE_FALLBACK = true;
@@ -222,6 +243,8 @@
 
     // 直近の判定結果（診断パネル用）
     let lastReport = null;
+
+    let nudgeTimer = null;
 
     // 診断パネルの自動更新タイマー
     let panelTimer = null;
@@ -1111,6 +1134,57 @@
 
 
     // ============================================================
+    // 仮想リストへの再計測要求
+    // ============================================================
+
+    /*
+     * 消した帯の分の高さが空白として残る現象への対処。
+     *
+     * 実機の診断で、消した帯を囲む要素は「表示はnoneなのに
+     * 実測の高さの内訳が合わない」状態だった。DOM上は空なのに
+     * 高さが残るのは、CSSやDOM操作の問題ではなく、Xの仮想リストが
+     * 帯を消す前に測った高さをまだ使い回している可能性が高い。
+     *
+     * resize / scroll イベントは多くの仮想リスト実装が
+     * 再計測のきっかけにしている。連打すると本来のスクロールを
+     * 荒らすので、実際に何かを新しく消したときだけ、
+     * 少し待ってから一度だけ送る
+     */
+    function nudgeLayout() {
+
+        if (!NUDGE_LAYOUT) {
+            return;
+        }
+
+
+        clearTimeout(nudgeTimer);
+
+
+        nudgeTimer =
+            setTimeout(() => {
+
+                try {
+
+                    window.dispatchEvent(
+                        new Event('resize')
+                    );
+
+                    window.dispatchEvent(
+                        new Event('scroll')
+                    );
+
+                } catch {
+
+                    /*
+                     * 発火できない環境では諦める
+                     */
+                }
+
+            }, NUDGE_DELAY);
+    }
+
+
+    // ============================================================
     // メイン
     // ============================================================
 
@@ -1149,13 +1223,22 @@
         }
 
 
+        let newlyHidden = 0;
+
         for (const bar of bars) {
 
             if (setHidden(bar, true)) {
+
                 changed++;
+
+                newlyHidden++;
             }
         }
 
+
+        if (newlyHidden) {
+            nudgeLayout();
+        }
 
 
         lastReport = {
@@ -1652,7 +1735,7 @@
         );
 
         lines.push(
-            'バージョン: 2.0.0' +
+            'バージョン: 2.1.0' +
             ' / :has対応: ' + supportsHas() +
             ' / スタイル: ' +
             (styleElement?.isConnected ?
