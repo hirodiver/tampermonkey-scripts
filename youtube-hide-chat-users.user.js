@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.3
+// @name         YouTube チャット非表示 v1.4
 // @namespace    https://www.youtube.com/
-// @version      1.3
-// @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（まるごと消す／名前を残して本文だけ消すの2種類・チャンネルID単位・スパチャ/メンバー加入/上部ティッカーも対象）
+// @version      1.4
+// @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（発言ごと消す／名前を残して本文だけ消すの2種類・チャンネルID単位・スパチャ/メンバー加入/上部ティッカーも対象）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
 // @grant        none
@@ -463,12 +463,16 @@
                 cursor: pointer;
             }
 
+            .tm-ychide-btn {
+                white-space: nowrap;
+            }
+
             .tm-ychide-btn-all {
                 right: 2px;
             }
 
             .tm-ychide-btn-text {
-                right: 44px;
+                right: 74px;
             }
 
             html[dark] .tm-ychide-btn {
@@ -491,8 +495,12 @@
      * 発言の右上に出す小さなボタン。
      * ふだんは隠れていて、発言にカーソルを載せたときだけ出る。
      *
-     *   「非表示」 … 発言をまるごと消す
-     *   「文だけ」 … 名前を残して本文だけ消す
+     * 「非表示」「文だけ」という短い言い方だと、何がどう変わるのか
+     * 伝わりにくいという指摘を受け、動詞を揃えて対象の違いだけが
+     * 分かるようにした。
+     *
+     *   「発言ごと消す」 … 名前も本文もまるごと消す
+     *   「本文だけ消す」 … 名前は残して本文だけ消す（誰の発言かは分かる）
      */
     function ensureButtons(el) {
         if (el.querySelector(':scope > .tm-ychide-btn')) return;
@@ -501,8 +509,8 @@
             makeButton(
                 el,
                 'all',
-                '非表示',
-                'この人の発言をまるごと消す'
+                '発言ごと消す',
+                'この人の発言を、名前ごとまるごと消す'
             )
         );
 
@@ -510,8 +518,8 @@
             makeButton(
                 el,
                 'text',
-                '文だけ',
-                '名前は残して、本文だけ消す'
+                '本文だけ消す',
+                '名前は残し、本文だけ消す（誰の発言かは分かるようにする）'
             )
         );
     }
@@ -646,13 +654,14 @@
                 ? entry.name + ' (' + entry.id + ')'
                 : entry.name + '（表示名で判定）';
 
-            // 押すたびに「全部」と「文だけ」が入れ替わる
+            // 押すたびに「発言ごと」と「本文だけ」が入れ替わる。
+            // ホバー時のボタンと同じ言い方に揃えてある。
             const modeBtn = document.createElement('button');
             modeBtn.className = 'tm-ychide-mode';
             modeBtn.type = 'button';
             modeBtn.textContent =
-                entry.mode === 'text' ? '文だけ' : '全部';
-            modeBtn.title = '消し方を切り替える';
+                entry.mode === 'text' ? '本文だけ' : '発言ごと';
+            modeBtn.title = '消し方を切り替える（発言ごと消す ⇔ 本文だけ消す）';
             modeBtn.style.cursor = 'pointer';
             modeBtn.addEventListener('click', () =>
                 setMode(

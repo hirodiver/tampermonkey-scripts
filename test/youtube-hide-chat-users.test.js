@@ -104,8 +104,13 @@ function check(name, cond, extra) {
   check('初期: 何も登録していなければ全部見える', (await shown('m1')) === true && (await shown('m2')) === true);
 
   // --- ボタンの設置 ---
-  check('ボタン: 発言ごとに「非表示」ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn-all')));
-  check('ボタン: 発言ごとに「文だけ」ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn-text')));
+  check('ボタン: 発言ごとに「発言ごと消す」ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn-all')));
+  check('ボタン: 発言ごとに「本文だけ消す」ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn-text')));
+  check('ボタン: ラベルが分かりやすい言い方になっている', await page.evaluate(() => {
+    const all = document.querySelector('#m1 > .tm-ychide-btn-all');
+    const text = document.querySelector('#m1 > .tm-ychide-btn-text');
+    return all.textContent === '発言ごと消す' && text.textContent === '本文だけ消す';
+  }));
 
   // --- ボタンで追加（まるごと消す） ---
   await page.evaluate(() => document.querySelector('#m1 > .tm-ychide-btn-all').click());
@@ -217,7 +222,7 @@ function check(name, cond, extra) {
   check('パネル: 消し方の切り替えボタンがある', await page.evaluate(() => {
     const row = document.querySelectorAll('#tm-ychide-panel .tm-ychide-row')[0];
     const btn = row.querySelector('.tm-ychide-mode');
-    return !!btn && (btn.textContent === '全部' || btn.textContent === '文だけ');
+    return !!btn && (btn.textContent === '発言ごと' || btn.textContent === '本文だけ');
   }));
 
   // --- 見出し帯の高さが変わったら追従する ---
