@@ -74,6 +74,10 @@
     // 画像付き投稿の対象判定にのみ使う。ボタンの設置先には使わない
     // （画像要素を操作して壊した前歴があるため）。
     tweetPhoto: '[data-testid="tweetPhoto"]',
+    // 引用ブロック。X は引用部分を「クリックできる入れ子の塊」として
+    // role="link" の div で描画する。クラス名は頻繁に変わるので使わない。
+    // 引用元のリンクを引用した側のボタンに取り込まないための除外に使う。
+    quote: 'div[role="link"]',
   };
 
   const YT_RE =
@@ -746,15 +750,27 @@
    *   id：表示テキストから取れた動画ID（省略されていれば不完全な文字列）
    *   complete：末尾省略が無く、動画IDの長さが揃っている＝確定してよい
    */
-  function findYouTubeTextLink(article) {
-    if (!article) {
+  function findYouTubeTextLink(root) {
+    if (!root) {
       return null;
     }
 
-    const scope = article.querySelector(SELECTOR.tweetText) || article;
+    const scope = root.querySelector(SELECTOR.tweetText) || root;
     const anchors = scope.querySelectorAll('a');
 
     for (const anchor of anchors) {
+      // 引用ブロック内のリンクは**引用元の投稿**のものなので採らない。
+      // 引用した側にYouTube URLがあっても、引用元に別サイトのリンクが
+      // あると、そちらを掴んでボタンが無関係なURLを開いてしまう。
+      //
+      // root 自身が引用ブロックのときは、その中を読むのが目的なので
+      // 除外しない（引用元側のボタンを作る経路のため）。
+      const quote = anchor.closest(SELECTOR.quote);
+
+      if (quote && quote !== root && root.contains(quote)) {
+        continue;
+      }
+
       const text = (anchor.textContent || '').trim();
       const match = text.match(YT_DISPLAY_RE);
 
@@ -873,14 +889,26 @@
       return { url: tcoInCard.href, weak: true };
     }
 
-    // 本文の t.co は、どのリンクがこのカードのものか特定できない。
-    // 候補が1本のときだけ採用する。
+    // 本文のリンクは、どれがこのカードのものか特定できない。
+    // 「t.coが1本だけなら採用」では、引用ポストで引用元の無関係なリンクを
+    // 掴んでしまう（本文が無い引用ポストでは、範囲内で唯一のt.coが
+    // 引用元のものになる）。
+    //
+    // Xは本文リンクを表示する際に元URLをテキストとして出すので、
+    // **表示テキストがYouTubeに見えるリンクだけ**を候補にする。
+    // 引用ブロック内のリンクは findYouTubeTextLink() 側で除外される。
     if (scope) {
-      const text = scope.querySelector(SELECTOR.tweetText);
-      const tcos = (text || scope).querySelectorAll(SELECTOR.tcoLink);
+      const found = findYouTubeTextLink(scope);
 
-      if (tcos.length === 1) {
-        return { url: tcos[0].href, weak: true };
+      if (found) {
+        if (found.complete) {
+          return {
+            url: `https://www.youtube.com/watch?v=${found.id}`,
+            weak: false,
+          };
+        }
+
+        return { url: found.anchor.href, weak: true };
       }
     }
 

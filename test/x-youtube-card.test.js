@@ -843,6 +843,58 @@ function check(name, cond, extra) {
     await page.locator('.hiroYtOpen-btn').count() === 1,
     { count: await page.locator('.hiroYtOpen-btn').count() });
 
+  // ===================================================================
+  // 31-32. 引用ポスト：引用元の無関係なリンクを掴まない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened.length = 0;
+    // APIは何も返さない（= DOMからの解決だけが頼りの状況）
+    const art = window.mkTweet({
+      user: 'quoter', id: '1000000000000000031',
+      cards: ['<span>配信タイトル</span><span>youtube.com</span>'],
+    });
+    const quote = document.createElement('div');
+    quote.setAttribute('role', 'link');
+    quote.innerHTML =
+      '<div data-testid="tweetText">元の投稿 ' +
+      '<a href="https://t.co/inner31">example.com/article</a></div>';
+    art.appendChild(quote);
+  });
+  await rescan();
+  check('31: 引用元しかt.coが無くてもボタンは出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+  check('31: 引用元のt.coをhrefに入れない',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) === null,
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(300);
+  check('31: クリックしても引用元の無関係なURLを開かない',
+    await page.evaluate(() => !window.__opened.some((u) => /inner31|example\.com/.test(u))),
+    { opened: await page.evaluate(() => window.__opened) });
+
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened.length = 0;
+    const art = window.mkTweet({
+      user: 'quoter', id: '1000000000000000032',
+      text: 'これ見て <a href="https://t.co/outer32">youtube.com/watch?v=OUTERVIDEO11</a>',
+      cards: ['<span>配信タイトル</span><span>youtube.com</span>'],
+    });
+    const quote = document.createElement('div');
+    quote.setAttribute('role', 'link');
+    quote.innerHTML =
+      '<div data-testid="tweetText">元の投稿 ' +
+      '<a href="https://t.co/inner32">example.com/article</a></div>';
+    art.appendChild(quote);
+  });
+  await rescan();
+  check('32: 引用した側の本文にYouTubeリンクがあればそちらを採る',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
+      'https://www.youtube.com/watch?v=OUTERVIDEO11',
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
