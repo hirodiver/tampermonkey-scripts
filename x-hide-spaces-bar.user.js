@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v2.1.0
+// @name         X スペース帯非表示 v2.2.0
 // @namespace    local.hiro.tools
-// @version      2.1.0
-// @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
+// @version      2.2.0
+// @description  X のタイムライン上部（タブの下）に出る音声スペースの帯を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @run-at       document-start
@@ -14,42 +14,33 @@
 // ==/UserScript==
 
 /*
- * タイムラインに差し込まれる音声スペースの帯を隠す。
+ * タブの下に出る音声スペースの帯（紫のピル）を隠す。
  *
- * 三段構えにしている。上から順に確実だが、対象が狭い。
+ * 帯の構造は iPhone の実機診断で確認したもの:
  *
- *   1. CSS（:has）— document-start で <style> を注入する。
- *      スペースへのリンクを持ち、投稿本体を含まないセルを消す。
- *      要素が生まれた瞬間から効くので、一瞬見えてから消えない。
+ *   nav > div > div[ScrollSnap-SwipeableList] > div[ScrollSnap-List]
+ *       > div[placementTracking] > button > div > div[pill-contents-container]
+ *         「+23・ライトノベル雑談（このラノとか）」
  *
- *   2. リンク起点の探索 — a[href*="/i/spaces/"] から上へ辿り、
- *      投稿本体を含まない範囲の一番外側を帯とみなして消す。
- *      タイムラインのセル構造に依存しない。
+ * タイムラインのセルではなく、ヘッダの nav の中にある横スクロールのピル。
+ * 文中に「スペース」の語は出てこず、スペースへのリンク（/i/spaces/）も無い。
  *
- *   3. 構造＋テキストの探索 — iPhone版のXは帯をリンクではなく
- *      ボタンで描くことがあり、href が無い。そこで
- *      「横に広く・縦に低く・投稿本体を含まず・スペース関連の語を持つ」
- *      という見た目の条件で帯を探す。
+ * 消すのは CSS（:has）だけで行う。document-start で <style> を注入するので、
+ * 描画された瞬間から消えていて、一瞬見えることがない。
+ * JS で DOM を走査しないので、スクロール中の負荷もかからない。
  *
- * 非表示は要素の削除ではなく display:none で行う。
- * 誤爆したときに DevTools で元の要素を確認できるようにするため。
+ * 同じピルの仕組みで出る「新しいポストを表示」（pillLabel）は残す。
  *
- * ■ 帯を消したあとに残る空白について
- *   実機の診断で、消した帯を囲む要素は「表示は none なのに
- *   実測の高さの内訳が合わない」状態だった（子は0pxなのに親は112px等）。
- *   DOM上は空なのに高さが残るということは、CSSやDOM操作の問題ではなく、
- *   Xの仮想リスト側が帯を消す前に測った高さをまだ使い回している
- *   可能性が高い。そのため、帯を新しく消したときは resize/scroll
- *   イベントを送って再計測を促す（v2.1.0）。
- *   これは仮説であり、Xの内部実装が変われば効かなくなる。
- *   DOM操作でこの空白を畳む処理（v1.7〜v2.0で試して撤去済み）は
- *   もう入れていない。
+ * ■ 残る空白について（調査中）
+ *   帯を消すと、その分の空白が残る。帯の中身は消えているが、
+ *   帯専用の枠（高さ56px前後）がヘッダ側に残っているため。
+ *   どの要素が枠なのかを診断で特定してから消す。推測では足さない。
  *
- * ■ iPhone で調べる方法
- *   URL の末尾に #tmspaces を付けて開くと、画面上に診断パネルが出る。
+ * ■ 診断（iPhone でも使える）
+ *   URL の末尾に #tmspaces を付けて開くと、画面下に診断パネルが出る。
  *   （例: https://x.com/home#tmspaces ）
- *   「コピー」を押すとレポートがクリップボードに入るので、そのまま報告に使える。
- *   コンソールが使える環境なら __tmSpacesBar.dump() でも同じ情報が出る。
+ *   「コピー」を押すとレポートがクリップボードに入る。
+ *   コンソールが使える環境なら __tmSpacesBar.dump() でも同じものが出る。
  */
 
 (function () {
@@ -59,73 +50,12 @@
     // 設定
     // ============================================================
 
-    // true にするとコンソールに処理ログを出す
-    const DEBUG = false;
+    const VERSION = '2.2.0';
 
-    // 画面下部に居座る再生バー（オーディオドック）も隠すか
-    const HIDE_AUDIO_DOCK = true;
-
-    /*
-     * 帯を新しく消したとき、resize/scroll を発火させて
-     * Xの仮想リストに高さの再計測を促すか。
-     * 空白が消えないと分かった環境では false にして切り分けに使う
-     */
-    const NUDGE_LAYOUT = true;
-
-    // 再計測イベントを送るまでの待ち時間（ミリ秒）
-    const NUDGE_DELAY = 60;
-
-    // リンクを持たない帯を、見た目とテキストで探すか
-    const USE_SHAPE_FALLBACK = true;
-
-    // 診断パネルを出す URL ハッシュ
-    const DIAGNOSTIC_HASH = 'tmspaces';
-
-    // DOM変化後の再処理までの待ち時間（ミリ秒）
-    const REBUILD_DELAY = 250;
-
-    // SPA遷移直後の再処理までの待ち時間（ミリ秒）
-    const NAV_DELAY = 500;
-
-    // スペースへのリンク
-    const SPACE_LINK_SELECTOR = 'a[href*="/i/spaces/"]';
-
-    /*
-     * X はスペースを配信（broadcasts）側へ寄せつつある。
-     * 帯が /i/broadcasts/ を指す場合もあるので両方見る
-     */
-    const BROADCAST_LINK_SELECTOR = 'a[href*="/i/broadcasts/"]';
-
-    // タイムライン1件分の要素（上から順に試す）
-    const CELL_SELECTORS = [
-        'div[data-testid="cellInnerDiv"]',
-        'section[role="region"] > div > div > div'
-    ];
-
-    // スペースの帯だと判断する目印
-    const SPACE_MARK_SELECTORS = [
-        SPACE_LINK_SELECTOR,
-        'a[href^="/i/spaces"]',
-        '[data-testid="audioSpaceRoot"]',
-        '[data-testid="AudioSpacePill"]',
-        '[data-testid="placementTracking"] a[href*="/i/spaces/"]',
-        BROADCAST_LINK_SELECTOR,
-        '[data-testid*="audiospace" i]',
-        '[data-testid*="AudioSpace" i]'
-    ];
-
-    /*
-     * 実機（iPhone）で確認した帯の構造。
-     *
-     *   nav > div > div[ScrollSnap-SwipeableList] > div[ScrollSnap-List]
-     *       > div[placementTracking] > button > div > div[pill-contents-container]
-     *         「+23・ライトノベル雑談（このラノとか）」
-     *
-     * タイムラインのセルではなく、ヘッダの nav の中にある
-     * 横スクロールのピル（丸い札）。セルを見る処理では届かない
-     */
+    // 帯の中身（実機で確認）
     const PILL_SELECTOR = '[data-testid="pill-contents-container"]';
 
+    // 帯を包む要素（実機で確認）
     const PILL_TRACK_SELECTOR = '[data-testid="placementTracking"]';
 
     const PILL_LIST_SELECTORS = [
@@ -134,272 +64,81 @@
     ];
 
     /*
-     * 同じピルの仕組みで出る「新しいポストを表示」は残す。
-     * こちらは pillLabel を持つ
-     */
-    const KEEP_PILL_SELECTOR = '[data-testid="pillLabel"]';
-
-    // 画面下部の再生バー
-    const AUDIO_DOCK_SELECTORS = [
-        'div[data-testid="AudioDock"]',
-        'div[data-testid="audioDock"]',
-        'div[data-testid="AudioDockSpace"]'
-    ];
-
-    // 投稿本体の要素（これを含む範囲は投稿なので隠さない）
-    const TWEET_SELECTORS = [
-        'article[data-testid="tweet"]',
-        'article[role="article"]',
-        'article'
-    ];
-
-    /*
-     * 帯のテキスト判定。
-     * 「スペース」だけだと投稿に誤爆するため、
-     * 状態を表す語との組み合わせを要求する
-     */
-    const SPACE_WORDS = [
-        'スペース',
-        'Space'
-    ];
-
-    const STATE_WORDS = [
-        'ライブ',
-        'LIVE',
-        'Live',
-        '聞く',
-        '再生',
-        '録音',
-        'リスナー',
-        'ホスト',
-        '開始'
-    ];
-
-    // 帯とみなすテキストの最大文字数（長い＝投稿）
-    const BAR_MAX_LENGTH = 120;
-
-    /*
-     * スペースの帯は X が他で使わない紫で塗られている。
-     * 文言も data-testid も当てにならなかったため、これを主な手がかりにする。
-     *
-     *   実機の例: 「+25 ・ ライトノベル雑談（このラノとか）」
-     *   ——「スペース」の語が一度も出てこない
-     */
-    const SPACE_PURPLES = [
-        [120, 86, 255],   // #7856FF 現行のスペース紫
-        [110, 86, 226],   // 旧トーン
-        [93, 60, 200]     // 暗めの派生
-    ];
-
-    // 紫と認めるRGB距離
-    const PURPLE_TOLERANCE = 70;
-
-    /*
-     * 「新しいポストを表示」は帯と同じ仕組みで出る。
+     * 同じピルの仕組みで出るが、残すもの。
      * これを含む入れ物は消さない
      */
-    const KEEP_CONTENT_SELECTORS = [
-        KEEP_PILL_SELECTOR,
+    const KEEP_SELECTORS = [
+        '[data-testid="pillLabel"]',
         '[aria-label*="新しいポスト"]',
         '[aria-label*="New posts"]'
     ];
 
-    // 帯とみなす高さの範囲（ピクセル）
-    const BAR_MIN_HEIGHT = 20;
-    const BAR_MAX_HEIGHT = 220;
-
-    // 帯とみなす幅（画面幅に対する割合）
-    const BAR_MIN_WIDTH_RATIO = 0.5;
-
-    // リンクから上へ辿る最大段数
-    const MAX_CLIMB = 10;
-
-    // 本スクリプトが非表示にした要素の目印
-    const HIDDEN_ATTR = 'data-tm-space-hidden';
-
     // 注入する <style> の id
     const STYLE_ID = 'tm-hide-spaces-bar-style';
 
-    // 診断パネルの id
+    // 診断パネル
+    const DIAGNOSTIC_HASH = 'tmspaces';
+
     const PANEL_ID = 'tm-hide-spaces-bar-panel';
 
-    // 診断パネルを開いている間の自動更新間隔（ミリ秒）
+    // 診断パネルを開いている間の更新間隔（ミリ秒）
     const PANEL_REFRESH_MS = 1500;
+
+    // 祖先を遡る上限（診断用）
+    const MAX_ANCESTORS = 16;
+
+    /*
+     * 帯専用の枠を越えたあと、さらに何段見るか（診断用）。
+     * 枠の親（ヘッダ本体）がどう高さを決めているかも見たい
+     */
+    const EXTRA_ANCESTORS = 3;
 
 
     // ============================================================
     // 状態
     // ============================================================
 
-    let rebuildTimer = null;
-
-    // 最後に処理したパス（SPA遷移の検知に使う）
-    let lastPath = location.pathname;
-
-    let processing = false;
-    let reprocessRequested = false;
-
-    let styleElement = null;
-
-    // 直近の判定結果（診断パネル用）
-    let lastReport = null;
-
-    let nudgeTimer = null;
-
-    // 診断パネルの自動更新タイマー
     let panelTimer = null;
 
 
     // ============================================================
-    // 小物
+    // CSS
     // ============================================================
 
-    function log(...args) {
-
-        if (DEBUG) {
-            console.log('[Xスペース帯非表示]', ...args);
-        }
-    }
-
-
     /*
-     * スペースそのものを開いているときは何も隠さない
+     * 帯は必ず nav の中にある（実機で確認）。
+     * nav の外（タイムラインの広告セル等）の placementTracking を
+     * 巻き込まないよう、すべてのルールを nav の中に限定する
      */
-    function isSpacePage() {
+    function buildCss() {
 
-        return location.pathname
-            .startsWith('/i/spaces');
-    }
-
-
-    function queryAll(selectors) {
-
-        const found = [];
+        const condition =
+            `:has(${PILL_SELECTOR})` +
+            KEEP_SELECTORS
+                .map(selector => `:not(:has(${selector}))`)
+                .join('');
 
 
-        for (const selector of selectors) {
+        const rules = [
 
-            try {
+            // nav 直下の帯（実機では 402×52 の div）
+            `nav > div${condition}`,
 
-                found.push(
-                    ...document.querySelectorAll(selector)
-                );
+            // 以下は構造が少し変わったときの保険
+            ...PILL_LIST_SELECTORS.map(
+                selector => `nav ${selector}${condition}`
+            ),
 
-            } catch {
-
-                /*
-                 * 未対応セレクタは黙って飛ばす
-                 */
-            }
-        }
-
-
-        return [...new Set(found)];
-    }
-
-
-    function hasTweet(element) {
-
-        return TWEET_SELECTORS.some(
-            selector =>
-                element.querySelector(selector) ||
-                element.closest?.(selector)
-        );
-    }
-
-
-    /*
-     * 帯は文字を持たず aria-label だけのことがある。
-     * 判定にはラベルも足して見る
-     */
-    function signalTextOf(element) {
-
-        const label =
-            element.getAttribute?.('aria-label') || '';
-
-        return (label + ' ' + textOf(element)).trim();
-    }
-
-
-    function textOf(element) {
-
-        return (element.textContent || '')
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-
-
-    /*
-     * スペースの帯らしい文言か
-     */
-    function looksLikeSpaceText(text) {
-
-        if (!text || text.length > BAR_MAX_LENGTH) {
-            return false;
-        }
-
-
-        const hasSpaceWord =
-            SPACE_WORDS.some(
-                word => text.includes(word)
-            );
-
-        if (!hasSpaceWord) {
-            return false;
-        }
-
-
-        return STATE_WORDS.some(
-            word => text.includes(word)
-        );
-    }
-
-
-    /*
-     * 帯らしい形か（横に広く、縦に低い）
-     */
-    function looksLikeBarShape(element) {
-
-        const rect =
-            element.getBoundingClientRect?.();
-
-        if (!rect) {
-            return false;
-        }
-
-
-        /*
-         * 画面外・未描画のものは判定しない
-         */
-        if (!rect.width || !rect.height) {
-            return false;
-        }
-
-
-        const viewportWidth =
-            window.innerWidth ||
-            document.documentElement.clientWidth ||
-            0;
-
-        if (!viewportWidth) {
-            return false;
-        }
+            `nav ${PILL_TRACK_SELECTOR}${condition}`
+        ];
 
 
         return (
-            rect.width >=
-                viewportWidth * BAR_MIN_WIDTH_RATIO &&
-
-            rect.height >= BAR_MIN_HEIGHT &&
-
-            rect.height <= BAR_MAX_HEIGHT
+            rules.join(',\n') +
+            ' {\n    display: none !important;\n}\n'
         );
     }
 
-
-    // ============================================================
-    // CSSによる先回り（:has）
-    // ============================================================
 
     function supportsHas() {
 
@@ -414,84 +153,9 @@
     }
 
 
-    function buildCss() {
-
-        const rules = [];
-
-
-        for (const cellSelector of CELL_SELECTORS) {
-
-            /*
-             * 「スペースへのリンクを持ち、投稿本体を持たないセル」だけを隠す
-             */
-            rules.push(
-                `${cellSelector}` +
-                `:has(${SPACE_LINK_SELECTOR})` +
-                `:not(:has(article))`
-            );
-        }
-
-
-        rules.push(
-            `[data-testid="placementTracking"]` +
-            `:has(${SPACE_LINK_SELECTOR})` +
-            `:not(:has(article))`
-        );
-
-
-        /*
-         * 実機の帯。JS を待つと一瞬見えてしまうので、
-         * nav 直下の帯ごと CSS で消す。
-         * 「新しいポストを表示」（pillLabel）は残す
-         */
-        /*
-         * 「新しいポストを表示」が同じ入れ物に同居している場合があるので、
-         * それを含む入れ物は CSS 側でも除外する
-         */
-        const keepConditions =
-            [
-                KEEP_PILL_SELECTOR,
-                '[aria-label*="新しいポスト"]',
-                '[aria-label*="New posts"]'
-            ]
-                .map(selector => `:not(:has(${selector}))`)
-                .join('');
-
-
-        const pillCondition =
-            `:has(${PILL_SELECTOR})` +
-            keepConditions +
-            `:not(:has(article))`;
-
-
-        rules.push(
-            `nav > div${pillCondition}`,
-
-            `nav > div > div${pillCondition}`,
-
-            ...PILL_LIST_SELECTORS.map(
-                selector => `${selector}${pillCondition}`
-            ),
-
-            `${PILL_TRACK_SELECTOR}${pillCondition}`
-        );
-
-
-        if (HIDE_AUDIO_DOCK) {
-            rules.push(...AUDIO_DOCK_SELECTORS);
-        }
-
-
-        return (
-            rules.join(',\n') +
-            ' {\n    display: none !important;\n}\n'
-        );
-    }
-
-
     function ensureStyle() {
 
-        if (!supportsHas()) {
+        if (document.getElementById(STYLE_ID)) {
             return;
         }
 
@@ -505,864 +169,380 @@
         }
 
 
-        if (
-            styleElement &&
-            styleElement.isConnected
-        ) {
-            return;
-        }
+        const style =
+            document.createElement('style');
+
+        style.id = STYLE_ID;
+
+        /*
+         * innerHTML は Trusted Types で弾かれるため使わない
+         */
+        style.textContent = buildCss();
 
 
-        styleElement =
-            document.getElementById(STYLE_ID);
-
-
-        if (!styleElement) {
-
-            styleElement =
-                document.createElement('style');
-
-            styleElement.id = STYLE_ID;
-
-            /*
-             * innerHTML は Trusted Types で弾かれるため使わない
-             */
-            styleElement.textContent = buildCss();
-        }
-
-
-        root.appendChild(styleElement);
-
-        log('スタイルを注入');
-    }
-
-
-    function syncStyleEnabled() {
-
-        if (!styleElement) {
-            return;
-        }
-
-
-        styleElement.disabled = isSpacePage();
+        root.appendChild(style);
     }
 
 
     // ============================================================
-    // 表示・非表示
+    // 診断: 小物
     // ============================================================
+
+    function textOf(element) {
+
+        return (element.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+
+    function round(value) {
+
+        return Math.round(value * 10) / 10;
+    }
+
 
     /*
-     * X はスクロール時に同じ DOM 要素を別の項目に使い回す。
-     * 一度隠した要素をそのままにすると、通常の投稿が消えてしまう。
-     * そのため毎回すべて判定し直し、表示側にも戻す。
-     */
-    function setHidden(element, hidden) {
-
-        const isHidden =
-            element.hasAttribute(HIDDEN_ATTR);
-
-
-        if (hidden && !isHidden) {
-
-            element.setAttribute(HIDDEN_ATTR, '1');
-
-            element.style.setProperty(
-                'display',
-                'none',
-                'important'
-            );
-
-            return true;
-        }
-
-
-        if (!hidden && isHidden) {
-
-            element.removeAttribute(HIDDEN_ATTR);
-
-            element.style.removeProperty('display');
-
-            return true;
-        }
-
-
-        return false;
-    }
-
-
-    function restoreAll() {
-
-        let changed = 0;
-
-
-        for (
-            const element of
-            document.querySelectorAll(`[${HIDDEN_ATTR}]`)
-        ) {
-
-            if (setHidden(element, false)) {
-                changed++;
-            }
-        }
-
-
-        return changed;
-    }
-
-
-    // ============================================================
-    // 帯の探索
-    // ============================================================
-
-    /*
-     * 起点から上へ辿り、
-     * 投稿本体を含まない範囲の一番外側を帯とみなす。
+     * 要素の寸法と、高さを決めていそうな値をまとめて取る。
      *
-     * セル（cellInnerDiv）に当たればそこで止める。
-     * タイムライン外に置かれた帯でも、
-     * 形が崩れる手前まで広げて掴めるようにしている
+     * 以前の診断はインラインの style.height しか見ておらず、
+     * クラスで指定された高さを取り逃していた。
+     * 計算後の height / top / bottom まで出す
      */
-    function findBarRoot(start) {
+    function describeBox(element) {
 
-        let current = start;
-        let best = start;
+        const rect =
+            element.getBoundingClientRect();
 
 
-        for (let i = 0; i < MAX_CLIMB; i++) {
-
-            const parent = current.parentElement;
-
-
-            if (
-                !parent ||
-                parent === document.body ||
-                parent === document.documentElement
-            ) {
-                break;
-            }
-
-
-            if (hasTweet(parent)) {
-                break;
-            }
-
-
-            /*
-             * main や region まで広げると画面全体を消してしまう
-             */
-            if (
-                parent.matches?.(
-                    'main, [role="main"], [role="region"], header, nav'
-                )
-            ) {
-                break;
-            }
-
-
-            const text = textOf(parent);
-
-            if (text.length > BAR_MAX_LENGTH) {
-                break;
-            }
-
-
-            best = parent;
-            current = parent;
-
-
-            /*
-             * セルまで来たらそこが帯の単位
-             */
-            if (
-                CELL_SELECTORS.some(
-                    selector => parent.matches?.(selector)
-                )
-            ) {
-                break;
-            }
-        }
-
-
-        return best;
-    }
-
-
-    /*
-     * 1. 目印のある要素（リンク等）から
-     */
-    function collectByMark() {
-
-        const marks =
-            queryAll(SPACE_MARK_SELECTORS);
-
-
-        const roots = [];
-
-
-        for (const mark of marks) {
-
-            if (hasTweet(mark)) {
-                continue;
-            }
-
-
-            roots.push(findBarRoot(mark));
-        }
-
-
-        return roots;
-    }
-
-
-    /*
-     * 2. 見た目とテキストから（iPhone版のボタン描画対策）
-     */
-    function collectByShape() {
-
-        if (!USE_SHAPE_FALLBACK) {
-            return [];
-        }
-
-
-        const roots = [];
-
-
-        /*
-         * テキストを持つ末端付近の要素だけを見る。
-         * 全要素を走査すると重いので、
-         * ボタン・リンク・見出しに絞る
-         */
-        const candidates =
-            queryAll([
-                '[role="button"]',
-                '[role="link"]',
-                '[aria-label*="スペース"]',
-                '[aria-label*="Space"]',
-                '[data-testid="placementTracking"]',
-                'a[href*="/i/spaces"]'
-            ]);
-
-
-        for (const candidate of candidates) {
-
-            if (hasTweet(candidate)) {
-                continue;
-            }
-
-
-            if (
-                !looksLikeSpaceText(
-                    signalTextOf(candidate)
-                )
-            ) {
-                continue;
-            }
-
-
-            const root =
-                findBarRoot(candidate);
-
-
-            if (hasTweet(root)) {
-                continue;
-            }
-
-
-            /*
-             * 形が帯らしくないものは見送る。
-             * 未描画（幅ゼロ）の場合も形が取れないので見送り、
-             * 次の巡回に任せる
-             */
-            if (
-                !looksLikeBarShape(root) &&
-                !looksLikeBarShape(candidate)
-            ) {
-                continue;
-            }
-
-
-            roots.push(root);
-        }
-
-
-        return roots;
-    }
-
-
-    /*
-     * 3. セル単位のテキストから
-     *    （目印もリンクも無い帯の最終手段）
-     */
-    function collectByCellText() {
-
-        if (!USE_SHAPE_FALLBACK) {
-            return [];
-        }
-
-
-        const roots = [];
-
-
-        for (const cell of queryAll(CELL_SELECTORS)) {
-
-            if (hasTweet(cell)) {
-                continue;
-            }
-
-
-            if (!looksLikeSpaceText(textOf(cell))) {
-                continue;
-            }
-
-
-            roots.push(cell);
-        }
-
-
-        return roots;
-    }
-
-
-    function collectBars() {
-
-        const roots = [
-            ...collectByMark(),
-            ...collectByShape(),
-            ...collectByCellText(),
-            ...collectByColor(),
-            ...collectByPill()
-        ];
-
-
-        /*
-         * 入れ子になったものは外側だけ残す
-         */
-        const unique = [...new Set(roots)];
-
-
-        return unique.filter(
-            root =>
-                !unique.some(
-                    other =>
-                        other !== root &&
-                        other.contains(root)
-                )
-        );
-    }
-
-
-    // ============================================================
-    // ピル（ヘッダ内の横スクロール札）の探索
-    // ============================================================
-
-    /*
-     * 帯そのものは小さなピルだが、
-     * それだけ消すと nav の中に空の帯が残る。
-     * スワイプリスト、無ければ nav の直下の要素まで遡って消す
-     */
-    function findPillRoot(element) {
-
-        /*
-         * nav の直下まで遡る。
-         *
-         * スワイプリストだけを消すと、
-         * それを包む高さ52pxの帯が空のまま残るため、
-         * nav の直下（＝帯そのもの）を優先する
-         */
-        let current = element;
-
-        for (let i = 0; i < 6 && current; i++) {
-
-            const parent = current.parentElement;
-
-            if (!parent) {
-                break;
-            }
-
-            if (parent.tagName === 'NAV') {
-                return current;
-            }
-
-            current = parent;
-        }
-
-
-        /*
-         * nav が見つからない作りのとき
-         */
-        for (const selector of PILL_LIST_SELECTORS) {
-
-            const list =
-                element.closest?.(selector);
-
-            if (list) {
-                return list;
-            }
-        }
-
-
-        return element;
-    }
-
-
-    function collectByPill() {
-
-        const pills =
-            queryAll([PILL_SELECTOR]);
-
-
-        const roots = [];
-
-
-        for (const pill of pills) {
-
-            /*
-             * 投稿の中のものには触らない
-             */
-            if (
-                CELL_SELECTORS.some(
-                    selector => pill.closest?.(selector)
-                ) ||
-                hasTweet(pill)
-            ) {
-                continue;
-            }
-
-
-            const track =
-                pill.closest?.(PILL_TRACK_SELECTOR) || pill;
-
-
-            /*
-             * 「新しいポストを表示」は同じ仕組みで出るので残す
-             */
-            if (holdsKeeper(track)) {
-                continue;
-            }
-
-
-            let root =
-                findPillRoot(track);
-
-
-            /*
-             * 入れ物に残すものが同居している場合は、
-             * 入れ物ごとではなく帯だけを消す
-             */
-            if (holdsKeeper(root)) {
-                root = track;
-            }
-
-
-            if (hasTweet(root)) {
-                continue;
-            }
-
-
-            roots.push(root);
-        }
-
-
-        return roots;
-    }
-
-
-    // ============================================================
-    // 色による探索
-    // ============================================================
-
-    function parseRgb(value) {
-
-        const matched =
-            /rgba?\(([^)]+)\)/.exec(value || '');
-
-        if (!matched) {
-            return null;
-        }
-
-
-        const parts =
-            matched[1]
-                .split(',')
-                .map(part => parseFloat(part));
-
-
-        if (parts.length < 3) {
-            return null;
-        }
-
-
-        /*
-         * 透明なら塗られていないのと同じ
-         */
-        if (parts.length >= 4 && parts[3] < 0.5) {
-            return null;
-        }
-
-
-        return parts.slice(0, 3);
-    }
-
-
-    function isSpacePurple(value) {
-
-        const rgb = parseRgb(value);
-
-        if (!rgb) {
-            return false;
-        }
-
-
-        return SPACE_PURPLES.some(target => {
-
-            const distance =
-                Math.sqrt(
-                    (rgb[0] - target[0]) ** 2 +
-                    (rgb[1] - target[1]) ** 2 +
-                    (rgb[2] - target[2]) ** 2
-                );
-
-            return distance <= PURPLE_TOLERANCE;
-        });
-    }
-
-
-    /*
-     * 紫に塗られた横長の帯を探す。
-     *
-     * 全要素に getComputedStyle をかけると重いので、
-     * 背景色を持ちうる要素に絞ってから見る
-     */
-    function collectByColor() {
-
-        const candidates =
-            queryAll([
-                '[style*="background"]',
-                '[role="button"]',
-                '[role="link"]',
-                '[data-testid]',
-                ...CELL_SELECTORS
-            ]);
-
-
-        const roots = [];
-
-
-        for (const candidate of candidates) {
-
-            if (hasTweet(candidate)) {
-                continue;
-            }
-
-
-            let background;
-
-            try {
-
-                background =
-                    getComputedStyle(candidate)
-                        .backgroundColor;
-
-            } catch {
-
-                continue;
-            }
-
-
-            if (!isSpacePurple(background)) {
-                continue;
-            }
-
-
-            if (!looksLikeBarShape(candidate)) {
-                continue;
-            }
-
-
-            /*
-             * 塗られている要素そのものが帯。
-             * セルごと消せるならそちらを優先する
-             */
-            const cell =
-                CELL_SELECTORS
-                    .map(
-                        selector =>
-                            candidate.closest?.(selector)
-                    )
-                    .find(Boolean);
-
-
-            const root =
-                cell && !hasTweet(cell) ?
-                    cell :
-                    candidate;
-
-
-            roots.push(root);
-        }
-
-
-        return roots;
-    }
-
-
-    // ============================================================
-    // 残しておくもの
-    // ============================================================
-
-    /*
-     * 「新しいポストを表示」など、消してはいけない機能を含むか
-     */
-    function holdsKeeper(element) {
-
-        return KEEP_CONTENT_SELECTORS.some(selector => {
-
-            try {
-
-                return (
-                    element.querySelector(selector) ||
-                    element.matches?.(selector)
-                );
-
-            } catch {
-
-                return false;
-            }
-        });
-    }
-
-
-    // ============================================================
-    // 仮想リストへの再計測要求
-    // ============================================================
-
-    /*
-     * 消した帯の分の高さが空白として残る現象への対処。
-     *
-     * 実機の診断で、消した帯を囲む要素は「表示はnoneなのに
-     * 実測の高さの内訳が合わない」状態だった。DOM上は空なのに
-     * 高さが残るのは、CSSやDOM操作の問題ではなく、Xの仮想リストが
-     * 帯を消す前に測った高さをまだ使い回している可能性が高い。
-     *
-     * resize / scroll イベントは多くの仮想リスト実装が
-     * 再計測のきっかけにしている。連打すると本来のスクロールを
-     * 荒らすので、実際に何かを新しく消したときだけ、
-     * 少し待ってから一度だけ送る
-     */
-    function nudgeLayout() {
-
-        if (!NUDGE_LAYOUT) {
-            return;
-        }
-
-
-        clearTimeout(nudgeTimer);
-
-
-        nudgeTimer =
-            setTimeout(() => {
-
-                try {
-
-                    window.dispatchEvent(
-                        new Event('resize')
-                    );
-
-                    window.dispatchEvent(
-                        new Event('scroll')
-                    );
-
-                } catch {
-
-                    /*
-                     * 発火できない環境では諦める
-                     */
-                }
-
-            }, NUDGE_DELAY);
-    }
-
-
-    // ============================================================
-    // メイン
-    // ============================================================
-
-    function processBars() {
-
-        const bars =
-            collectBars();
-
-
-        const wanted =
-            new Set(bars);
-
-
-        let changed = 0;
-
-
-        /*
-         * 帯でなくなった要素を表示へ戻す（セル使い回し対策）
-         */
-        for (
-            const element of
-            document.querySelectorAll(`[${HIDDEN_ATTR}]`)
-        ) {
-
-            if (
-                !wanted.has(element) &&
-                !AUDIO_DOCK_SELECTORS.some(
-                    selector => element.matches?.(selector)
-                )
-            ) {
-
-                if (setHidden(element, false)) {
-                    changed++;
-                }
-            }
-        }
-
-
-        let newlyHidden = 0;
-
-        for (const bar of bars) {
-
-            if (setHidden(bar, true)) {
-
-                changed++;
-
-                newlyHidden++;
-            }
-        }
-
-
-        if (newlyHidden) {
-            nudgeLayout();
-        }
-
-
-        lastReport = {
-            time: new Date().toISOString(),
-            bars: bars.length
-        };
-
-
-        return changed;
-    }
-
-
-    function processAudioDock() {
-
-        if (!HIDE_AUDIO_DOCK) {
-            return 0;
-        }
-
-
-        const docks =
-            queryAll(AUDIO_DOCK_SELECTORS);
-
-
-        let changed = 0;
-
-
-        for (const dock of docks) {
-
-            if (setHidden(dock, true)) {
-                changed++;
-            }
-        }
-
-
-        return changed;
-    }
-
-
-    function process() {
-
-        /*
-         * 処理中に呼ばれたら、終了後に1回だけ追い実行する
-         */
-        if (processing) {
-
-            reprocessRequested = true;
-
-            return;
-        }
-
-
-        processing = true;
-
+        let computed = null;
 
         try {
 
-            ensureStyle();
+            computed =
+                getComputedStyle(element);
 
-            syncStyleEnabled();
+        } catch {
+
+            /*
+             * 取れない場合は寸法だけ出す
+             */
+        }
 
 
-            let changed = 0;
+        const children =
+            [...element.children]
+                .slice(0, 8)
+                .map(child => {
+
+                    let display = '';
+
+                    try {
+
+                        display =
+                            getComputedStyle(child).display;
+
+                    } catch {
+
+                        display = '?';
+                    }
 
 
-            if (isSpacePage()) {
+                    return (
+                        round(child.getBoundingClientRect().height) +
+                        (display === 'none' ? '(none)' : '')
+                    );
+                });
 
-                /*
-                 * スペースのページでは全部表示へ戻す
-                 */
-                changed += restoreAll();
 
-            } else {
+        return {
+            tag:
+                element.tagName.toLowerCase(),
 
-                changed += processBars();
-                changed += processAudioDock();
+            testid:
+                element.getAttribute('data-testid') || '',
+
+            role:
+                element.getAttribute('role') || '',
+
+            実測:
+                `${round(rect.width)}×${round(rect.height)}` +
+                ` @y${round(rect.top)}`,
+
+            ...(computed ?
+                {
+                    display:
+                        computed.display,
+
+                    position:
+                        computed.position,
+
+                    height:
+                        computed.height,
+
+                    minHeight:
+                        computed.minHeight,
+
+                    'top/bottom':
+                        `${computed.top} / ${computed.bottom}`,
+
+                    padding:
+                        `${computed.paddingTop} / ${computed.paddingBottom}`,
+
+                    margin:
+                        `${computed.marginTop} / ${computed.marginBottom}`,
+
+                    overflow:
+                        computed.overflow
+                } :
+                {}),
+
+            子:
+                children,
+
+            子の数:
+                element.children.length
+        };
+    }
+
+
+    // ============================================================
+    // 診断: 本体
+    // ============================================================
+
+    /*
+     * 帯から上へ辿り、各祖先を出す。
+     *
+     * 「テキストが帯の文言だけ」の祖先は帯専用の入れ物。
+     * その一番外側が、空白として残っている枠の候補になる。
+     * 枠を越えた先も数段見て、ヘッダ本体の高さの決まり方を確かめる
+     */
+    function reportAncestors(pill, lines) {
+
+        const pillText =
+            textOf(pill);
+
+
+        let current = pill;
+        let beyond = 0;
+        let outermostOwn = null;
+        let outermostDepth = -1;
+
+
+        for (
+            let depth = 0;
+            depth < MAX_ANCESTORS && current;
+            depth++
+        ) {
+
+            const own =
+                textOf(current) === pillText;
+
+
+            if (own) {
+
+                outermostOwn = current;
+
+                outermostDepth = depth;
             }
 
 
-            if (changed) {
-                log('表示状態を変更:', changed, '件');
-            }
-
-
-            syncPanel();
-
-        } catch (error) {
-
-            console.warn(
-                '[Xスペース帯非表示] 処理中にエラー:',
-                error
+            lines.push(
+                JSON.stringify({
+                    深さ: depth,
+                    帯専用: own,
+                    ...describeBox(current)
+                })
             );
 
-        } finally {
 
-            processing = false;
+            if (!own) {
 
+                beyond++;
 
-            if (reprocessRequested) {
-
-                reprocessRequested = false;
-
-                scheduleProcess(REBUILD_DELAY);
+                if (beyond > EXTRA_ANCESTORS) {
+                    break;
+                }
             }
+
+
+            if (
+                !current.parentElement ||
+                current.parentElement === document.body
+            ) {
+                break;
+            }
+
+
+            current = current.parentElement;
+        }
+
+
+        return outermostOwn ?
+            { element: outermostOwn, depth: outermostDepth } :
+            null;
+    }
+
+
+    /*
+     * ヘッダとタイムラインの間（空白が見えている場所）に
+     * 実際に何が描かれているかを、画面中央の縦一列で調べる
+     */
+    function reportGap(lines) {
+
+        const firstCell =
+            document.querySelector(
+                'div[data-testid="cellInnerDiv"]'
+            );
+
+
+        const bottom =
+            firstCell ?
+                Math.min(
+                    firstCell.getBoundingClientRect().top,
+                    window.innerHeight * 0.6
+                ) :
+                window.innerHeight * 0.4;
+
+
+        lines.push(
+            '最初の投稿セルの上端: ' +
+            (firstCell ?
+                round(firstCell.getBoundingClientRect().top) :
+                '（なし）')
+        );
+
+
+        const seen = new Set();
+
+        const x = window.innerWidth / 2;
+
+
+        for (let y = 0; y < bottom; y += 8) {
+
+            const stack =
+                document.elementsFromPoint(x, y)
+                    .filter(
+                        el => !el.closest(`#${PANEL_ID}`)
+                    );
+
+
+            const top = stack[0];
+
+            if (!top || seen.has(top)) {
+                continue;
+            }
+
+
+            seen.add(top);
+
+
+            lines.push(
+                JSON.stringify({
+                    y,
+
+                    重なり:
+                        stack
+                            .slice(0, 4)
+                            .map(
+                                el =>
+                                    el.tagName.toLowerCase() +
+                                    (el.getAttribute('data-testid') ?
+                                        `[${el.getAttribute('data-testid')}]` :
+                                        '')
+                            )
+                            .join(' > '),
+
+                    ...describeBox(top),
+
+                    text:
+                        textOf(top).slice(0, 30)
+                })
+            );
         }
     }
 
 
-    function scheduleProcess(delay = REBUILD_DELAY) {
+    function buildReport() {
 
-        clearTimeout(rebuildTimer);
+        const lines = [];
 
-        rebuildTimer =
-            setTimeout(process, delay);
+
+        lines.push('=== Xスペース帯非表示 診断 ===');
+
+        lines.push(
+            'バージョン: ' + VERSION +
+            ' / :has対応: ' + supportsHas() +
+            ' / スタイル: ' +
+            (document.getElementById(STYLE_ID) ? '有効' : '未注入')
+        );
+
+        lines.push(
+            '画面: ' +
+            window.innerWidth + '×' + window.innerHeight +
+            ' / スクロール: ' + round(window.scrollY)
+        );
+
+
+        // --------------------------------------------------------
+        // 帯
+        // --------------------------------------------------------
+
+        const pills = [
+            ...document.querySelectorAll(PILL_SELECTOR)
+        ];
+
+
+        lines.push('');
+        lines.push('■ 帯（' + pills.length + '件）');
+
+
+        if (!pills.length) {
+            lines.push('（なし。帯が出ていない）');
+        }
+
+
+        pills.forEach((pill, index) => {
+
+            lines.push('');
+
+            lines.push(
+                '[' + index + '] ' +
+                textOf(pill).slice(0, 40)
+            );
+
+
+            const frame =
+                reportAncestors(pill, lines);
+
+
+            if (frame) {
+
+                lines.push(
+                    '→ 帯専用の一番外側: 深さ ' + frame.depth
+                );
+            }
+        });
+
+
+        // --------------------------------------------------------
+        // 空白の場所に何があるか
+        // --------------------------------------------------------
+
+        lines.push('');
+        lines.push('■ 画面中央の縦一列（上から）');
+
+        reportGap(lines);
+
+
+        return lines.join('\n');
     }
 
 
     // ============================================================
-    // 診断
+    // 診断パネル
     // ============================================================
 
-    /*
-     * iPhone ではコンソールが開けないので、
-     * URL に #tmspaces を付けると画面上にレポートを出す
-     */
     function wantsPanel() {
 
         return location.hash
@@ -1371,492 +551,50 @@
     }
 
 
-    function describe(element) {
+    function makeButton(label, onClick) {
 
-        const rect =
-            element.getBoundingClientRect?.() ||
-            { width: 0, height: 0 };
+        const button =
+            document.createElement('button');
 
-
-        const path = [];
-
-        let current = element;
-
-        for (let i = 0; i < 4 && current; i++) {
-
-            path.push(
-                current.tagName.toLowerCase() +
-                (current.getAttribute?.('data-testid') ?
-                    `[${current.getAttribute('data-testid')}]` :
-                    '')
-            );
-
-            current = current.parentElement;
-        }
+        button.textContent = label;
 
 
-        let background = '';
-
-        try {
-
-            background =
-                getComputedStyle(element)
-                    .backgroundColor;
-
-        } catch {
-
-            /*
-             * 取れない場合は空のまま
-             */
-        }
-
-
-        return {
-            tag:
-                element.tagName.toLowerCase(),
-
-            bg:
-                background +
-                (isSpacePurple(background) ? '(紫)' : ''),
-
-            testid:
-                element.getAttribute?.('data-testid') || '',
-
-            aria:
-                element.getAttribute?.('aria-label') || '',
-
-            role:
-                element.getAttribute?.('role') || '',
-
-            href:
-                element.getAttribute?.('href') || '',
-
-            w:
-                Math.round(rect.width),
-
-            h:
-                Math.round(rect.height),
-
-            hidden:
-                element.hasAttribute(HIDDEN_ATTR),
-
-            表示:
-                (() => {
-
-                    try {
-
-                        return getComputedStyle(element)
-                            .display;
-
-                    } catch {
-
-                        return '?';
-                    }
-                })(),
-
-            path:
-                path.join(' < '),
-
-            text:
-                textOf(element).slice(0, 60)
-        };
-    }
-
-
-    /*
-     * 「スペース」という語を含む最小の要素を集める。
-     * 帯が見つからないとき、何を手がかりにできるかを見るため
-     */
-    function findSpaceMentions(limit = 12) {
-
-        const found = [];
-
-
-        const walker =
-            document.createTreeWalker(
-                document.body,
-                NodeFilter.SHOW_TEXT
-            );
-
-
-        while (walker.nextNode()) {
-
-            const node = walker.currentNode;
-
-            const text =
-                (node.nodeValue || '').trim();
-
-
-            if (
-                !SPACE_WORDS.some(
-                    word => text.includes(word)
-                )
-            ) {
-                continue;
+        Object.assign(
+            button.style,
+            {
+                flex: '1',
+                padding: '10px',
+                borderRadius: '8px',
+                border: '1px solid #666',
+                background: '#222',
+                color: '#fff',
+                font: 'inherit'
             }
-
-
-            const element =
-                node.parentElement;
-
-            if (!element) {
-                continue;
-            }
-
-
-            /*
-             * ページのデータ部分は手がかりにならない
-             */
-            if (
-                element.closest?.('script, style, noscript')
-            ) {
-                continue;
-            }
-
-
-            found.push(element);
-
-
-            if (found.length >= limit) {
-                break;
-            }
-        }
-
-
-        return found;
-    }
-
-
-    /*
-     * 語に頼らず、帯が居そうな場所を構造で列挙する。
-     * 実機の構造が分からないうちは、こちらが手がかりになる
-     */
-    function collectStructuralHints() {
-
-        const hints = [];
-
-
-        // 先頭のセル（帯はたいてい一番上に入る）
-        const cells =
-            queryAll(CELL_SELECTORS);
-
-        cells.slice(0, 4).forEach((cell, index) => {
-
-            hints.push({
-                種別: 'セル' + index,
-                情報: describe(cell),
-                内側:
-                    [
-                        ...cell.querySelectorAll('[data-testid]')
-                    ]
-                        .slice(0, 8)
-                        .map(
-                            el =>
-                                el.getAttribute('data-testid')
-                        )
-            });
-        });
-
-
-        // それらしい testid を持つ要素
-        const suspects =
-            [...document.querySelectorAll('[data-testid]')]
-                .filter(
-                    el =>
-                        /audio|space|dock|pill|live|broadcast|placement/i
-                            .test(
-                                el.getAttribute('data-testid') || ''
-                            )
-                )
-                .slice(0, 12);
-
-        for (const suspect of suspects) {
-
-            hints.push({
-                種別: 'testid該当',
-                情報: describe(suspect)
-            });
-        }
-
-
-        // 画面に固定されている低い要素（帯の典型）
-        const pinned =
-            [...document.querySelectorAll('div')]
-                .filter(el => {
-
-                    const style =
-                        getComputedStyle(el);
-
-                    if (
-                        style.position !== 'fixed' &&
-                        style.position !== 'sticky'
-                    ) {
-                        return false;
-                    }
-
-                    const rect =
-                        el.getBoundingClientRect();
-
-                    return (
-                        rect.height >= BAR_MIN_HEIGHT &&
-                        rect.height <= BAR_MAX_HEIGHT &&
-                        rect.width >=
-                            window.innerWidth *
-                            BAR_MIN_WIDTH_RATIO
-                    );
-                })
-                .slice(0, 8);
-
-        for (const element of pinned) {
-
-            hints.push({
-                種別: '固定要素',
-                情報: describe(element)
-            });
-        }
-
-
-        // /i/ を指すリンク（spaces も broadcasts も拾う）
-        const links =
-            [...document.querySelectorAll('a[href*="/i/"]')]
-                .slice(0, 12);
-
-        for (const link of links) {
-
-            hints.push({
-                種別: 'iリンク',
-                情報: describe(link)
-            });
-        }
-
-
-        return hints;
-    }
-
-
-    /*
-     * 空白の出どころを突き止めるための情報。
-     *
-     * 帯を消しても親が高さを確保していると空白が残る。
-     * 高さが「どこから来ているか」（指定値か、子の合計か）を出す
-     */
-    function describeHeight(element, depth) {
-
-        const rect =
-            element.getBoundingClientRect();
-
-
-        let style = {};
-
-        try {
-
-            const computed =
-                getComputedStyle(element);
-
-            style = {
-                指定高さ:
-                    element.style?.height || '',
-
-                最小高さ:
-                    computed.minHeight,
-
-                上余白:
-                    computed.paddingTop,
-
-                下余白:
-                    computed.paddingBottom,
-
-                並び:
-                    computed.display +
-                    '/' +
-                    computed.flexDirection,
-
-                位置:
-                    computed.position
-            };
-
-        } catch {
-
-            /*
-             * 取れない場合は空のまま
-             */
-        }
-
-
-        const children =
-            [...element.children].map(child => {
-
-                const childRect =
-                    child.getBoundingClientRect();
-
-                return (
-                    Math.round(childRect.height) +
-                    (child.hasAttribute(HIDDEN_ATTR) ? '(消)' : '')
-                );
-            });
-
-
-        return {
-            深さ: depth,
-
-            tag:
-                element.tagName.toLowerCase(),
-
-            testid:
-                element.getAttribute?.('data-testid') || '',
-
-            h:
-                Math.round(rect.height),
-
-            子の高さ:
-                children.slice(0, 8),
-
-            ...style,
-
-            text:
-                textOf(element).slice(0, 30)
-        };
-    }
-
-
-    function buildReport() {
-
-        const bars =
-            collectBars();
-
-
-        const lines = [];
-
-
-        lines.push('=== Xスペース帯非表示 診断 ===');
-
-        lines.push(
-            'URL: ' + location.pathname + location.hash
-        );
-
-        lines.push(
-            'バージョン: 2.1.0' +
-            ' / :has対応: ' + supportsHas() +
-            ' / スタイル: ' +
-            (styleElement?.isConnected ?
-                (styleElement.disabled ? '無効' : '有効') :
-                '未注入')
-        );
-
-        lines.push(
-            '画面幅: ' + window.innerWidth
-        );
-
-        lines.push(
-            'セル数: ' +
-            queryAll(CELL_SELECTORS).length +
-            ' / ドック: ' +
-            queryAll(AUDIO_DOCK_SELECTORS).length +
-            ' / スペースリンク: ' +
-            document.querySelectorAll(
-                SPACE_LINK_SELECTOR
-            ).length
         );
 
 
-        lines.push('');
-        lines.push('■ 帯として検出（' + bars.length + '件）');
-
-        if (!bars.length) {
-            lines.push('（なし）');
-        }
-
-        for (const bar of bars) {
-            lines.push(JSON.stringify(describe(bar)));
-        }
+        button.addEventListener('click', onClick);
 
 
-        lines.push('');
-        lines.push('■ 消した帯の親の高さ（空白の出どころ）');
-
-        if (!bars.length) {
-            lines.push('（帯を消していない）');
-        }
-
-        for (const bar of bars) {
-
-            let current = bar.parentElement;
-
-            for (let i = 0; i < 5 && current; i++) {
-
-                lines.push(
-                    JSON.stringify(
-                        describeHeight(current, i)
-                    )
-                );
-
-
-                if (
-                    current === document.body ||
-                    !current.parentElement
-                ) {
-                    break;
-                }
-
-                current = current.parentElement;
-            }
-        }
-
-
-        lines.push('');
-        lines.push('■ 構造からの手がかり');
-
-        const hints =
-            collectStructuralHints();
-
-        if (!hints.length) {
-            lines.push('（なし）');
-        }
-
-        for (const hint of hints) {
-            lines.push(JSON.stringify(hint));
-        }
-
-
-        lines.push('');
-        lines.push('■「スペース」を含む要素');
-
-        const mentions =
-            findSpaceMentions();
-
-        if (!mentions.length) {
-            lines.push('（なし。帯が画面に出ていない可能性）');
-        }
-
-        for (const mention of mentions) {
-
-            lines.push(JSON.stringify(describe(mention)));
-
-            const root =
-                findBarRoot(mention);
-
-            if (root !== mention) {
-                lines.push(
-                    '  → 帯候補: ' +
-                    JSON.stringify(describe(root))
-                );
-            }
-        }
-
-
-        return lines.join('\n');
+        return button;
     }
 
 
-    function syncPanel() {
+    function closePanel() {
 
-        const existing =
-            document.getElementById(PANEL_ID);
+        clearInterval(panelTimer);
 
+        panelTimer = null;
+
+        document.getElementById(PANEL_ID)?.remove();
+    }
+
+
+    function renderPanel() {
 
         if (!wantsPanel()) {
 
-            existing?.remove();
+            closePanel();
 
             return;
         }
@@ -1871,7 +609,8 @@
             buildReport();
 
 
-        let panel = existing;
+        let panel =
+            document.getElementById(PANEL_ID);
 
 
         if (!panel) {
@@ -1889,7 +628,7 @@
                     left: '8px',
                     right: '8px',
                     bottom: '8px',
-                    maxHeight: '60vh',
+                    maxHeight: '45vh',
                     overflow: 'auto',
                     zIndex: '2147483647',
                     padding: '10px',
@@ -1914,40 +653,35 @@
 
             panelTimer =
                 setInterval(
-                    () => {
-
-                        if (
-                            !document.getElementById(PANEL_ID)
-                        ) {
-
-                            clearInterval(panelTimer);
-
-                            panelTimer = null;
-
-                            return;
-                        }
-
-
-                        syncPanel();
-                    },
-
+                    renderPanel,
                     PANEL_REFRESH_MS
                 );
+        }
+
+
+        /*
+         * コピー直後に作り直すと「コピーした」表示が消えるので、
+         * 本文だけ差し替える
+         */
+        const existingArea =
+            panel.querySelector('textarea');
+
+        if (existingArea) {
+
+            existingArea.value = report;
+
+            return;
         }
 
 
         panel.replaceChildren();
 
 
-        // --------------------------------------------------------
-        // 操作ボタン
-        // --------------------------------------------------------
-
-        const bar =
+        const buttons =
             document.createElement('div');
 
         Object.assign(
-            bar.style,
+            buttons.style,
             {
                 display: 'flex',
                 gap: '8px',
@@ -1956,39 +690,16 @@
         );
 
 
-        function makeButton(label, onClick) {
-
-            const button =
-                document.createElement('button');
-
-            button.textContent = label;
-
-            Object.assign(
-                button.style,
-                {
-                    flex: '1',
-                    padding: '10px',
-                    borderRadius: '8px',
-                    border: '1px solid #666',
-                    background: '#222',
-                    color: '#fff',
-                    font: 'inherit'
-                }
-            );
-
-            button.addEventListener('click', onClick);
-
-            return button;
-        }
-
-
         const copyButton =
             makeButton('コピー', async () => {
+
+                const area =
+                    panel.querySelector('textarea');
 
                 try {
 
                     await navigator.clipboard
-                        .writeText(report);
+                        .writeText(area.value);
 
                     copyButton.textContent = 'コピーした';
 
@@ -1997,49 +708,18 @@
                     /*
                      * 権限が無い場合は選択してもらう
                      */
-                    const area =
-                        panel.querySelector('textarea');
-
-                    area?.focus();
-                    area?.select();
+                    area.focus();
+                    area.select();
 
                     copyButton.textContent = '長押しでコピー';
                 }
             });
 
 
-        bar.append(
+        buttons.append(
             copyButton,
-
-            makeButton('閉じる', () => {
-
-                clearInterval(panelTimer);
-
-                panelTimer = null;
-
-                panel.remove();
-            })
+            makeButton('閉じる', closePanel)
         );
-
-
-        panel.appendChild(bar);
-
-
-        const guide =
-            document.createElement('div');
-
-        guide.textContent =
-            'コピーして報告に使えます';
-
-        Object.assign(
-            guide.style,
-            {
-                marginBottom: '6px',
-                color: '#9cf'
-            }
-        );
-
-        panel.appendChild(guide);
 
 
         const area =
@@ -2053,7 +733,7 @@
             area.style,
             {
                 width: '100%',
-                height: '40vh',
+                height: '28vh',
                 background: '#111',
                 color: '#eee',
                 border: '1px solid #444',
@@ -2064,33 +744,25 @@
         );
 
 
-        panel.appendChild(area);
+        panel.append(buttons, area);
     }
-
-
-    const diagnostics = {
-
-        dump() {
-
-            const report =
-                buildReport();
-
-            console.log(report);
-
-            return report;
-        },
-
-        panel: syncPanel,
-
-        css: buildCss,
-
-        last: () => lastReport
-    };
 
 
     try {
 
-        window.__tmSpacesBar = diagnostics;
+        window.__tmSpacesBar = {
+
+            dump() {
+
+                const report = buildReport();
+
+                console.log(report);
+
+                return report;
+            },
+
+            css: buildCss
+        };
 
     } catch {
 
@@ -2101,154 +773,37 @@
 
 
     // ============================================================
-    // SPA遷移
-    // ============================================================
-
-    /*
-     * X は history API で画面を切り替えるが、
-     * pushState / replaceState のラップは使わない。
-     *
-     * iOS の Tampermonkey はスクリプトを isolated world で実行するため、
-     * こちらで書き換えた history はページ側の呼び出しを捕捉できない。
-     * 代わりに、DOM監視のついでに URL の変化を見る。
-     */
-    function locationChanged() {
-
-        const path = location.pathname;
-
-        if (path === lastPath) {
-            return false;
-        }
-
-        lastPath = path;
-
-        return true;
-    }
-
-
-    // ============================================================
-    // DOM監視
-    // ============================================================
-
-    const observer =
-        new MutationObserver(mutations => {
-
-            if (locationChanged()) {
-
-                scheduleProcess(NAV_DELAY);
-
-                return;
-            }
-
-
-            for (const mutation of mutations) {
-
-                if (mutation.type !== 'childList') {
-                    continue;
-                }
-
-
-                if (!mutation.addedNodes.length) {
-                    continue;
-                }
-
-
-                const target = mutation.target;
-
-
-                /*
-                 * 自分が隠した要素・診断パネルの中の変更は無視する
-                 * （無限ループ防止）
-                 */
-                if (
-                    target instanceof Element &&
-                    (
-                        target.closest?.(`[${HIDDEN_ATTR}]`) ||
-                        target.closest?.(`#${PANEL_ID}`)
-                    )
-                ) {
-                    continue;
-                }
-
-
-                scheduleProcess();
-
-                return;
-            }
-        });
-
-
-    function startObserver() {
-
-        const root =
-            document.body ||
-            document.documentElement;
-
-        if (!root) {
-            return;
-        }
-
-
-        observer.observe(
-            root,
-            {
-                childList: true,
-                subtree: true
-            }
-        );
-    }
-
-
-    // ============================================================
     // 起動
     // ============================================================
 
-    window.addEventListener(
-        'popstate',
-        () => scheduleProcess(NAV_DELAY)
+    ensureStyle();
+
+
+    /*
+     * document-start では <head> がまだ無いことがある。
+     * その場合は <html> 直下に入れているので、そのままで効く。
+     * 念のため DOM 構築後にも確認する
+     */
+    document.addEventListener(
+        'DOMContentLoaded',
+        () => {
+
+            ensureStyle();
+
+            renderPanel();
+        },
+        { once: true }
     );
 
 
     window.addEventListener(
         'hashchange',
-        () => scheduleProcess(100)
+        renderPanel
     );
 
 
-    /*
-     * スクロールで帯が現れる作りにも追従する
-     */
-    window.addEventListener(
-        'scroll',
-        () => scheduleProcess(400),
-        { passive: true }
-    );
-
-
-    ensureStyle();
-
-
-    if (document.body) {
-
-        startObserver();
-
-    } else {
-
-        document.addEventListener(
-            'DOMContentLoaded',
-            () => {
-
-                ensureStyle();
-
-                startObserver();
-
-                process();
-            },
-            { once: true }
-        );
+    if (document.readyState !== 'loading') {
+        renderPanel();
     }
-
-
-    scheduleProcess(NAV_DELAY);
 
 })();
