@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X スペース帯非表示 v1.7.0
+// @name         X スペース帯非表示 v1.8.0
 // @namespace    local.hiro.tools
-// @version      1.7.0
+// @version      1.8.0
 // @description  X のタイムライン上部に出る音声スペースの帯（バー）を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -178,6 +178,24 @@
 
     // 紫と認めるRGB距離
     const PURPLE_TOLERANCE = 70;
+
+    /*
+     * 帯を消したあと、入れ物にアイコンだけが残ることがある。
+     * （実機では下向き矢印が残り、空白の帯として見えていた）
+     *
+     * 文字を持たないアイコンだけなら畳む。
+     * ただし下の要素を含む入れ物は、機能が失われるので残す
+     */
+    const COLLAPSE_ICON_ONLY = true;
+
+    const KEEP_CONTENT_SELECTORS = [
+        KEEP_PILL_SELECTOR,
+        '[aria-label*="新しいポスト"]',
+        '[aria-label*="New posts"]',
+        'input',
+        'textarea',
+        'video'
+    ];
 
     // 帯とみなす高さの範囲（ピクセル）
     const BAR_MIN_HEIGHT = 20;
@@ -426,9 +444,23 @@
          * nav 直下の帯ごと CSS で消す。
          * 「新しいポストを表示」（pillLabel）は残す
          */
+        /*
+         * 「新しいポストを表示」が同じ入れ物に同居している場合があるので、
+         * それを含む入れ物は CSS 側でも除外する
+         */
+        const keepConditions =
+            [
+                KEEP_PILL_SELECTOR,
+                '[aria-label*="新しいポスト"]',
+                '[aria-label*="New posts"]'
+            ]
+                .map(selector => `:not(:has(${selector}))`)
+                .join('');
+
+
         const pillCondition =
             `:has(${PILL_SELECTOR})` +
-            `:not(:has(${KEEP_PILL_SELECTOR}))` +
+            keepConditions +
             `:not(:has(article))`;
 
 
@@ -906,13 +938,22 @@
             /*
              * 「新しいポストを表示」は同じ仕組みで出るので残す
              */
-            if (track.querySelector(KEEP_PILL_SELECTOR)) {
+            if (holdsKeeper(track)) {
                 continue;
             }
 
 
-            const root =
+            let root =
                 findPillRoot(track);
+
+
+            /*
+             * 入れ物に残すものが同居している場合は、
+             * 入れ物ごとではなく帯だけを消す
+             */
+            if (holdsKeeper(root)) {
+                root = track;
+            }
 
 
             if (hasTweet(root)) {
@@ -1385,10 +1426,48 @@
      * 高さだけある」要素を畳む。
      * 見えている中身が1つでもあれば触らない
      */
+    /*
+     * 残しておくべき機能を含んでいるか
+     */
+    function holdsKeeper(element) {
+
+        return KEEP_CONTENT_SELECTORS.some(selector => {
+
+            try {
+
+                return (
+                    element.querySelector(selector) ||
+                    element.matches?.(selector)
+                );
+
+            } catch {
+
+                return false;
+            }
+        });
+    }
+
+
     function hasVisibleContent(element) {
 
+        if (holdsKeeper(element)) {
+            return true;
+        }
+
+
+        /*
+         * 文字が残っているなら中身があるとみなす。
+         *
+         * 逆に、文字が無くアイコンだけの場合は
+         * 帯の名残とみなして畳む（矢印だけが残る現象への対処）
+         */
         if (textOf(element)) {
             return true;
+        }
+
+
+        if (COLLAPSE_ICON_ONLY) {
+            return false;
         }
 
 
@@ -1960,7 +2039,7 @@
         );
 
         lines.push(
-            'バージョン: 1.7.0' +
+            'バージョン: 1.8.0' +
             ' / :has対応: ' + supportsHas() +
             ' / スタイル: ' +
             (styleElement?.isConnected ?

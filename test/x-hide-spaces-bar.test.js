@@ -197,6 +197,22 @@ function check(name, cond, extra) {
       return outer;
     };
 
+    // 帯を消したあと、入れ物に矢印アイコンだけが残る実機の状況
+    window.mkPillWithArrow = (nav, id, opts = {}) => {
+      const outer = window.mkPill(nav, id, '+23・ライトノベル雑談（このラノとか）');
+      const arrow = document.createElement('div');
+      arrow.setAttribute('style', 'width: 24px; height: 24px;');
+      if (opts.keeper) {
+        arrow.setAttribute('aria-label', '新しいポストを表示');
+      }
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', '24');
+      svg.setAttribute('height', '24');
+      arrow.appendChild(svg);
+      outer.querySelector('[data-testid="ScrollSnap-SwipeableList"]').appendChild(arrow);
+      return outer;
+    };
+
     // 画面下部の再生バー
     window.mkDock = () => {
       const dock = document.createElement('div');
@@ -216,6 +232,8 @@ function check(name, cond, extra) {
     const nav = window.mkHeaderNav();
     window.mkPill(nav, 'spacePill', '+23・ライトノベル雑談（このラノとか）');
     window.mkPill(nav, 'newPostsPill', '新しいポストを表示', { keep: true });
+    window.mkPillWithArrow(nav, 'arrowPill');
+    window.mkPillWithArrow(nav, 'keeperPill', { keeper: true });
     window.fillBareBar(window.mkCell('bare'));
     window.fillTweet(window.mkCell('tweet'), 'ふつうの投稿');
     window.fillTweetWithSpaceLink(window.mkCell('tweetSpace'));
@@ -252,14 +270,18 @@ function check(name, cond, extra) {
   check('ピル: 実機構造のスペースピルが消える', (await shown('spacePill')) === false);
   check('ピル: 「新しいポストを表示」は残る', (await shown('newPostsPill')) === true);
   check('空白: 帯の入れ物に高さが残らない', await page.evaluate(() => {
-    const nav = document.getElementById('headerNav');
-    const pill = document.getElementById('spacePill');
-    return pill.getBoundingClientRect().height === 0 &&
-      nav.getBoundingClientRect().height ===
-        document.getElementById('newPostsPill').getBoundingClientRect().height;
+    const height = (id) => document.getElementById(id).getBoundingClientRect().height;
+    // nav の高さ = 残すべきピルの高さの合計（消した帯の分は残らない）
+    return height('spacePill') === 0 &&
+      document.getElementById('headerNav').getBoundingClientRect().height ===
+        height('newPostsPill') + height('keeperPill');
   }));
   check('空白: 中身が見えている入れ物は畳まない', await page.evaluate(() =>
     document.getElementById('newPostsPill').getBoundingClientRect().height > 0));
+  check('空白: 矢印アイコンだけが残った入れ物も畳む', await page.evaluate(() =>
+    document.getElementById('arrowPill').getBoundingClientRect().height === 0));
+  check('空白: 「新しいポストを表示」を含むなら畳まない', await page.evaluate(() =>
+    document.getElementById('keeperPill').getBoundingClientRect().height > 0));
   check('JS: 再生バーが消える', (await shown('dock')) === false);
   check('JS: 投稿は消えたままにならない', (await shown('tweet')) === true);
   check('JS: スペース言及の投稿は消えない', (await shown('tweetSpace')) === true);
