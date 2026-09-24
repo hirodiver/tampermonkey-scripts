@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.5
+// @name         YouTube チャット非表示 v1.6
 // @namespace    https://www.youtube.com/
-// @version      1.5
-// @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（名前と文を消す／文だけ消すの2種類・チャンネルID単位・スパチャ/メンバー加入/上部ティッカーも対象）
+// @version      1.6
+// @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（基本は名前を残して本文だけ消す。一覧から「まるごと消す」に切り替え可・チャンネルID単位）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
 // @grant        none
@@ -33,11 +33,8 @@
      *            （誰が喋ったかは分かる。会話の流れを
      *              見失いたくないときのため）
      *
-     * 「発言ごと消す」「本文だけ消す」という言い方は、
-     * どちらも同じ言葉（消す発言）を主語にしていて
-     * 区別しづらいという指摘を受け、v1.5 で
-     * 「消える対象が名前を含むかどうか」がそのまま
-     * 読めるように言い換えた。
+     * v1.6 から、発言に出すボタンは 'text'（「発言を消す」）だけ。
+     * 'all' へは「非表示リスト」の「まるごと消す」からのみ切り替える。
      */
 
     const STORE_KEY = 'tm-yt-chat-hide-users';
@@ -473,13 +470,14 @@
                 white-space: nowrap;
             }
 
-            .tm-ychide-btn-all {
+            .tm-ychide-btn-text {
                 right: 2px;
             }
 
-            .tm-ychide-btn-text {
-                /* 「名前と文を消す」ボタンの幅ぶん空ける */
-                right: 90px;
+            #${PANEL_ID} .tm-ychide-mode[aria-pressed="true"] {
+                background: #cc0000;
+                color: #fff;
+                border-color: #cc0000;
             }
 
             html[dark] .tm-ychide-btn {
@@ -502,12 +500,10 @@
      * 発言の右上に出す小さなボタン。
      * ふだんは隠れていて、発言にカーソルを載せたときだけ出る。
      *
-     * 「非表示」「文だけ」という短い言い方だと、何がどう変わるのか
-     * 伝わりにくいという指摘を受け、動詞を揃えて対象の違いだけが
-     * 分かるようにした。
-     *
-     *   「名前と文を消す」 … 名前も本文もまるごと消す
-     *   「文だけ消す」     … 名前は残して本文だけ消す（誰の発言かは分かる）
+     * 基本の消し方は「名前を残して本文だけ消す」。誰が喋ったかは
+     * 分かるので会話の流れを見失わない。名前ごとまるごと消すのは
+     * 「非表示リスト」の各行にある「まるごと消す」からのみ切り替える
+     * （うっかり押して完全に見えなくなるのを避けるため）。
      */
     function ensureButtons(el) {
         if (el.querySelector(':scope > .tm-ychide-btn')) return;
@@ -515,18 +511,9 @@
         el.appendChild(
             makeButton(
                 el,
-                'all',
-                '名前と文を消す',
-                'この人の発言を、名前ごとまるごと消す'
-            )
-        );
-
-        el.appendChild(
-            makeButton(
-                el,
                 'text',
-                '文だけ消す',
-                '名前は残し、本文だけ消す（誰の発言かは分かるようにする）'
+                '発言を消す',
+                '名前は残し、本文を消す（まるごと消すには「非表示リスト」から切り替え）'
             )
         );
     }
@@ -661,20 +648,20 @@
                 ? entry.name + ' (' + entry.id + ')'
                 : entry.name + '（表示名で判定）';
 
-            // 押すたびに「名前と文」と「文だけ」が入れ替わる。
-            // ホバー時のボタンと同じ言い方に揃えてある。
+            // 「まるごと消す」のオン／オフ。
+            // オンのときは赤く反転し、名前ごと消える。
+            const full = entry.mode === 'all';
             const modeBtn = document.createElement('button');
             modeBtn.className = 'tm-ychide-mode';
             modeBtn.type = 'button';
-            modeBtn.textContent =
-                entry.mode === 'text' ? '文だけ' : '名前と文';
-            modeBtn.title = '消し方を切り替える（名前と文を消す ⇔ 文だけ消す）';
+            modeBtn.textContent = 'まるごと消す';
+            modeBtn.setAttribute('aria-pressed', full ? 'true' : 'false');
+            modeBtn.title = full
+                ? 'オン: 名前ごと消している（押すと名前を残す消し方に戻す）'
+                : 'オフ: 名前は残して本文だけ消している（押すと名前ごと消す）';
             modeBtn.style.cursor = 'pointer';
             modeBtn.addEventListener('click', () =>
-                setMode(
-                    index,
-                    entry.mode === 'text' ? 'all' : 'text'
-                )
+                setMode(index, full ? 'text' : 'all')
             );
 
             const del = document.createElement('button');

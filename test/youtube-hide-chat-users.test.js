@@ -104,16 +104,14 @@ function check(name, cond, extra) {
   check('初期: 何も登録していなければ全部見える', (await shown('m1')) === true && (await shown('m2')) === true);
 
   // --- ボタンの設置 ---
-  check('ボタン: 発言ごとに「名前と文を消す」ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn-all')));
-  check('ボタン: 発言ごとに「文だけ消す」ボタンが付く', await page.evaluate(() => !!document.querySelector('#m1 > .tm-ychide-btn-text')));
-  check('ボタン: ラベルが分かりやすい言い方になっている', await page.evaluate(() => {
-    const all = document.querySelector('#m1 > .tm-ychide-btn-all');
-    const text = document.querySelector('#m1 > .tm-ychide-btn-text');
-    return all.textContent === '名前と文を消す' && text.textContent === '文だけ消す';
+  check('ボタン: 発言ごとに「発言を消す」ボタンが1つだけ付く', await page.evaluate(() => {
+    const btns = document.querySelectorAll('#m1 > .tm-ychide-btn');
+    return btns.length === 1 && btns[0].textContent === '発言を消す';
   }));
+  check('ボタン: まるごと消すボタンは発言には出ない', await page.evaluate(() => !document.querySelector('#m1 > .tm-ychide-btn-all')));
 
-  // --- ボタンで追加（まるごと消す） ---
-  await page.evaluate(() => document.querySelector('#m1 > .tm-ychide-btn-all').click());
+  // --- まるごと消す（パネル経由の設定と同じ状態を API で作る） ---
+  await page.evaluate(() => window.__tmChatHide.add('UC_AAA', 'あらし', 'all'));
   await page.waitForTimeout(150);
   check('追加: 押した相手の発言が消える', (await shown('m1')) === false);
   check('追加: 他人の発言は残る', (await shown('m2')) === true);
@@ -179,12 +177,33 @@ function check(name, cond, extra) {
     return !!el && getComputedStyle(el).display !== 'none' && el.textContent === '（非表示）';
   }));
 
-  // 同じ相手に「非表示」を押したら、二重登録ではなく切り替えになる
+  // パネルの「まるごと消す」を押すと、名前ごと消える
   const beforeSwitch = await page.evaluate(() => window.__tmChatHide.list().length);
-  await page.evaluate(() => document.querySelector('#t1msg > .tm-ychide-btn-all').click());
+  await page.evaluate(() => document.querySelector('.tm-ychide-open').click());
+  await page.waitForTimeout(100);
+  await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('#tm-ychide-panel .tm-ychide-row'));
+    const row = rows.find((r) => r.textContent.includes('本文だけ消す人'));
+    row.querySelector('.tm-ychide-mode').click();
+  });
   await page.waitForTimeout(200);
-  check('切替: 文だけ→全部に変えると発言ごと消える', (await shown('t1msg')) === false);
+  check('切替: 「まるごと消す」で名前ごと消える', (await shown('t1msg')) === false);
   check('切替: 二重登録にならない', (await page.evaluate(() => window.__tmChatHide.list().length)) === beforeSwitch);
+  check('切替: ボタンがオン表示になる', await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('#tm-ychide-panel .tm-ychide-row'));
+    const row = rows.find((r) => r.textContent.includes('本文だけ消す人'));
+    return row.querySelector('.tm-ychide-mode').getAttribute('aria-pressed') === 'true';
+  }));
+  // もう一度押すと、名前を残す消し方に戻る
+  await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('#tm-ychide-panel .tm-ychide-row'));
+    const row = rows.find((r) => r.textContent.includes('本文だけ消す人'));
+    row.querySelector('.tm-ychide-mode').click();
+  });
+  await page.waitForTimeout(200);
+  check('切替: もう一度押すと名前が戻る', (await shown('t1msg')) === true);
+  // パネルを閉じておく（後続のテストで開き直す）
+  await page.evaluate(() => document.querySelector('.tm-ychide-open').click());
 
   // --- パネル ---
   check('パネル: 開くボタンがある', await page.evaluate(() => !!document.querySelector('.tm-ychide-open')));
@@ -222,7 +241,7 @@ function check(name, cond, extra) {
   check('パネル: 消し方の切り替えボタンがある', await page.evaluate(() => {
     const row = document.querySelectorAll('#tm-ychide-panel .tm-ychide-row')[0];
     const btn = row.querySelector('.tm-ychide-mode');
-    return !!btn && (btn.textContent === '名前と文' || btn.textContent === '文だけ');
+    return !!btn && btn.textContent === 'まるごと消す';
   }));
 
   // --- 見出し帯の高さが変わったら追従する ---
