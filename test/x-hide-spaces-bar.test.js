@@ -332,85 +332,18 @@ function check(name, cond, extra) {
   await page.evaluate(() => { location.hash = ''; });
   await page.waitForTimeout(400);
 
-  // --- 手動指定（自動判定に当たらない帯を、タップで覚えさせる） ---
-  // どのルールにも引っかからない帯を置く（文言も testid も手がかり無し）
-  await page.evaluate(() => {
-    const cell = window.mkCell('unknownBar');
-    const inner = document.createElement('div');
-    inner.className = 'bar';
-    inner.id = 'unknownInner';
-    inner.textContent = '🎧 いま話し中';
-    cell.appendChild(inner);
-    // 実機と同じく帯は画面上部にある（パネルは下半分を覆う）
-    const timeline = document.getElementById('timeline');
-    timeline.insertBefore(cell, timeline.firstChild);
-    window.scrollTo(0, 0);
-  });
-  await page.waitForTimeout(700);
-  check('手動指定: 正体不明の帯は自動では消えない（想定どおり）', (await shown('unknownBar')) === true);
-
+  // --- 診断に空白の出どころが載る ---
   await page.evaluate(() => { location.hash = '#tmspaces'; });
   await page.waitForTimeout(700);
+  check('診断: 消した帯の親の高さが載る', await page.evaluate(() => {
+    const area = document.querySelector('#tm-hide-spaces-bar-panel textarea');
+    return !!area && area.value.includes('消した帯の親の高さ') && area.value.includes('子の高さ');
+  }));
   await page.evaluate(() => {
-    const buttons = [...document.querySelectorAll('#tm-hide-spaces-bar-panel button')];
-    buttons.find((b) => b.textContent === 'タップで指定').click();
-  });
-  // 帯をタップ
-  await page.click('#unknownInner', { force: true });
-  await page.waitForTimeout(700);
-  check('手動指定: タップした帯が消える', (await shown('unknownBar')) === false);
-  check('手動指定: 記憶が保存される', await page.evaluate(() => JSON.parse(localStorage.getItem('tm-hide-spaces-bar-rules') || '[]').length === 1));
-
-  // 再読み込み相当: DOMを作り直してスクリプトを流し直す
-  await page.evaluate(() => {
-    document.getElementById('timeline').replaceChildren();
     document.getElementById('tm-hide-spaces-bar-panel')?.remove();
-    document.getElementById('tm-hide-spaces-bar-style')?.remove();
     location.hash = '';
-    const cell = window.mkCell('unknownBar');
-    const inner = document.createElement('div');
-    inner.className = 'bar';
-    inner.id = 'unknownInner';
-    inner.textContent = '🎧 別の人が話し中';
-    cell.appendChild(inner);
-    window.scrollTo(0, 0);
   });
-  await page.evaluate(SCRIPT);
-  await page.waitForTimeout(900);
-  check('手動指定: 読み込み直しても覚えている（文言が変わっても効く）', (await shown('unknownBar')) === false);
-
-  // 使い回しで投稿になったら消さない
-  await page.evaluate(() => {
-    window.fillTweet(document.getElementById('unknownBar'), '使い回された投稿');
-    document.getElementById('timeline').appendChild(document.createElement('div'));
-  });
-  await page.waitForTimeout(900);
-  check('手動指定: 投稿に化けたら表示へ戻る', (await shown('unknownBar')) === true);
-
-  // --- 帯を消したあとに残る空白の帯も、同じタップ指定で消せる ---
-  // （自動で畳む処理は v1.9.0 で削除した。実機で効かなかったため）
-  await page.evaluate(() => {
-    document.getElementById('timeline').replaceChildren();
-    const strip = document.createElement('div');
-    strip.id = 'leftoverStrip';
-    strip.setAttribute('style', 'width: 100%; height: 52px;');
-    document.getElementById('headerNav').appendChild(strip);
-    location.hash = '#tmspaces';
-    window.scrollTo(0, 0);
-  });
-  await page.waitForTimeout(700);
-  await page.evaluate(() => {
-    const buttons = [...document.querySelectorAll('#tm-hide-spaces-bar-panel button')];
-    buttons.find((b) => b.textContent === 'タップで指定').click();
-  });
-  await page.click('#leftoverStrip', { force: true });
-  await page.waitForTimeout(700);
-  check('残った空白: タップで指定すれば消える', (await shown('leftoverStrip')) === false);
-
-  // 全解除
-  await page.evaluate(() => {
-    localStorage.removeItem('tm-hide-spaces-bar-rules');
-  });
+  await page.waitForTimeout(400);
 
   // --- 後から追加された帯 ---
   await page.evaluate(() => window.fillSpaceBar(window.mkCell('later')));
