@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.0.1
+// @name         X アカウント切替 v1.0.2
 // @namespace    local.hiro.tools
-// @version      1.0.1
+// @version      1.0.2
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -39,6 +39,10 @@
  *   - 左上のアイコン（DashButton_ProfileIcon_Link）のアバターの testid は
  *     UserAvatar-Container-unknown で、ハンドルを持たない。
  *     aria-label も「プロフィールメニュー 表示名」で、@ハンドルは無い
+ *   - 個別ポスト等では左上がアイコンではなく「戻る」になり、ドロワーを開けない
+ *     （v1.0.1 で、ホームでは動き、個別ポストでは動かないと報告あり）。
+ *     このときは下のタブの「ホーム」でいったんホームへ移ってから開き、
+ *     終わったら元のページへ戻る（v1.0.2）
  *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
@@ -61,7 +65,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.0.1';
+    const VERSION = '1.0.2';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -78,6 +82,9 @@
     const SESSION_HIDDEN = 'tm-x-switch-hidden';
 
     const SESSION_RETURN = 'tm-x-switch-return';
+
+    // 最後に確かめられた現在のアカウント（左上のアイコンが無いページで使う）
+    const SESSION_CURRENT = 'tm-x-switch-current';
 
     // 診断の記録（再読み込みしても残す）
     const SESSION_LOG = 'tm-x-switch-log';
@@ -113,6 +120,10 @@
 
     // 切替前のページを覚えておく期間（ミリ秒）。これより古い記録は捨てる
     const RETURN_MAX_AGE_MS = 60 * 1000;
+
+    // 履歴で戻ったあと、元のページに着いたかを確かめるまでの待ち時間（ミリ秒）
+    // 着いていなければ元のページを開き直す
+    const RETURN_CHECK_MS = 600;
 
     // トーストの表示時間（ミリ秒）
     const TOAST_MS = 2200;
@@ -181,6 +192,22 @@
 
     // 構造で探すときの「画面上端」の範囲（px）
     const DRAWER_OPENER_MAX_TOP = 90;
+
+    /*
+     * 左上のアイコンが無いページ（個別ポスト等）で、ホームへ移るためのリンク。
+     * 下のタブのホーム（実機診断で確認）
+     */
+    const HOME_LINK_SELECTORS = [
+        'a[data-testid="AppTabBar_Home_Link"]',
+        'a[href="/home"]'
+    ];
+
+    // 構造で左上のアイコンを探すときの範囲（上のバー）
+    const TOP_BAR_SELECTORS = [
+        '[data-testid="TopNavBar"]',
+        'header',
+        '[role="banner"]'
+    ];
 
     // 現在のアカウントを示すプロフィールへのリンク
     const PROFILE_LINK_SELECTORS = [
@@ -285,6 +312,9 @@
     let panelTimer = null;
 
     let renderedSignature = '';
+
+    // 切替UIを開くためにホームへ移ったか（終わったら元のページへ戻る）
+    let movedHome = false;
 
     const switchLog = [];
 
@@ -605,6 +635,34 @@
      * 取れた経路も返す（診断用）
      */
     function currentAccount() {
+
+        const found = detectCurrentAccount();
+
+
+        if (found) {
+
+            if (readJson(sessionStorage, SESSION_CURRENT, '') !== found.handle) {
+                writeJson(sessionStorage, SESSION_CURRENT, found.handle);
+            }
+
+
+            return found;
+        }
+
+
+        /*
+         * 左上のアイコンが無いページ（個別ポスト等）では、
+         * 同じタブで最後に確かめられた値を使う
+         */
+        const memo = readJson(sessionStorage, SESSION_CURRENT, '');
+
+        return memo ?
+            { handle: memo, source: '直前に確認した値', memo: true } :
+            null;
+    }
+
+
+    function detectCurrentAccount() {
 
         const profile = queryFirst(PROFILE_LINK_SELECTORS);
 
@@ -1038,6 +1096,14 @@
             }
 
 
+            /*
+             * 上のバーの中に限る。プロフィールページの大きなアイコン等を拾わないため
+             */
+            if (!element.closest(TOP_BAR_SELECTORS.join(','))) {
+                continue;
+            }
+
+
             if (!element.querySelector(AVATAR_IMG_SELECTOR)) {
                 continue;
             }
@@ -1123,14 +1189,6 @@
 
     function closeLayers() {
 
-        /*
-         * 一覧が独立したページとして開いていたら、元のページへ戻る
-         */
-        if (isSwitchPage()) {
-            history.back();
-        }
-
-
         const target = document.activeElement || document.body;
 
         target.dispatchEvent(
@@ -1152,6 +1210,53 @@
                 closer.click();
             }
         }
+    }
+
+
+    /*
+     * 切替UIのために移ったページから、元のページへ戻る。
+     *
+     *   ホームへ移った（個別ポスト等に左上のアイコンが無いため）: 1段
+     *   一覧が独立したページ（/account/switch）として開いた:      1段
+     *
+     * 両方なら2段まとめて戻る（back() を続けて呼ぶと2回目が無視されうる）
+     */
+    function leaveTemporaryPages(startPath) {
+
+        const steps =
+            (isSwitchPage() ? 1 : 0) +
+            (movedHome ? 1 : 0);
+
+
+        movedHome = false;
+
+
+        if (steps) {
+
+            log('元のページへ戻る', steps + '段');
+
+            history.go(-steps);
+        }
+
+
+        /*
+         * X が途中のページを置き換える（/account/switch → /home 等）と、
+         * 段数どおりに戻っても元のページに着かない。確かめて、だめなら開き直す
+         */
+        if (!startPath) {
+            return;
+        }
+
+
+        setTimeout(() => {
+
+            if (location.pathname + location.search !== startPath) {
+
+                log('履歴で戻れなかったので開き直す', startPath);
+
+                location.replace(startPath);
+            }
+        }, RETURN_CHECK_MS);
     }
 
 
@@ -1326,6 +1431,9 @@
      */
     async function openSwitcher(want) {
 
+        movedHome = false;
+
+
         const already = want();
 
         if (already) {
@@ -1353,12 +1461,19 @@
         }
 
 
-        const drawerOpener = findDrawerOpener();
+        let drawerOpener = findDrawerOpener();
+
+
+        /*
+         * 個別ポスト等では左上が「戻る」になり、アイコンが無い。
+         * いったんホームへ移ってから開く
+         */
+        if (!drawerOpener || !isVisible(drawerOpener)) {
+            drawerOpener = await goHomeForOpener();
+        }
+
 
         if (!drawerOpener) {
-
-            log('開くボタンが見つからない');
-
             return null;
         }
 
@@ -1419,6 +1534,63 @@
     }
 
 
+    async function goHomeForOpener() {
+
+        const overlays = openOverlays();
+
+        let link = null;
+
+
+        for (const selector of HOME_LINK_SELECTORS) {
+
+            link =
+                [...document.querySelectorAll(selector)]
+                    .find(element =>
+                        isVisible(element) &&
+                        !overlays.some(overlay => overlay.contains(element))
+                    );
+
+            if (link) {
+                break;
+            }
+        }
+
+
+        if (!link) {
+
+            log('左上のアイコンもホームへのリンクも見つからない', location.pathname);
+
+            return null;
+        }
+
+
+        log('左上のアイコンが無いので、ホームへ移る', location.pathname + ' / ' + describe(link));
+
+        link.click();
+
+        movedHome = true;
+
+
+        const opener =
+            await waitFor(
+                () => {
+                    const found = findDrawerOpener();
+
+                    return found && isVisible(found) ? found : null;
+                },
+                MENU_WAIT_MS
+            );
+
+
+        if (!opener) {
+            log('ホームでも左上のアイコンが見つからない', location.pathname);
+        }
+
+
+        return opener;
+    }
+
+
     // ============================================================
     // 切替
     // ============================================================
@@ -1427,8 +1599,18 @@
 
         const handle = normalizeHandle(account.screenName);
 
+        const current = currentAccount();
 
-        if (!handle || handle === currentHandle()) {
+
+        if (!handle) {
+            return;
+        }
+
+
+        /*
+         * 「直前に確認した値」は古いことがあるので、それが同じでも止めない
+         */
+        if (current && !current.memo && normalizeHandle(current.handle) === handle) {
             return;
         }
 
@@ -1447,8 +1629,10 @@
         log('切替開始', '@' + account.screenName);
 
 
+        const startPath = location.pathname + location.search;
+
         writeJson(sessionStorage, SESSION_RETURN, {
-            path: location.pathname + location.search,
+            path: startPath,
             handle,
             at: Date.now()
         });
@@ -1467,6 +1651,13 @@
             log('切替先を押す', describe(target.element) + '（' + target.source + '）');
 
             target.element.click();
+
+
+            /*
+             * 切替後は元のページ（左上のアイコンが無いことがある）へ戻るので、
+             * 切替先を現在のアカウントとして記録しておく
+             */
+            writeJson(sessionStorage, SESSION_CURRENT, handle);
 
 
             /*
@@ -1492,7 +1683,7 @@
             }
 
 
-            waitForReload(handle);
+            waitForReload(handle, startPath);
 
         } catch (error) {
 
@@ -1507,6 +1698,9 @@
             }
 
 
+            leaveTemporaryPages(startPath);
+
+
             finishSwitch(
                 '切り替えられませんでした。メニューの「アカウントを読み込む」で一覧を読み直してください'
             );
@@ -1518,7 +1712,7 @@
      * 通常は X がページを読み込み直すので、ここには戻ってこない。
      * 読み込み直さなかった場合は、切り替わったかを確かめてボタンを戻す
      */
-    function waitForReload(handle) {
+    function waitForReload(handle, startPath) {
 
         clearTimeout(reloadTimer);
 
@@ -1532,6 +1726,8 @@
 
                     sessionStorage.removeItem(SESSION_RETURN);
 
+                    leaveTemporaryPages(startPath);
+
                     finishSwitch('切り替えました');
 
                     return;
@@ -1541,6 +1737,8 @@
                 log('切替を確認できない', '現在: @' + (currentHandle() || '不明'));
 
                 sessionStorage.removeItem(SESSION_RETURN);
+
+                leaveTemporaryPages(startPath);
 
                 finishSwitch('切替を確認できませんでした');
             }, RELOAD_TIMEOUT_MS);
@@ -1614,6 +1812,9 @@
         log('読み込み開始');
 
 
+        const startPath = location.pathname + location.search;
+
+
         const withEntries = (fullOnly) =>
             switcherContexts().some(context =>
                 (!fullOnly || context.fullList) &&
@@ -1675,6 +1876,9 @@
         if (hasOpenLayer()) {
             closeLayers();
         }
+
+
+        leaveTemporaryPages(startPath);
 
 
         busy = false;

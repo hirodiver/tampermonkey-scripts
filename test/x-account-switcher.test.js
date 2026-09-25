@@ -370,11 +370,30 @@ const toastText = (page) =>
           h('img', { src: 'https://pbs.twimg.com/profile_images/1/' + handle + '_normal.jpg', alt: '' })));
 
     window.current = 'alice';
+
+    // 上のバー: ホームでは左上に自分のアイコン、それ以外（個別ポスト等）では「戻る」
+    window.renderTopBar = () => {
+      const bar = document.getElementById('topNavBar');
+      if (!bar) return;
+      const onHome = location.pathname === '/home' || !opts.startOnStatus;
+      const openerAttrs = {
+        id: 'dashButton', role: 'button', 'aria-label': 'プロフィールメニュー ' + names[window.current],
+        style: 'position:fixed;top:8px;left:8px;width:32px;height:32px',
+        onclick: () => window.openDrawer()
+      };
+      if (opts.testid) openerAttrs['data-testid'] = 'DashButton_ProfileIcon_Link';
+      bar.replaceChildren(
+        onHome ?
+          h('button', openerAttrs, selfAvatar(window.current)) :
+          h('button', { role: 'button', 'aria-label': '戻る', id: 'backButton', style: 'position:fixed;top:8px;left:8px;width:32px;height:32px' }, '←'),
+        h('a', { role: 'link', href: '/i/premium_sign_up' }, '購入する'),
+        h('button', { role: 'button', 'aria-label': 'タイムラインを管理' }));
+    };
+    window.addEventListener('popstate', () => window.renderTopBar());
+
     window.applyCurrent = (handle) => {
       window.current = handle;
-      const opener = document.getElementById('dashButton');
-      opener.setAttribute('aria-label', 'プロフィールメニュー ' + names[handle]);
-      opener.replaceChildren(selfAvatar(handle));
+      window.renderTopBar();
       if (location.pathname === '/account/switch') {
         history.replaceState(null, '', '/home');
         document.getElementById('sheet')?.remove();
@@ -417,13 +436,6 @@ const toastText = (page) =>
         h('a', { href: '/i/flow/login' }, '既存のアカウントを追加')));
     };
 
-    const openerAttrs = {
-      id: 'dashButton', role: 'button', 'aria-label': 'プロフィールメニュー Alice',
-      style: 'position:fixed;top:8px;left:8px;width:32px;height:32px',
-      onclick: () => window.openDrawer()
-    };
-    if (opts.testid) openerAttrs['data-testid'] = 'DashButton_ProfileIcon_Link';
-
     // 常に居るもの（実機診断の並び）
     layers.append(
       h('aside', { role: 'complementary', 'aria-label': 'ポストを作成' },
@@ -431,12 +443,14 @@ const toastText = (page) =>
           h('a', { role: 'link', 'data-testid': 'FloatingActionButtons_Tweet_Button', 'aria-label': 'ポストを作成', href: '/compose/post' }))),
       h('div', { 'data-testid': 'BottomBar' },
         h('nav', { role: 'navigation', 'aria-label': 'メインメニュー' },
-          h('a', { role: 'link', 'data-testid': 'AppTabBar_Home_Link', 'aria-label': 'ホーム', href: '/home' }),
+          h('a', { role: 'link', 'data-testid': 'AppTabBar_Home_Link', 'aria-label': 'ホーム', href: '/home', onclick: (e) => {
+            e.preventDefault();
+            events.push('go-home');
+            if (location.pathname !== '/home') history.pushState(null, '', '/home');
+            window.renderTopBar();
+          } }),
           h('a', { role: 'link', 'data-testid': 'AppTabBar_Notifications_Link', 'aria-label': '通知', href: '/notifications' }))),
-      h('div', { 'data-testid': 'TopNavBar' },
-        h('button', openerAttrs, selfAvatar('alice')),
-        h('a', { role: 'link', href: '/i/premium_sign_up' }, '購入する'),
-        h('button', { role: 'button', 'aria-label': 'タイムラインを管理' })),
+      h('div', { 'data-testid': 'TopNavBar', id: 'topNavBar' }),
       h('div', { role: 'grid' },
         h('nav', { role: 'navigation' }, h('div', { role: 'tablist', 'data-testid': 'ScrollSnap-List' }))),
       h('div', { role: 'status' },
@@ -448,6 +462,8 @@ const toastText = (page) =>
           h('article', { 'data-testid': 'tweet' },
             h('a', { href: '/dave', onclick: (e) => { e.preventDefault(); events.push('nav:/dave'); } }, avatar('dave')),
             h('span', {}, 'Dave @dave')))));
+
+    window.renderTopBar();
   };
 
   const loadViaDock = (page) => page.evaluate(() => {
@@ -534,6 +550,80 @@ const toastText = (page) =>
       check(tag + '再読み込み後も、直近の切替の記録が残る', /読み込み完了/.test(report) && /切替先を押す/.test(report), report.slice(0, 1500));
       check(tag + '再読み込み後も、メニュー・ドロワーの構造が残る', /最後に開いていたメニュー・ドロワーの構造/.test(report));
     }
+
+    await page.close();
+  }
+
+  // 個別ポスト（左上が「戻る」でアイコンが無い）。v1.0.1 の実機報告
+  for (const variant of [
+    { testid: true, startOnStatus: true, label: '個別ポスト' },
+    { testid: true, startOnStatus: true, routeSheet: true, label: '個別ポスト + 一覧が /account/switch のページ' }
+  ]) {
+    const page = await newPage(browser, { width: 402, height: 668 });
+    const STATUS = 'https://x.com/dave/status/1';
+    await page.goto(STATUS);
+    await page.evaluate(fixtures);
+    await page.evaluate(mobileSetup, variant);
+    await page.evaluate(SCRIPT);
+    await page.waitForTimeout(400);
+    const tag = '[モバイル ' + variant.label + '] ';
+
+    check(tag + '前提: 左上にアイコンが無い', await page.evaluate(() => !document.getElementById('dashButton') && !!document.getElementById('backButton')));
+
+    await loadViaDock(page);
+    await page.waitForTimeout(1200);
+    let ev = await page.evaluate(() => events.slice());
+    check(tag + '読込: ホームへ移ってからドロワー → 一覧を開く',
+      ev.indexOf('go-home') >= 0 && ev.indexOf('go-home') < ev.indexOf('open-drawer') && ev.includes('open-sheet'), ev);
+    check(tag + '読込: 3件覚える', JSON.stringify((await stored(page)).sort()) === JSON.stringify(['alice', 'bob', 'carol']), await stored(page));
+    check(tag + '読込: 終わったら元の個別ポストへ戻る', page.url() === STATUS, page.url());
+    await page.waitForTimeout(400);
+    check(tag + '読込後: 左上のアイコンが無くても、現在のアカウント（alice）に印が付く（同じタブで確かめた値）',
+      (await dockButtons(page)).find((b) => b.handle === 'alice')?.current, await dockButtons(page));
+
+    // ドロワーに出ている bob
+    await page.evaluate(() => { events.length = 0; });
+    await clickDock(page, 'bob');
+    await page.waitForTimeout(800);
+    ev = await page.evaluate(() => events.slice());
+    check(tag + '切替: ホームへ移ってからドロワーの bob を押す', ev.includes('go-home') && ev.includes('switch:bob'), ev);
+    check(tag + '切替: 元のページを覚えている（X が再読み込みしたら戻す）', await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem('tm-x-switch-return') || 'null')?.path === '/dave/status/1'));
+    await page.waitForTimeout(900);
+    check(tag + '切替後（再読み込みなし）: 元の個別ポストへ戻る', page.url() === STATUS, page.url());
+    check(tag + '切替後: 印が bob に移る', (await dockButtons(page)).find((b) => b.handle === 'bob')?.current, await dockButtons(page));
+
+    // ドロワーに出ていない carol（一覧まで開く）
+    await page.evaluate(() => { events.length = 0; });
+    await clickDock(page, 'carol');
+    await page.waitForTimeout(1200);
+    ev = await page.evaluate(() => events.slice());
+    check(tag + '切替: ホーム → ドロワー → 一覧で carol を押す', ev.includes('go-home') && ev.includes('open-sheet') && ev.includes('switch:carol'), ev);
+    await page.waitForTimeout(900);
+    check(tag + '切替後: 元の個別ポストへ戻る', page.url() === STATUS, page.url());
+
+    // 履歴で戻れず開き直した場合はページが読み込み直されているので、模擬DOMとスクリプトを入れ直す
+    if (!(await page.evaluate(() => !!window.h))) {
+      await page.evaluate(fixtures);
+      await page.evaluate(mobileSetup, variant);
+      await page.evaluate(SCRIPT);
+      await page.waitForTimeout(400);
+    }
+
+    // 一覧に無いアカウント: 失敗しても元のページへ戻る
+    await page.evaluate(() => {
+      const list = JSON.parse(localStorage.getItem('tm-x-switch-accounts'));
+      list.push({ screenName: 'ghost', name: 'Ghost', avatar: '' });
+      localStorage.setItem('tm-x-switch-accounts', JSON.stringify(list));
+      document.body.append(document.createElement('i'));
+    });
+    await page.waitForTimeout(400);
+    await clickDock(page, 'ghost');
+    await page.waitForTimeout(2600);
+    check(tag + '失敗: 元の個別ポストへ戻る', page.url() === STATUS, page.url());
+    check(tag + '失敗: ボタンが押せる状態に戻る', (await dockButtons(page)).every((b) => !b.disabled), await dockButtons(page));
+    check(tag + '失敗: 記録に「ホームへ移る」と「元のページへ戻る」が出る', await page.evaluate(() =>
+      /左上のアイコンが無いので、ホームへ移る/.test(window.__tmXSwitch.dump()) && /元のページへ戻る/.test(window.__tmXSwitch.dump())));
 
     await page.close();
   }
