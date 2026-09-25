@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.1.3
+// @name         X アカウント切替 v1.2.0
 // @namespace    local.hiro.tools
-// @version      1.1.3
+// @version      1.2.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -31,7 +31,7 @@
  *   - innerHTML を使わない（Trusted Types で例外になるため）
  *   - 切替後にページが再読み込みされなかった場合も、ボタンが押せないまま
  *     固まらないようにする
- *   - 初回に勝手にドロワーを開かない（読み込みはメニューから手動）
+ *   - 初回に勝手にドロワーを開かない（読み込みは「読込」ボタンから手動）
  *
  * ■ iPhone の実機診断で分かったこと（v1.0.1）
  *   - モバイル幅では、上のバー（TopNavBar）・下のタブ（BottomBar）・投稿ボタンも
@@ -65,7 +65,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.1.3';
+    const VERSION = '1.2.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -318,6 +318,7 @@
     let listEl = null;
     let menuEl = null;
     let tabEl = null;
+    let tuckEl = null;
     let toastEl = null;
 
     let busy = false;
@@ -1872,7 +1873,7 @@
 
 
             finishSwitch(
-                '切り替えられませんでした。メニューの「アカウントを読み込む」で一覧を読み直してください'
+                '切り替えられませんでした。X の切替メニューを一度開くと、一覧を覚え直します'
             );
         }
     }
@@ -1965,7 +1966,7 @@
 
 
     // ============================================================
-    // 一覧の読み込み（メニューから手動）
+    // 一覧の読み込み（「読込」ボタンから手動）
     // ============================================================
 
     async function loadFromNative() {
@@ -2219,6 +2220,7 @@
     place-items: center;
 }
 .icon:active { background: rgba(244, 244, 245, 0.08); color: #f4f4f5; }
+.icon.tuck { font-size: 18px; line-height: 1; padding: 0; }
 .menu {
     display: none;
     flex-direction: column;
@@ -2411,27 +2413,15 @@
         }
 
 
-        add('しまう', () => {
-
-            setTucked(true);
-
-            toast('画面端のつまみを押すと戻ります');
-        });
-
-
-        add('アカウントを読み込む', loadFromNative);
-
-
-        add('一覧を消去', () => {
-
-            saveAccounts([]);
-
-            render(true);
-
-            toast('一覧を消去しました');
-        });
-
         return menu;
+    }
+
+
+    function tuck() {
+
+        setTucked(true);
+
+        toast('画面端のつまみを押すと戻ります');
     }
 
 
@@ -2469,9 +2459,9 @@
 
         more.type = 'button';
 
-        more.className = 'icon';
+        more.className = 'icon more';
 
-        more.setAttribute('aria-label', '位置と操作');
+        more.setAttribute('aria-label', '置き場所');
 
         more.appendChild(moreIcon());
 
@@ -2496,7 +2486,24 @@
         menuEl = buildMenu();
 
 
-        dock.append(listEl, more, menuEl);
+        /*
+         * 「しまう」は常にドックに出しておく（メニューを開かずに押せる）。
+         * 矢印はしまう向き（画面端の側）を指す
+         */
+        tuckEl = document.createElement('button');
+
+        tuckEl.type = 'button';
+
+        tuckEl.className = 'icon tuck';
+
+        tuckEl.setAttribute('aria-label', 'しまう');
+
+        tuckEl.title = 'しまう';
+
+        tuckEl.addEventListener('click', tuck);
+
+
+        dock.append(listEl, more, tuckEl, menuEl);
 
 
         /*
@@ -2588,6 +2595,9 @@
 
         tabEl.textContent =
             position.startsWith('left') ? '›' : '‹';
+
+        tuckEl.textContent =
+            position.startsWith('left') ? '‹' : '›';
 
 
         if (tucked) {
@@ -3284,6 +3294,8 @@
             },
 
             accounts: loadAccounts,
+
+            load: loadFromNative,
 
             forget() {
 
