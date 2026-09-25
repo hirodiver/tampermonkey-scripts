@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "mcp__github__merge_pull_request",
       "mcp__github__create_pull_request",
       "mcp__github__update_pull_request",
       "mcp__github__pull_request_read"
@@ -11,10 +12,27 @@
       "mcp__Google_Drive__share_file"
     ],
     "ask": [
-      "mcp__github__merge_pull_request",
+      "mcp__github__enable_pr_auto_merge",
+      "mcp__github__push_files",
+      "mcp__github__create_or_update_file",
+      "mcp__github__delete_file",
       "mcp__Gmail",
       "mcp__Google_Drive",
       "mcp__Google_Calendar"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__github__merge_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/merge-guard.js\" || echo '{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"ask\", \"permissionDecisionReason\": \"マージ前チェックを実行できませんでした。\"}}'",
+            "timeout": 90
+          }
+        ]
+      }
     ]
   }
 }
