@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         X タブ別アカウント v1.0.0
+// @name         X タブ別アカウント v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.1.0
 // @description  X のアカウントをタブごとに覚え、タブを開き直したときにそのアカウントとページへ戻す（擬似的に複数アカウントを同時に使う。デスクトップの Chrome 向け）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
-// @run-at       document-end
+// @run-at       document-start
 // @noframes
 // @grant        none
 // @homepageURL  https://github.com/hirodiver/tampermonkey-scripts
@@ -32,7 +32,12 @@
  *   タブA の画面は @alice のまま残るが、実際は @bob でログインしている。
  *   この状態で X の切替メニューを開くと @alice が「現在」扱いで押せないので、
  *   いったん読み込み直して表示を実際のアカウントに揃えてから切り替える。
- *   そのため、戻すときは最大3回ページが読み込まれる（読み込み直し → 切替 → 元のページ）
+ *   そのため、戻すときはページが2回読み込まれる（読み込み直し → 切替）。
+ *   元のページへは、X の画面の中で移る（v1.1.0。X が描き替えなければ読み込み直す）
+ *
+ * ■ 戻している間は画面を覆う（v1.1.0）
+ *   途中のページがチラチラ見えないよう、読み込みの最初（document-start）から
+ *   画面全体を X の背景色の幕で覆い、終わったら外す。外し忘れても COVER_MAX_MS で外れる
  *
  * ■ 裏のタブでは切り替えない
  *   前面のタブで作業中に、裏のタブが勝手にアカウントを変えると、前面のタブは
@@ -51,7 +56,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.0.0';
+    const VERSION = '1.1.0';
 
     // 自作要素の id（トースト）
     const ROOT_ID = 'tm-x-tabacct-root';
@@ -67,6 +72,12 @@
 
     // タブごと: 戻している途中の印 { handle, url, step, at }
     const SESSION_RESTORE = 'tm-x-tabacct-restore';
+
+    // タブごと: 戻している間、画面を覆う印 { handle, at }
+    const SESSION_COVER = 'tm-x-tabacct-cover';
+
+    // 端末ごと: X の画面の色（覆いの色を合わせる） { bg, fg }
+    const STORAGE_THEME = 'tm-x-tabacct-theme';
 
     // タブごと: 読み込み直した後に出す知らせ
     const SESSION_NOTICE = 'tm-x-tabacct-notice';
@@ -88,6 +99,28 @@
 
     // 戻している途中の印を有効とみなす期間（ミリ秒）。これより古い印は捨てる
     const RESTORE_MAX_AGE_MS = 60 * 1000;
+
+    /*
+     * 覚えていたページへは、読み込み直さずに X の画面の中で移る。
+     * false なら読み込み直す（v1.0.0 と同じ）
+     */
+    const RETURN_WITHOUT_RELOAD = true;
+
+    // 画面の中で移ったあと、X が描き替えたか（ページのタイトルが変わったか）を待つ上限（ミリ秒）
+    // 描き替わらなければ読み込み直す
+    const RETURN_CHECK_MS = 2000;
+
+    // 覆いの id（<style>）
+    const COVER_ID = 'tm-x-tabacct-cover';
+
+    // 覆いを外し忘れても、これを過ぎたら外す（ミリ秒）
+    const COVER_MAX_MS = 20000;
+
+    // 色が分からないときの覆いの色（X のダークモード）
+    const COVER_DEFAULT_THEME = {
+        bg: 'rgb(0, 0, 0)',
+        fg: 'rgb(231, 233, 234)'
+    };
 
     // 読み込み直した直後、フォーカスが戻るのを待つ上限（ミリ秒）
     const ACTIVE_WAIT_MS = 1000;
@@ -242,6 +275,7 @@
     let checkTimer = null;
     let activateTimer = null;
     let toastTimer = null;
+    let coverTimer = null;
 
     let root = null;
     let toastEl = null;
@@ -885,7 +919,7 @@
 
         log('戻し始める', '@' + active + ' → @' + tab.handle + ' / ' + marker.url + '（' + why + '）');
 
-        toast('このタブのアカウント @' + tab.handle + ' に戻しています…');
+        showCover(tab.handle);
 
 
         const shown = detectCurrent();
@@ -923,6 +957,8 @@
 
             removeKey(sessionStorage, SESSION_RESTORE);
 
+            hideCover();
+
             return false;
         }
 
@@ -937,13 +973,15 @@
 
             removeKey(sessionStorage, SESSION_RESTORE);
 
+            hideCover();
+
             return false;
         }
 
 
         restoring = true;
 
-        toast('このタブのアカウント @' + marker.handle + ' に戻しています…');
+        showCover(marker.handle);
 
 
         if (shown.handle === marker.handle) {
@@ -1050,6 +1088,8 @@
 
             restoring = false;
 
+            hideCover();
+
             return;
         }
 
@@ -1102,7 +1142,7 @@
     }
 
 
-    function finishRestore(marker) {
+    async function finishRestore(marker) {
 
         pageAccount = marker.handle;
 
@@ -1120,11 +1160,18 @@
 
             log('元のページを開く', marker.url);
 
+            /*
+             * 読み込み直すことになった場合に、読み込んだ先で知らせる
+             */
             writeJson(sessionStorage, SESSION_NOTICE, message);
 
-            location.replace(marker.url);
 
-            return;
+            if (!await returnTo(marker.url)) {
+                return;
+            }
+
+
+            removeKey(sessionStorage, SESSION_NOTICE);
         }
 
 
@@ -1132,7 +1179,60 @@
 
         restoring = false;
 
+        hideCover();
+
         toast(message);
+    }
+
+
+    /*
+     * 覚えていたページへ移る。移れたら true、読み込み直すことにしたら false。
+     *
+     * 読み込み直さずに済むよう、URL を書き換えて popstate を投げ、X に描き替えさせる
+     * （戻る・進むと同じ扱い）。X が描き替えたかは、ページのタイトルが変わったかで見る。
+     * 変わらなければ読み込み直す
+     */
+    async function returnTo(url) {
+
+        if (RETURN_WITHOUT_RELOAD) {
+
+            const before = pageTitle();
+
+
+            history.replaceState(history.state, '', url);
+
+            window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+
+
+            const moved =
+                await waitFor(
+                    () => currentUrl() === url && pageTitle() !== before,
+                    RETURN_CHECK_MS
+                );
+
+
+            if (moved) {
+
+                log('画面の中で元のページへ移った', url);
+
+                return true;
+            }
+
+
+            log('X が描き替えないので読み込み直す', url);
+        }
+
+
+        location.replace(url);
+
+        return false;
+    }
+
+
+    // タイトル先頭の未読数「(3) 」は除く
+    function pageTitle() {
+
+        return document.title.replace(/^\(\d+\+?\)\s*/, '');
     }
 
 
@@ -1162,6 +1262,8 @@
 
         restoring = false;
 
+        hideCover();
+
 
         toast(
             '@' + marker.handle + ' に戻せませんでした（' + reason + '）。' +
@@ -1180,6 +1282,136 @@
         } else {
 
             location.replace(url);
+        }
+    }
+
+
+    // ============================================================
+    // 覆い（戻している間、途中のページを見せない）
+    // ============================================================
+
+    /*
+     * <html> の ::after を画面全体に広げて覆う。
+     * 要素を足さないので、<body> ができる前（document-start）から張れる。
+     * 下の X は見えないだけで動いているので、切替メニューは押せる。
+     * 覆いの上から利用者が押すことはできない（途中で押すと切替が狂うため）
+     */
+    function showCover(handle) {
+
+        writeJson(sessionStorage, SESSION_COVER, {
+            handle,
+            at: Date.now()
+        });
+
+        applyCover(handle);
+    }
+
+
+    function applyCover(handle) {
+
+        let style = document.getElementById(COVER_ID);
+
+
+        if (!style) {
+
+            style = document.createElement('style');
+
+            style.id = COVER_ID;
+
+            (document.head || document.documentElement).appendChild(style);
+        }
+
+
+        const theme = readTheme();
+
+
+        style.textContent = `
+            html::after {
+                content: ${JSON.stringify('@' + normalizeHandle(handle) + ' に戻しています…')};
+                position: fixed;
+                inset: 0;
+                z-index: 2147483646;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: ${theme.bg};
+                color: ${theme.fg};
+                font: 15px/1.5 -apple-system, "Segoe UI", "Hiragino Sans", "Meiryo", sans-serif;
+                pointer-events: auto;
+            }
+        `;
+
+
+        clearTimeout(coverTimer);
+
+        coverTimer = setTimeout(hideCover, COVER_MAX_MS);
+    }
+
+
+    function hideCover() {
+
+        clearTimeout(coverTimer);
+
+        removeKey(sessionStorage, SESSION_COVER);
+
+
+        const style = document.getElementById(COVER_ID);
+
+        if (style) {
+            style.remove();
+        }
+    }
+
+
+    // 色の値として使ってよい形（rgb() / rgba() だけ）
+    function isColor(value) {
+
+        return typeof value === 'string' && /^rgba?\([\d.,\s%]+\)$/.test(value);
+    }
+
+
+    function readTheme() {
+
+        const theme = readJson(localStorage, STORAGE_THEME, null);
+
+        return theme && isColor(theme.bg) && isColor(theme.fg) ?
+            theme :
+            COVER_DEFAULT_THEME;
+    }
+
+
+    /*
+     * X の背景色を覚える（覆いの色を合わせるため）。文字色は明るさで白・黒を選ぶ
+     */
+    function rememberTheme() {
+
+        if (!document.body || document.getElementById(COVER_ID)) {
+            return;
+        }
+
+
+        const bg = getComputedStyle(document.body).backgroundColor;
+
+        const rgb = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?/.exec(bg || '');
+
+
+        if (!rgb || (rgb[4] !== undefined && Number(rgb[4]) === 0)) {
+            return;
+        }
+
+
+        const light = (Number(rgb[1]) * 299 + Number(rgb[2]) * 587 + Number(rgb[3]) * 114) / 1000 > 128;
+
+        const theme = {
+            bg: `rgb(${rgb[1]}, ${rgb[2]}, ${rgb[3]})`,
+            fg: light ? 'rgb(15, 20, 25)' : 'rgb(231, 233, 234)'
+        };
+
+
+        const saved = readJson(localStorage, STORAGE_THEME, null);
+
+        if (!saved || saved.bg !== theme.bg) {
+            writeJson(localStorage, STORAGE_THEME, theme);
         }
     }
 
@@ -1289,6 +1521,8 @@
 
 
                     recordUrl(false);
+
+                    rememberTheme();
                 },
                 CHECK_DELAY
             );
@@ -1485,6 +1719,9 @@
 
 
         if (isIgnoredPath(currentUrl()) && !marker) {
+
+            hideCover();
+
             return;
         }
 
@@ -1497,6 +1734,9 @@
             /*
              * ログアウト中や、狭いウインドウ（左のメニューが無い）など
              */
+            hideCover();
+
+
             if (marker) {
 
                 removeKey(sessionStorage, SESSION_RESTORE);
@@ -1519,11 +1759,69 @@
         }
 
 
+        /*
+         * 元のページを読み込み直して開いた（戻し終わった）ところなら、覆いを外す
+         */
+        hideCover();
+
+        rememberTheme();
+
         onAccountSeen(shown.handle, '起動');
 
         recordUrl(false);
 
         checkTab('起動');
+    }
+
+
+    /*
+     * 読み込みの最初（document-start）: 戻している途中なら、すぐに覆う。
+     * この時点では <html> がまだ無いことがあるので、できるのを待つ
+     */
+    function coverEarly() {
+
+        if (!document.documentElement) {
+
+            new MutationObserver((mutations, observer) => {
+
+                if (document.documentElement) {
+
+                    observer.disconnect();
+
+                    coverEarly();
+                }
+            })
+                .observe(document, { childList: true });
+
+
+            return;
+        }
+
+
+        /*
+         * 二重に流されたときは、先に動いている側に任せる
+         */
+        if (document.documentElement.dataset[BOOT_FLAG]) {
+            return;
+        }
+
+
+        const cover = readJson(sessionStorage, SESSION_COVER, null);
+
+        if (!cover || typeof cover.handle !== 'string') {
+            return;
+        }
+
+
+        if (Date.now() - (cover.at || 0) > RESTORE_MAX_AGE_MS) {
+
+            removeKey(sessionStorage, SESSION_COVER);
+
+            return;
+        }
+
+
+        applyCover(cover.handle);
     }
 
 
@@ -1552,6 +1850,9 @@
 
         init();
     }
+
+
+    coverEarly();
 
 
     if (document.body) {
