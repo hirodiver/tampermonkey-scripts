@@ -311,12 +311,49 @@ const toastText = (page) =>
       document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').classList.contains('right-top')));
     check('操作: 位置を覚える', await page.evaluate(() => localStorage.getItem('tm-x-switch-position') === '"right-top"'));
 
-    await menuClick('最小化');
-    check('操作: 最小化すると現在のアカウントだけ見える', await page.evaluate(() => {
+    // しまう → 画面端のつまみ → 戻す
+    const tuckState = () => page.evaluate(() => {
       const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-      return [...sr.querySelectorAll('.av')].filter((b) => getComputedStyle(b).display !== 'none').map((b) => b.dataset.handle).join() === 'carol';
+      const dock = sr.querySelector('.dock');
+      const tab = sr.querySelector('.tab');
+      const r = tab.getBoundingClientRect();
+      return {
+        dockShown: getComputedStyle(dock).display !== 'none',
+        tabShown: getComputedStyle(tab).display !== 'none',
+        tabRight: Math.round(window.innerWidth - r.right),
+        tabTop: Math.round(r.top),
+        tabText: tab.textContent
+      };
+    });
+
+    check('操作: メニューに「最小化」「このタブでは隠す」は無い', await page.evaluate(() => {
+      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
+      sr.querySelector('.icon').click();
+      const labels = [...sr.querySelectorAll('.menu button')].map((b) => b.textContent);
+      sr.querySelector('.icon').click();
+      return !labels.some((l) => /最小化|展開|隠す/.test(l)) && labels.includes('しまう');
     }));
-    await menuClick('展開');
+
+    let tuck = await tuckState();
+    check('しまう: しまう前はドックが見え、つまみは無い', tuck.dockShown && !tuck.tabShown, tuck);
+
+    await menuClick('しまう');
+    tuck = await tuckState();
+    check('しまう: ドックが消え、つまみだけ残る', !tuck.dockShown && tuck.tabShown, tuck);
+    check('しまう: つまみは画面の端（右上に置いていれば右端・上寄り）に付く', tuck.tabRight === 0 && tuck.tabTop < 200 && tuck.tabText === '‹', tuck);
+    check('しまう: 戻し方をトーストで知らせる', (await toastText(page)).includes('つまみ'), await toastText(page));
+    check('しまう: 端末に覚える（再読み込み・別タブでも続く）', await page.evaluate(() => localStorage.getItem('tm-x-switch-tucked') === 'true'));
+
+    await page.evaluate(() => document.body.append(document.createElement('i')));
+    await page.waitForTimeout(400);
+    tuck = await tuckState();
+    check('しまう: DOM 変化があってもしまったまま', !tuck.dockShown && tuck.tabShown, tuck);
+
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tab').click());
+    tuck = await tuckState();
+    check('しまう: つまみを押すとドックが戻る', tuck.dockShown && !tuck.tabShown, tuck);
+    check('しまう: 戻した状態も覚える', await page.evaluate(() => localStorage.getItem('tm-x-switch-tucked') === 'false'));
+    check('しまう: 戻したらアカウントのボタンが押せる', (await dockButtons(page)).length === 3 && (await dockButtons(page)).every((b) => !b.disabled), await dockButtons(page));
 
     // サイト側に消されても作り直す
     await page.evaluate(() => {
@@ -327,17 +364,23 @@ const toastText = (page) =>
     // ghost は診断のためにメニューを開いた時点で「一覧すべて」から外れて消えている
     check('再描画: ドックが消されたら作り直す', (await dockButtons(page))?.length === 3, await dockButtons(page));
 
-    await menuClick('このタブでは隠す');
-    check('操作: 「このタブでは隠す」で消える', await page.evaluate(() => !document.getElementById('tm-x-switch-root')));
-    await page.evaluate(() => document.body.append(document.createElement('i')));
-    await page.waitForTimeout(400);
-    check('操作: 隠したら DOM 変化があっても戻らない', await page.evaluate(() => !document.getElementById('tm-x-switch-root')));
-
+    // v1.0 の「このタブでは隠す」の値が残っていても無視する（戻せなくなる不具合の元）
     await page.evaluate(() => {
-      sessionStorage.removeItem('tm-x-switch-hidden');
+      sessionStorage.setItem('tm-x-switch-hidden', '1');
       document.body.append(document.createElement('i'));
     });
     await page.waitForTimeout(400);
+    check('互換: v1.0 の「このタブでは隠す」の値が残っていても出る', await page.evaluate(() => !!document.getElementById('tm-x-switch-root')));
+
+    // 左下に置いてしまうと、左端につまみが付く
+    await menuClick('左下');
+    await menuClick('しまう');
+    tuck = await tuckState();
+    check('しまう: 左下に置いていれば左端・下寄りに付く', !tuck.dockShown && tuck.tabText === '›' && tuck.tabTop > 400, tuck);
+    check('しまう: 左端にぴったり付く', await page.evaluate(() =>
+      Math.round(document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tab').getBoundingClientRect().left) === 0));
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tab').click());
+
     await page.evaluate(SCRIPT);
     await page.waitForTimeout(400);
     check('二重起動: もう一度流しても2つ目を作らない', await page.evaluate(() =>

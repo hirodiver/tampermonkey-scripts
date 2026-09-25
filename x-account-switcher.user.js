@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.0.2
+// @name         X アカウント切替 v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.2
+// @version      1.1.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -65,7 +65,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.0.2';
+    const VERSION = '1.1.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -77,9 +77,12 @@
 
     const STORAGE_POSITION = 'tm-x-switch-position';
 
-    const STORAGE_COLLAPSED = 'tm-x-switch-collapsed';
-
-    const SESSION_HIDDEN = 'tm-x-switch-hidden';
+    /*
+     * ドックを画面端のつまみにしまっているか。
+     * v1.0 の「最小化」（tm-x-switch-collapsed）と「このタブでは隠す」
+     * （tm-x-switch-hidden）は廃止し、これにまとめた
+     */
+    const STORAGE_TUCKED = 'tm-x-switch-tucked';
 
     const SESSION_RETURN = 'tm-x-switch-return';
 
@@ -303,6 +306,7 @@
     let dock = null;
     let listEl = null;
     let menuEl = null;
+    let tabEl = null;
     let toastEl = null;
 
     let busy = false;
@@ -525,9 +529,17 @@
     }
 
 
-    function isCollapsed() {
+    function isTucked() {
 
-        return readJson(localStorage, STORAGE_COLLAPSED, false) === true;
+        return readJson(localStorage, STORAGE_TUCKED, false) === true;
+    }
+
+
+    function setTucked(tucked) {
+
+        writeJson(localStorage, STORAGE_TUCKED, tucked);
+
+        render(true);
     }
 
 
@@ -1902,7 +1914,7 @@
 
         return `
 :host { all: initial; }
-.dock, .toast {
+.dock, .toast, .tab {
     font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
 }
 .dock {
@@ -1930,7 +1942,31 @@
     align-items: center;
     gap: 8px;
 }
-.dock.collapsed .list .av:not(.current) { display: none; }
+.dock.tucked { display: none; }
+.tab {
+    position: fixed;
+    z-index: 2147483646;
+    display: none;
+    place-items: center;
+    appearance: none;
+    width: 24px;
+    height: 56px;
+    padding: 0;
+    border: 1px solid rgba(244, 244, 245, 0.12);
+    background: rgba(10, 10, 11, 0.72);
+    color: rgba(244, 244, 245, 0.85);
+    font-size: 16px;
+    line-height: 1;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+.tab.show { display: grid; }
+.tab:active { background: rgba(10, 10, 11, 0.95); }
+.tab.left-bottom, .tab.left-top   { left: env(safe-area-inset-left, 0px);  border-left: 0;  border-radius: 0 12px 12px 0; }
+.tab.right-bottom, .tab.right-top { right: env(safe-area-inset-right, 0px); border-right: 0; border-radius: 12px 0 0 12px; }
+.tab.left-bottom, .tab.right-bottom { bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
+.tab.left-top, .tab.right-top       { top: calc(58px + env(safe-area-inset-top, 0px)); }
 .av {
     appearance: none;
     border: 0;
@@ -2075,11 +2111,6 @@
 
     function shouldShowDock() {
 
-        if (sessionStorage.getItem(SESSION_HIDDEN) === '1') {
-            return false;
-        }
-
-
         return !HIDDEN_PATHS.some(pattern => pattern.test(location.pathname));
     }
 
@@ -2131,14 +2162,12 @@
         }
 
 
-        add(
-            isCollapsed() ? '展開する' : '最小化する',
-            () => {
-                writeJson(localStorage, STORAGE_COLLAPSED, !isCollapsed());
+        add('しまう', () => {
 
-                render(true);
-            }
-        );
+            setTucked(true);
+
+            toast('画面端のつまみを押すと戻ります');
+        });
 
 
         add('アカウントを読み込む', loadFromNative);
@@ -2152,15 +2181,6 @@
 
             toast('一覧を消去しました');
         });
-
-
-        add('このタブでは隠す', () => {
-
-            sessionStorage.setItem(SESSION_HIDDEN, '1');
-
-            unmount();
-        });
-
 
         return menu;
     }
@@ -2230,6 +2250,20 @@
         dock.append(listEl, more, menuEl);
 
 
+        /*
+         * しまったときに画面端に残すつまみ。押すとドックを戻す
+         */
+        tabEl = document.createElement('button');
+
+        tabEl.type = 'button';
+
+        tabEl.className = 'tab';
+
+        tabEl.setAttribute('aria-label', 'アカウント切替を出す');
+
+        tabEl.addEventListener('click', () => setTucked(false));
+
+
         toastEl = document.createElement('div');
 
         toastEl.className = 'toast';
@@ -2237,7 +2271,7 @@
         toastEl.setAttribute('role', 'status');
 
 
-        shadow.append(style, dock, toastEl);
+        shadow.append(style, dock, tabEl, toastEl);
 
 
         document.documentElement.appendChild(root);
@@ -2282,11 +2316,11 @@
 
         const position = getPosition();
 
-        const collapsed = isCollapsed();
+        const tucked = isTucked();
 
 
         const signature =
-            JSON.stringify([accounts, current, position, collapsed, busy]);
+            JSON.stringify([accounts, current, position, tucked, busy]);
 
         if (!force && signature === renderedSignature) {
             return;
@@ -2297,7 +2331,19 @@
 
 
         dock.className =
-            'dock ' + position + (collapsed ? ' collapsed' : '');
+            'dock ' + position + (tucked ? ' tucked' : '');
+
+
+        tabEl.className =
+            'tab ' + position + (tucked ? ' show' : '');
+
+        tabEl.textContent =
+            position.startsWith('left') ? '›' : '‹';
+
+
+        if (tucked) {
+            menuEl.classList.remove('open');
+        }
 
 
         listEl.replaceChildren();
@@ -2445,7 +2491,7 @@
          */
         window.addEventListener('storage', event => {
 
-            if ([STORAGE_ACCOUNTS, STORAGE_POSITION, STORAGE_COLLAPSED].includes(event.key)) {
+            if ([STORAGE_ACCOUNTS, STORAGE_POSITION, STORAGE_TUCKED].includes(event.key)) {
                 render(false);
             }
         });
