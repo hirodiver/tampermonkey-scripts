@@ -322,7 +322,7 @@ const toastText = (page) =>
     // 位置の変更
     const menuClick = (label) => page.evaluate((label) => {
       const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-      sr.querySelector('.icon').click();
+      sr.querySelector('.more').click();
       [...sr.querySelectorAll('.menu button')].find((b) => b.textContent.startsWith(label)).click();
     }, label);
 
@@ -346,18 +346,25 @@ const toastText = (page) =>
       };
     });
 
-    check('操作: メニューに「最小化」「このタブでは隠す」は無い', await page.evaluate(() => {
+    check('操作: メニューは置き場所（四隅）だけ（読み込み・消去・しまう・最小化・隠すは無い）', await page.evaluate(() => {
       const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-      sr.querySelector('.icon').click();
-      const labels = [...sr.querySelectorAll('.menu button')].map((b) => b.textContent);
-      sr.querySelector('.icon').click();
-      return !labels.some((l) => /最小化|展開|隠す/.test(l)) && labels.includes('しまう');
+      sr.querySelector('.more').click();
+      const labels = [...sr.querySelectorAll('.menu button')].map((b) => b.textContent.replace(/ ✓$/, ''));
+      sr.querySelector('.more').click();
+      return JSON.stringify(labels) === JSON.stringify(['左下', '右下', '左上', '右上']);
     }));
+    check('しまう: ボタンがドックに常に出ている（右に置いていれば › ）', await page.evaluate(() => {
+      const b = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock .tuck');
+      const r = b.getBoundingClientRect();
+      return b.getAttribute('aria-label') === 'しまう' && b.textContent === '›' && r.width > 0 && r.height > 0;
+    }));
+    const tuckClick = () => page.evaluate(() =>
+      document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock .tuck').click());
 
     let tuck = await tuckState();
     check('しまう: しまう前はドックが見え、つまみは無い', tuck.dockShown && !tuck.tabShown, tuck);
 
-    await menuClick('しまう');
+    await tuckClick();
     tuck = await tuckState();
     check('しまう: ドックが消え、つまみだけ残る', !tuck.dockShown && tuck.tabShown, tuck);
     check('しまう: つまみは画面の端（右上に置いていれば右端・上寄り）に付く', tuck.tabRight === 0 && tuck.tabTop < 200 && tuck.tabText === '‹', tuck);
@@ -394,7 +401,9 @@ const toastText = (page) =>
 
     // 左下に置いてしまうと、左端につまみが付く
     await menuClick('左下');
-    await menuClick('しまう');
+    check('しまう: 左に置けばボタンの矢印は ‹', await page.evaluate(() =>
+      document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock .tuck').textContent === '‹'));
+    await tuckClick();
     tuck = await tuckState();
     check('しまう: 左下に置いていれば左端・下寄りに付く', !tuck.dockShown && tuck.tabText === '›' && tuck.tabTop > 400, tuck);
     check('しまう: 左端にぴったり付く', await page.evaluate(() =>
@@ -554,8 +563,8 @@ const toastText = (page) =>
     const sr = document.getElementById('tm-x-switch-root').shadowRoot;
     const load = sr.querySelector('.load');
     if (load) { load.click(); return; }
-    sr.querySelector('.icon').click();
-    [...sr.querySelectorAll('.menu button')].find((b) => b.textContent === 'アカウントを読み込む').click();
+    // 一覧があるときの読み直しはメニューから外した（X の切替メニューを開けば覚え直す）
+    window.__tmXSwitch.load();
   });
 
   for (const variant of [
