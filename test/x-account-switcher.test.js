@@ -68,6 +68,17 @@ function fixtures() {
     h('div', { role: 'button', 'data-testid': 'UserCell', id: id || 'cell-' + handle, onclick },
       avatar(handle), h('span', {}, name), h('span', {}, '@' + handle));
 
+  // ホームのタブ（おすすめ / フォロー中）。最初はおすすめが選ばれている
+  window.homeTabs = () => {
+    const tab = (label, selected) => h('div', { role: 'tab', 'aria-selected': String(selected), onclick: (e) => {
+      e.currentTarget.parentElement.querySelectorAll('[role="tab"]').forEach((t) => t.setAttribute('aria-selected', String(t === e.currentTarget)));
+      events.push('tab:' + label);
+    } }, h('span', {}, label));
+    return [tab('おすすめ', true), tab('フォロー中', false)];
+  };
+  window.followingSelected = () =>
+    [...document.querySelectorAll('[role="tab"]')].find((t) => t.textContent === 'フォロー中')?.getAttribute('aria-selected') === 'true';
+
   window.events = [];
   window.layers = document.getElementById('layers');
 
@@ -178,6 +189,7 @@ const toastText = (page) =>
             onclick: () => window.openAccountMenu()
           }, avatar('alice'), h('span', {}, '@alice'))),
         h('main', {},
+          h('div', { role: 'tablist', id: 'homeTabs' }, ...homeTabs()),
           h('section', { role: 'region', id: 'timeline' },
             // 投稿（dave）とおすすめユーザー（eve）。どちらも自分のアカウントではない
             h('div', { 'data-testid': 'cellInnerDiv' },
@@ -260,8 +272,8 @@ const toastText = (page) =>
     let ev = await page.evaluate(() => events.slice());
     check('切替: 切替メニューを開き、メニューの bob を押す', ev.includes('open-menu') && ev.includes('switch:bob'), ev);
     check('切替: タイムライン上の bob は押さない', !ev.includes('nav:/bob-in-timeline'), ev);
-    check('切替: 元のページを覚える', await page.evaluate(() =>
-      JSON.parse(sessionStorage.getItem('tm-x-switch-return') || 'null')?.path === '/home'));
+    check('切替: 切替を押した印を残す（X が読み込み直したら「フォロー中」を開くため）', await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem('tm-x-switch-after') || 'null')?.handle === 'bob'));
 
     // 再読み込みが起きない場合は、切り替わったのを確かめてボタンを戻す
     await page.waitForTimeout(900);
@@ -269,6 +281,10 @@ const toastText = (page) =>
     check('切替後: 再読み込みが無くても、ボタンが押せる状態に戻る', buttons.every((b) => !b.disabled), buttons);
     check('切替後: 印が bob に移る', buttons.find((b) => b.handle === 'bob')?.current, buttons);
     check('切替後: 「切り替えました」と出る', (await toastText(page)).includes('切り替えました'), await toastText(page));
+    await page.waitForTimeout(300);
+    check('切替後: ホームの「フォロー中」タブを開く', await page.evaluate(() => followingSelected() && events.includes('tab:フォロー中')),
+      await page.evaluate(() => events.slice()));
+    check('切替後: 印を消す', await page.evaluate(() => sessionStorage.getItem('tm-x-switch-after') === null));
 
     // 確認シートが出る場合
     await page.evaluate(() => { events.length = 0; window.withConfirm = true; });
@@ -295,7 +311,7 @@ const toastText = (page) =>
     check('失敗: 見つからなければ知らせる', (await toastText(page)).includes('切り替えられませんでした'), await toastText(page));
     check('失敗: ボタンが押せる状態に戻る', buttons.every((b) => !b.disabled), buttons);
     check('失敗: 開いたメニューを閉じる', await page.evaluate(() => !document.getElementById('accountMenu')));
-    check('失敗: 元のページの記録を消す', await page.evaluate(() => sessionStorage.getItem('tm-x-switch-return') === null));
+    check('失敗: 切替を押した印を消す', await page.evaluate(() => sessionStorage.getItem('tm-x-switch-after') === null));
     check('失敗: 誤って何かを押していない', !(await page.evaluate(() => events.some((e) => e.startsWith('switch:') || e.startsWith('nav:')))),
       await page.evaluate(() => events.slice()));
 
@@ -598,7 +614,7 @@ const toastText = (page) =>
           h('a', { role: 'link', 'data-testid': 'AppTabBar_Notifications_Link', 'aria-label': '通知', href: '/notifications' }))),
       h('div', { 'data-testid': 'TopNavBar', id: 'topNavBar' }),
       h('div', { role: 'grid' },
-        h('nav', { role: 'navigation' }, h('div', { role: 'tablist', 'data-testid': 'ScrollSnap-List' }))),
+        h('nav', { role: 'navigation' }, h('div', { role: 'tablist', 'data-testid': 'ScrollSnap-List' }, ...homeTabs()))),
       h('div', { role: 'status' },
         h('button', { role: 'button', 'aria-label': '新しいポストがあります' }, h('div', { 'data-testid': 'pillLabel' }, '新しいポスト'))));
 
@@ -735,20 +751,27 @@ const toastText = (page) =>
     await page.waitForTimeout(800);
     ev = await page.evaluate(() => events.slice());
     check(tag + '切替: ホームへ移ってからドロワーの bob を押す', ev.includes('go-home') && ev.includes('switch:bob'), ev);
-    check(tag + '切替: 元のページを覚えている（X が再読み込みしたら戻す）', await page.evaluate(() =>
-      JSON.parse(sessionStorage.getItem('tm-x-switch-return') || 'null')?.path === '/dave/status/1'));
-    await page.waitForTimeout(900);
-    check(tag + '切替後（再読み込みなし）: 元の個別ポストへ戻る', page.url() === STATUS, page.url());
+    check(tag + '切替: 切替を押した印を残す', await page.evaluate(() =>
+      JSON.parse(sessionStorage.getItem('tm-x-switch-after') || 'null')?.handle === 'bob'));
+    await page.waitForTimeout(1200);
+    check(tag + '切替後（再読み込みなし）: 元の個別ポストへは戻らず、ホームに居る', page.url() === 'https://x.com/home', page.url());
+    check(tag + '切替後: ホームの「フォロー中」タブを開く', await page.evaluate(() => followingSelected()), await page.evaluate(() => events.slice()));
     check(tag + '切替後: 印が bob に移る', (await dockButtons(page)).find((b) => b.handle === 'bob')?.current, await dockButtons(page));
 
-    // ドロワーに出ていない carol（一覧まで開く）
-    await page.evaluate(() => { events.length = 0; });
+    // ドロワーに出ていない carol（一覧まで開く）。もう一度個別ポストから
+    await page.evaluate(() => {
+      history.pushState(null, '', '/dave/status/1');
+      window.renderTopBar();
+      document.querySelectorAll('[role="tab"]').forEach((t) => t.setAttribute('aria-selected', String(t.textContent === 'おすすめ')));
+      events.length = 0;
+    });
     await clickDock(page, 'carol');
     await page.waitForTimeout(1200);
     ev = await page.evaluate(() => events.slice());
     check(tag + '切替: ホーム → ドロワー → 一覧で carol を押す', ev.includes('go-home') && ev.includes('open-sheet') && ev.includes('switch:carol'), ev);
-    await page.waitForTimeout(900);
-    check(tag + '切替後: 元の個別ポストへ戻る', page.url() === STATUS, page.url());
+    await page.waitForTimeout(1200);
+    check(tag + '切替後: ホームの「フォロー中」を開く', page.url() === 'https://x.com/home' && await page.evaluate(() => followingSelected()),
+      { url: page.url(), ev: await page.evaluate(() => events.slice()) });
 
     // 履歴で戻れず開き直した場合はページが読み込み直されているので、模擬DOMとスクリプトを入れ直す
     if (!(await page.evaluate(() => !!window.h))) {
@@ -758,7 +781,11 @@ const toastText = (page) =>
       await page.waitForTimeout(400);
     }
 
-    // 一覧に無いアカウント: 失敗しても元のページへ戻る
+    // 一覧に無いアカウント: 失敗したら元のページへ戻る
+    await page.evaluate(() => {
+      history.pushState(null, '', '/dave/status/1');
+      window.renderTopBar();
+    });
     await page.evaluate(() => {
       const list = JSON.parse(localStorage.getItem('tm-x-switch-accounts'));
       list.push({ screenName: 'ghost', name: 'Ghost', avatar: '' });
@@ -850,24 +877,43 @@ const toastText = (page) =>
   }
 
   // ==========================================================
-  // 切替後に元のページへ戻す
+  // 切替後、X が読み込み直した場合（起動時にホームの「フォロー中」を開く）
   // ==========================================================
   {
     const page = await newPage(browser, { width: 390, height: 844 });
-    await page.goto('https://x.com/home');
-    await page.evaluate(() => sessionStorage.setItem('tm-x-switch-return',
-      JSON.stringify({ path: '/notifications', handle: 'bob', at: Date.now() })));
-    await page.evaluate(SCRIPT).catch(() => {});
-    await page.waitForURL('https://x.com/notifications', { timeout: 3000 }).catch(() => {});
-    check('復帰: 切替後にホームへ飛ばされたら、元のページへ戻す', page.url() === 'https://x.com/notifications', page.url());
-    check('復帰: 記録は1回で消す', await page.evaluate(() => sessionStorage.getItem('tm-x-switch-return') === null));
+    const bootWith = async (url, after, setupTabs) => {
+      await page.goto(url);
+      await page.evaluate(fixtures);
+      await page.evaluate((after) => { if (after) sessionStorage.setItem('tm-x-switch-after', JSON.stringify(after)); }, after);
+      await page.evaluate((setupTabs) => {
+        const home = h('a', { 'data-testid': 'AppTabBar_Home_Link', href: '/home', onclick: (e) => {
+          e.preventDefault(); events.push('go-home'); history.pushState(null, '', '/home');
+        } }, 'ホーム');
+        document.getElementById('react-root').append(home);
+        // タブは少し遅れて描かれる（読み込み直した直後を模す）
+        if (setupTabs) setTimeout(() => document.getElementById('react-root').append(h('div', { role: 'tablist' }, ...homeTabs())), 300);
+      }, setupTabs);
+      await page.evaluate(SCRIPT).catch(() => {});
+    };
 
-    await page.goto('https://x.com/home');
-    await page.evaluate(() => sessionStorage.setItem('tm-x-switch-return',
-      JSON.stringify({ path: '/notifications', handle: 'bob', at: Date.now() - 5 * 60 * 1000 })));
-    await page.evaluate(SCRIPT).catch(() => {});
-    await page.waitForTimeout(500);
-    check('復帰: 古い記録では戻さない', page.url() === 'https://x.com/home', page.url());
+    await bootWith('https://x.com/home', { handle: 'bob', at: Date.now() }, true);
+    await page.waitForTimeout(800);
+    check('切替後の起動: ホームで「フォロー中」タブが出るのを待って開く', await page.evaluate(() => followingSelected()), await page.evaluate(() => events.slice()));
+    check('切替後の起動: 印は1回で消す', await page.evaluate(() => sessionStorage.getItem('tm-x-switch-after') === null));
+
+    await bootWith('https://x.com/notifications', { handle: 'bob', at: Date.now() }, true);
+    await page.waitForTimeout(900);
+    check('切替後の起動: ホーム以外で読み込み直されたら、ホームへ移って「フォロー中」を開く',
+      page.url() === 'https://x.com/home' && await page.evaluate(() => events.includes('go-home') && followingSelected()),
+      { url: page.url(), ev: await page.evaluate(() => events.slice()) });
+
+    await bootWith('https://x.com/home', { handle: 'bob', at: Date.now() - 5 * 60 * 1000 }, true);
+    await page.waitForTimeout(800);
+    check('切替後の起動: 古い印では何もしない', await page.evaluate(() => !followingSelected() && sessionStorage.getItem('tm-x-switch-after') === null));
+
+    await bootWith('https://x.com/home', null, true);
+    await page.waitForTimeout(800);
+    check('通常の起動: 切替していなければタブを勝手に変えない', await page.evaluate(() => !followingSelected()));
 
     await page.goto('https://x.com/i/flow/login');
     await page.evaluate(SCRIPT);
