@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X タブ別アカウント v1.1.0
+// @name         X タブ別アカウント v1.2.0
 // @namespace    local.hiro.tools
-// @version      1.1.0
+// @version      1.2.0
 // @description  X のアカウントをタブごとに覚え、タブを開き直したときにそのアカウントとページへ戻す（擬似的に複数アカウントを同時に使う。デスクトップの Chrome 向け）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -39,6 +39,17 @@
  *   途中のページがチラチラ見えないよう、読み込みの最初（document-start）から
  *   画面全体を X の背景色の幕で覆い、終わったら外す。外し忘れても COVER_MAX_MS で外れる
  *
+ * ■ 自分で切り替えたのか、別タブで切り替えられたのか（v1.2.0）
+ *   このタブで X の切替メニューの項目が押されたら記録しておき、その後に
+ *   そのアカウントが画面に出たら「このタブで切り替えた」と見なして覚え直す。
+ *   v1.1.0 までは「前面にあるタブで表示が変わったら」としていたため、
+ *   ウインドウを並べていると、見えているだけの別のタブまで覚え直すことがあった
+ *
+ * ■ 失敗したら1回やり直す（v1.2.0）
+ *   読み込み直してもう一度試す。それでもだめなら記憶はそのままにして、
+ *   次に前面に出したときに試す。切替メニューにそのアカウントが無いときだけ、
+ *   いまのアカウントで覚え直す
+ *
  * ■ 裏のタブでは切り替えない
  *   前面のタブで作業中に、裏のタブが勝手にアカウントを変えると、前面のタブは
  *   表示が古いまま別アカウントになり、誤って別アカウントで投稿しかねない。
@@ -46,6 +57,7 @@
  *
  * ■ 診断
  *   コンソールで __tmXTabAccount.dump() を実行すると、覚えている内容と直近の記録が出る。
+ *   全タブの記録（v1.2.0）も出るので、どのタブで何が起きたかを1回で追える。
  *   __tmXTabAccount.forget() でこのタブの記憶を消す（いまのアカウントで覚え直す）
  */
 
@@ -56,7 +68,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.1.0';
+    const VERSION = '1.2.0';
 
     // 自作要素の id（トースト）
     const ROOT_ID = 'tm-x-tabacct-root';
@@ -78,6 +90,15 @@
 
     // 端末ごと: X の画面の色（覆いの色を合わせる） { bg, fg }
     const STORAGE_THEME = 'tm-x-tabacct-theme';
+
+    // タブごと: このタブで X の切替メニューの項目を押した記録 { handle, at }（handle が * ならログインの流れ）
+    const SESSION_INTENT = 'tm-x-tabacct-intent';
+
+    // タブごと: タブの見分け（全タブの記録で使う）
+    const SESSION_TAB_ID = 'tm-x-tabacct-id';
+
+    // 全タブ共通: 全タブの記録（診断用）
+    const STORAGE_SHARED_LOG = 'tm-x-tabacct-shared-log';
 
     // タブごと: 読み込み直した後に出す知らせ
     const SESSION_NOTICE = 'tm-x-tabacct-notice';
@@ -122,8 +143,20 @@
         fg: 'rgb(231, 233, 234)'
     };
 
-    // 読み込み直した直後、フォーカスが戻るのを待つ上限（ミリ秒）
+    // 読み込み直した直後、タブが前面にあるかを待つ上限（ミリ秒）
     const ACTIVE_WAIT_MS = 1000;
+
+    // 戻せなかったとき、読み込み直してやり直す回数
+    const RETRY_MAX = 1;
+
+    // 切替メニューの項目を押した記録を有効とみなす期間（ミリ秒）
+    const INTENT_MAX_AGE_MS = 60 * 1000;
+
+    // 通ったら「このタブで別のアカウントに入る」と見なすパス（アカウントの追加・ログイン）
+    const LOGIN_FLOW_PATHS = [
+        /^\/i\/flow\/login/,
+        /^\/account\/add/
+    ];
 
     // 待つ間の確認間隔（ミリ秒）
     const POLL_MS = 100;
@@ -143,6 +176,9 @@
 
     // 記録を何件残すか（診断用）
     const LOG_MAX = 40;
+
+    // 全タブの記録を何件残すか（診断用）
+    const SHARED_LOG_MAX = 80;
 
     // 現在のアカウントを示すプロフィールへのリンク（デスクトップ幅の左のメニュー）
     const PROFILE_LINK_SELECTORS = [
@@ -391,14 +427,16 @@
 
     function log(step, detail) {
 
-        logEntries.push({
+        const entry = {
             時刻: new Date().toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }),
 
             ページ: location.pathname,
             段階: step,
             詳細: detail || ''
-        });
+        };
 
+
+        logEntries.push(entry);
 
         while (logEntries.length > LOG_MAX) {
             logEntries.shift();
@@ -406,6 +444,35 @@
 
 
         writeJson(sessionStorage, SESSION_LOG, logEntries);
+
+
+        /*
+         * 全タブの記録にも残す（どのタブで何が起きたかを、1つのタブから追えるように）
+         */
+        const shared = readJson(localStorage, STORAGE_SHARED_LOG, []);
+
+        const list = Array.isArray(shared) ? shared : [];
+
+        list.push({ タブ: tabId(), ...entry });
+
+        writeJson(localStorage, STORAGE_SHARED_LOG, list.slice(-SHARED_LOG_MAX));
+    }
+
+
+    function tabId() {
+
+        let id = readJson(sessionStorage, SESSION_TAB_ID, '');
+
+
+        if (!id) {
+
+            id = Math.random().toString(36).slice(2, 6);
+
+            writeJson(sessionStorage, SESSION_TAB_ID, id);
+        }
+
+
+        return id;
     }
 
 
@@ -469,11 +536,16 @@
     }
 
 
-    function writeActive(handle) {
+    function writeActive(handle, why) {
 
-        if (readActive() === handle) {
+        const before = readActive();
+
+        if (before === handle) {
             return;
         }
+
+
+        log('有効なアカウントを書き換える', '@' + (before || 'なし') + ' → @' + handle + '（' + (why || '') + '）');
 
 
         writeJson(localStorage, STORAGE_ACTIVE, {
@@ -507,6 +579,57 @@
             url,
             at: Date.now()
         });
+    }
+
+
+    /*
+     * このタブで X の切替メニューの項目を押した記録を使う。
+     * 押したアカウント（ログインの流れを通ったなら何でも）が出たら true
+     */
+    function takeIntent(handle) {
+
+        const intent = readJson(sessionStorage, SESSION_INTENT, null);
+
+        if (!intent || typeof intent.handle !== 'string') {
+            return false;
+        }
+
+
+        if (Date.now() - (intent.at || 0) > INTENT_MAX_AGE_MS) {
+
+            removeKey(sessionStorage, SESSION_INTENT);
+
+            return false;
+        }
+
+
+        if (intent.handle === '*' || intent.handle === handle) {
+
+            removeKey(sessionStorage, SESSION_INTENT);
+
+            return true;
+        }
+
+
+        return false;
+    }
+
+
+    function writeIntent(handle, why) {
+
+        const intent = readJson(sessionStorage, SESSION_INTENT, null);
+
+        if (intent && intent.handle === handle && Date.now() - (intent.at || 0) < CHECK_DELAY * 4) {
+            return;
+        }
+
+
+        writeJson(sessionStorage, SESSION_INTENT, {
+            handle,
+            at: Date.now()
+        });
+
+        log('このタブで切替を選んだ', (handle === '*' ? 'アカウントの追加・ログイン' : '@' + handle) + '（' + why + '）');
     }
 
 
@@ -703,6 +826,43 @@
 
 
     /*
+     * 押された要素が、切替メニューの中のアカウントの項目ならハンドルを返す。
+     * 項目の中の文字やアバターを押しても拾えるよう、押せる要素を外へたどる
+     */
+    function accountOfClicked(start) {
+
+        const roots = searchRoots();
+
+        const selector = CLICKABLE_SELECTOR + ',' + ACCOUNT_ITEM_SELECTOR;
+
+        let element = start && start.closest ? start.closest(selector) : null;
+
+
+        while (element && roots.some(scope => scope !== element && scope.contains(element))) {
+
+            if (
+                !element.closest(PERSISTENT_SELECTORS.join(',')) &&
+                hasAvatar(element) &&
+                !isNotAccount(element)
+            ) {
+
+                const found = handleOf(element);
+
+                if (found && !isProfileLink(element, normalizeHandle(found.handle))) {
+                    return normalizeHandle(found.handle);
+                }
+            }
+
+
+            element = element.parentElement ? element.parentElement.closest(selector) : null;
+        }
+
+
+        return '';
+    }
+
+
+    /*
      * 切替先の要素を探す。
      * 「アバターと @ハンドルを持つ押せる要素」で狙い、入れ子なら外側を採る
      */
@@ -750,6 +910,22 @@
         return hits.find(hit =>
             !hits.some(other => other !== hit && other.element.contains(hit.element))
         ) || null;
+    }
+
+
+    /*
+     * 切替メニューが開いているか（アカウント追加・ログアウト等の項目が見えている）
+     */
+    function isMenuOpen() {
+
+        return searchRoots().some(scope =>
+            [...scope.querySelectorAll('a[href], [role="menuitem"], [role="button"], button')]
+                .some(element =>
+                    !element.closest(PERSISTENT_SELECTORS.join(',')) &&
+                    isNotAccount(element) &&
+                    isVisible(element)
+                )
+        );
     }
 
 
@@ -809,13 +985,17 @@
      * 起動直後やページ内で切り替わった直後の画面は、実際のアカウントを表している。
      * これを全タブ共通の「有効なアカウント」に書く。
      *
-     * このタブの記憶を書き換えるのは、このタブが前面にあり、
-     * かつ「有効なアカウント」と違う値が出たとき（＝このタブで切り替えた）だけ。
-     * 別タブで切り替えた後なら「有効なアカウント」は既に同じ値になっている。
+     * このタブの記憶を書き換えるのは、このタブで切り替えたときだけ。
      *
-     * ここではフォーカスまでは見ない。切替後に X が読み込み直した直後は
-     * フォーカスが一瞬外れていることがあり、見落とすと自分で切り替えたのに
-     * 次にフォーカスが来たとき元のアカウントへ戻してしまう
+     *   1. このタブで X の切替メニューの項目を押していて、そのアカウントが出た
+     *      （切替後に X が読み込み直した直後はフォーカスが一瞬外れていることがあるので、
+     *       押した記録で判定する）
+     *   2. 押した記録が取れなかった場合の保険: このタブが使われていて（前面かつフォーカスあり）、
+     *      「有効なアカウント」と違う値が出た。別タブで切り替えた後なら
+     *      「有効なアカウント」は既に同じ値になっている
+     *
+     * 前面にあるだけでは判定しない。ウインドウを並べていると、別のウインドウで
+     * 切り替えた結果が見えているだけのタブまで覚え直してしまう（v1.1.0 までの不具合）
      */
     function onAccountSeen(handle, why) {
 
@@ -832,16 +1012,24 @@
 
                 log('このタブのアカウントを覚える', '@' + handle + '（' + why + '）');
 
-            } else if (tab.handle !== handle && before !== handle && document.visibilityState === 'visible') {
+            } else if (tab.handle === handle) {
+
+                takeIntent(handle);
+
+            } else if (takeIntent(handle) || (before !== handle && isActiveTab())) {
 
                 writeTab(handle, isIgnoredPath(currentUrl()) ? tab.url : currentUrl());
 
                 log('このタブで切り替えた', '@' + tab.handle + ' → @' + handle + '（' + why + '）');
+
+            } else {
+
+                log('別のタブで切り替わった', '画面: @' + handle + ' / このタブ: @' + tab.handle + '（' + why + '）');
             }
         }
 
 
-        writeActive(handle);
+        writeActive(handle, why);
     }
 
 
@@ -886,7 +1074,7 @@
      */
     function checkTab(why) {
 
-        if (restoring || !isActiveTab() || isIgnoredPath(currentUrl())) {
+        if (restoring || isIgnoredPath(currentUrl())) {
             return;
         }
 
@@ -897,6 +1085,17 @@
 
 
         if (!tab || !active || tab.handle === active) {
+            return;
+        }
+
+
+        if (!isActiveTab()) {
+
+            if (document.visibilityState === 'visible') {
+                log('フォーカスが無いので、まだ戻さない', '@' + active + ' → @' + tab.handle + '（' + why + '）');
+            }
+
+
             return;
         }
 
@@ -913,6 +1112,7 @@
             handle: tab.handle,
             url: tab.url || '/home',
             step: 'reload',
+            retries: 0,
             at: Date.now()
         };
 
@@ -965,9 +1165,12 @@
 
         /*
          * 途中で別のタブへ移った（裏に回った）なら、ここでは切り替えない。
-         * 次に前面に出したときに、初めからやり直す
+         * 次に前面に出したときに、初めからやり直す。
+         *
+         * フォーカスまでは見ない。読み込み直した直後はフォーカスが確かめられないことがあり、
+         * v1.1.0 はそこで中断して、切り替わらないまま幕を外していた
          */
-        if (!await waitFor(isActiveTab, ACTIVE_WAIT_MS)) {
+        if (!await waitFor(() => document.visibilityState === 'visible', ACTIVE_WAIT_MS)) {
 
             log('裏に回ったので中断する', marker.step);
 
@@ -1063,13 +1266,21 @@
 
         if (!target) {
 
+            /*
+             * メニュー（アカウント追加・ログアウト等の項目）が開いていたのに無いなら、
+             * そのアカウントはもう無い。メニュー自体が開かなかったのとは分ける
+             */
+            const gone = isMenuOpen();
+
             closeMenus();
 
-            if (isSwitchPage()) {
-                history.back();
-            }
-
-            failRestore(marker, '切替メニューに @' + marker.handle + ' が見つからない（ログアウトした？）');
+            failRestore(
+                marker,
+                gone ?
+                    '切替メニューに @' + marker.handle + ' が無い（ログアウトした？）' :
+                    '切替メニューが開かない',
+                gone
+            );
 
             return;
         }
@@ -1078,7 +1289,7 @@
         /*
          * 押す直前にもう一度確かめる。待つ間に別のタブへ移っていたら切り替えない
          */
-        if (!isActiveTab()) {
+        if (document.visibilityState !== 'visible') {
 
             closeMenus();
 
@@ -1146,7 +1357,7 @@
 
         pageAccount = marker.handle;
 
-        writeActive(marker.handle);
+        writeActive(marker.handle, '戻した');
 
         writeTab(marker.handle, marker.url);
 
@@ -1237,14 +1448,46 @@
 
 
     /*
-     * 戻せなかったときは、このタブをいまのアカウントで覚え直す。
-     * 覚えたままだと、前面に出すたびに失敗を繰り返すため
+     * 戻せなかったとき。
+     *
+     *   まだやり直していない: 読み込み直して、もう一度試す（X の表示が遅かっただけのことがある）
+     *   やり直してもだめ:     記憶はそのままにして、次に前面に出したときに試す
+     *
+     * gone（切替メニューは開けたのに、そのアカウントが無い）のときだけ、
+     * このタブをいまのアカウントで覚え直す。ログアウトしたアカウントを覚えたままだと、
+     * 前面に出すたびに失敗を繰り返すため
      */
-    function failRestore(marker, reason) {
+    function failRestore(marker, reason, gone) {
 
         log('戻せなかった', reason);
 
+
+        if ((marker.retries || 0) < RETRY_MAX && document.visibilityState === 'visible') {
+
+            marker.retries = (marker.retries || 0) + 1;
+
+            marker.step = 'reload';
+
+            marker.at = Date.now();
+
+            writeRestore(marker);
+
+            showCover(marker.handle);
+
+            log('読み込み直して、もう一度試す', marker.retries + '回目');
+
+            location.replace(marker.url);
+
+            return;
+        }
+
+
         removeKey(sessionStorage, SESSION_RESTORE);
+
+
+        if (isSwitchPage()) {
+            history.back();
+        }
 
 
         const shown = detectCurrent();
@@ -1254,9 +1497,12 @@
 
             pageAccount = shown.handle;
 
-            writeActive(shown.handle);
+            writeActive(shown.handle, '戻せなかった');
 
-            writeTab(shown.handle, isIgnoredPath(currentUrl()) ? marker.url : currentUrl());
+
+            if (gone) {
+                writeTab(shown.handle, isIgnoredPath(currentUrl()) ? marker.url : currentUrl());
+            }
         }
 
 
@@ -1267,7 +1513,9 @@
 
         toast(
             '@' + marker.handle + ' に戻せませんでした（' + reason + '）。' +
-            (shown ? 'このタブは @' + shown.handle + ' のまま使います' : ''),
+            (gone ?
+                (shown ? 'このタブは @' + shown.handle + ' のまま使います' : '') :
+                '次にこのタブを開いたときに、もう一度試します'),
             FAILURE_TOAST_MS
         );
     }
@@ -1523,6 +1771,11 @@
                     recordUrl(false);
 
                     rememberTheme();
+
+
+                    if (!restoring && LOGIN_FLOW_PATHS.some(pattern => pattern.test(location.pathname))) {
+                        writeIntent('*', 'ログインの流れを開いた');
+                    }
                 },
                 CHECK_DELAY
             );
@@ -1558,6 +1811,29 @@
 
 
         window.addEventListener('popstate', () => scheduleCheck());
+
+
+        /*
+         * このタブで X の切替メニューの項目を押したら記録する（自分で切り替えた目印）。
+         * X の処理より先に拾うため、捕捉段階で見る。戻している最中に自分で押す分は除く
+         */
+        document.addEventListener(
+            'click',
+            event => {
+
+                if (restoring) {
+                    return;
+                }
+
+
+                const handle = accountOfClicked(event.target);
+
+                if (handle) {
+                    writeIntent(handle, '切替メニューの項目を押した');
+                }
+            },
+            true
+        );
 
 
         document.addEventListener('visibilitychange', () => {
@@ -1628,6 +1904,30 @@
 
             lines.push(
                 '  ' + entry.時刻 +
+                ' [' + entry.ページ + '] ' +
+                entry.段階 +
+                (entry.詳細 ? ': ' + entry.詳細 : '')
+            );
+        }
+
+
+        const shared = readJson(localStorage, STORAGE_SHARED_LOG, []);
+
+        lines.push('');
+
+        lines.push('■ 全タブの記録（このタブは ' + tabId() + '）');
+
+
+        if (!Array.isArray(shared) || !shared.length) {
+            lines.push('  （なし）');
+        }
+
+
+        for (const entry of Array.isArray(shared) ? shared : []) {
+
+            lines.push(
+                '  ' + entry.時刻 +
+                ' <' + entry.タブ + (entry.タブ === tabId() ? '*' : '') + '>' +
                 ' [' + entry.ページ + '] ' +
                 entry.段階 +
                 (entry.詳細 ? ': ' + entry.詳細 : '')
@@ -1721,6 +2021,12 @@
         if (isIgnoredPath(currentUrl()) && !marker) {
 
             hideCover();
+
+
+            if (LOGIN_FLOW_PATHS.some(pattern => pattern.test(location.pathname))) {
+                writeIntent('*', 'ログインの流れを開いた');
+            }
+
 
             return;
         }

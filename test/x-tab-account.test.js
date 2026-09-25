@@ -85,6 +85,14 @@ function mockX() {
   });
 
   const doSwitch = (hd) => {
+    // flaky: 押しても効かないことがある（残り回数だけ無視する）
+    const flaky = Number(localStorage.getItem('mock-flaky') || 0);
+    if (flaky > 0) {
+      localStorage.setItem('mock-flaky', String(flaky - 1));
+      ev('switch-ignored:' + hd);
+      closeAll();
+      return;
+    }
     ev('switch:' + hd);
     closeAll();
     const apply = () => {
@@ -154,6 +162,12 @@ function mockX() {
   };
 
   window.mockNav = nav;
+
+  // X が別のタブ・ウインドウでの切替に合わせて、この画面を描き直す場合を模す
+  window.mockRerenderAs = (hd) => {
+    shown = hd;
+    renderApp();
+  };
   // nopop: 戻る・進む（popstate）で描き替えない X
   window.addEventListener('popstate', () => {
     if (localStorage.getItem('mock-nopop') !== 'yes') renderApp();
@@ -289,6 +303,98 @@ const userSwitch = (page, handle) =>
 const setMode = (page, mode) => page.evaluate((mode) => localStorage.setItem('mock-mode', mode), mode);
 
 const count = (events, prefix) => events.filter((e) => e.startsWith(prefix)).length;
+
+// ==========================================================
+// v1.2.0: ときどき2つのタブが同じアカウントになる問題への対処
+// ==========================================================
+async function v12(browser) {
+  const context = await newContext(browser);
+  const P = await openTab(context, 'https://x.com/home');
+  await setActive(P, false);
+  const Q = await openTab(context, 'https://x.com/explore');
+  let s;
+
+  // 並べたウインドウ: 別のウインドウ（Q）で切り替えた結果が、見えているだけの P にも出る
+  await setActive(P, true, { focus: false });
+  await P.evaluate(() => {
+    localStorage.setItem('mock-cookie', 'bob');
+    window.mockRerenderAs('bob');
+  });
+  await P.waitForTimeout(800);
+  s = await state(P);
+  check('[v1.2] 並べたウインドウ: 見えているだけのタブは、表示が変わっても覚え直さない', s.tab?.handle === 'alice', s.tab);
+  check('[v1.2] 並べたウインドウ: 「別のタブで切り替わった」と記録する', /別のタブで切り替わった/.test(await P.evaluate(() => window.__tmXTabAccount.dump())));
+  await setActive(P, true);
+  await P.waitForTimeout(300);
+  await idle(P);
+  s = await state(P);
+  check('[v1.2] 並べたウインドウ: フォーカスが来たら元の @alice に戻す', s.shown === 'alice' && s.cookie === 'alice', s);
+
+  // 戻す途中の読み込みで、フォーカスが確かめられなくても続ける（前面にあれば）
+  await setActive(P, false);
+  await Q.evaluate(() => {
+    sessionStorage.setItem('tm-x-tabacct-tab', JSON.stringify({ handle: 'carol', url: '/explore', at: Date.now() }));
+    sessionStorage.setItem('tm-x-tabacct-restore', JSON.stringify({ handle: 'carol', url: '/explore', step: 'reload', retries: 0, at: Date.now() }));
+    sessionStorage.setItem('tm-x-tabacct-cover', JSON.stringify({ handle: 'carol', at: Date.now() }));
+    sessionStorage.setItem('mock-vis', 'visible');
+    sessionStorage.setItem('mock-focus', 'no');
+  });
+  await Q.reload();
+  await idle(Q);
+  s = await state(Q);
+  check('[v1.2] 戻す途中: 読み込み直した直後にフォーカスが無くても、前面にあれば続けて切り替える',
+    s.shown === 'carol' && s.cookie === 'carol' && s.url === '/explore' && !s.covered, s);
+  await setActive(Q, true);
+
+  // 押しても1回効かなかった → 読み込み直してやり直す
+  await P.evaluate(() => localStorage.setItem('mock-flaky', '1'));
+  const pBefore = await state(P);
+  await switchTab(Q, P);
+  await until(P, () => document.getElementById('profileLink')?.getAttribute('href') === '/alice' && !sessionStorage.getItem('tm-x-tabacct-restore'));
+  await idle(P);
+  s = await state(P);
+  check('[v1.2] やり直し: 1回目が効かなくても、読み込み直してやり直して戻す',
+    s.shown === 'alice' && s.cookie === 'alice' &&
+    s.events.slice(pBefore.events.length).includes('switch-ignored:alice') && s.events.slice(pBefore.events.length).includes('switch:alice'),
+    s.events.slice(pBefore.events.length));
+  check('[v1.2] やり直し: 記録に「もう一度試す」が出る', /読み込み直して、もう一度試す/.test(await P.evaluate(() => window.__tmXTabAccount.dump())));
+
+  // 2回とも効かなかった → 記憶は消さずに、次に前面に出したとき試す
+  await P.evaluate(() => localStorage.setItem('mock-flaky', '2'));
+  await switchTab(P, Q);
+  await until(Q, () => /もう一度試します/.test(document.getElementById('tm-x-tabacct-root')?.shadowRoot.querySelector('.toast')?.textContent || ''), undefined, 15000);
+  s = await state(Q);
+  check('[v1.2] 2回とも失敗: 「次にこのタブを開いたときに、もう一度試します」と知らせる', /もう一度試します/.test(await toastText(Q)), await toastText(Q));
+  check('[v1.2] 2回とも失敗: このタブの記憶（@carol）は消さない', s.tab?.handle === 'carol' && s.restore === null && !s.covered, s);
+  check('[v1.2] 2回とも失敗: 有効なアカウントは実際のもの（@alice）にする', s.active === 'alice' && s.cookie === 'alice', s);
+  await setActive(Q, false);
+  await setActive(Q, true);
+  await Q.waitForTimeout(300);
+  await idle(Q);
+  s = await state(Q);
+  check('[v1.2] 2回とも失敗: 次に前面に出したときに戻せる', s.shown === 'carol' && s.cookie === 'carol' && s.url === '/explore', s);
+
+  // アカウントの追加・ログインの流れを通って別のアカウントになった → このタブで切り替えたと見なす
+  await Q.evaluate(() => window.mockNav('/i/flow/login'));
+  await Q.waitForTimeout(600);
+  await Q.evaluate(() => {
+    sessionStorage.setItem('mock-focus', 'no');
+    localStorage.setItem('mock-cookie', 'dave');
+    window.mockRerenderAs('dave');
+    window.mockNav('/home');
+  });
+  await Q.waitForTimeout(900);
+  s = await state(Q);
+  check('[v1.2] ログインの流れ: 通った後に別のアカウントになったら、このタブで覚え直す', s.tab?.handle === 'dave' && s.active === 'dave', s);
+
+  // 全タブの記録
+  const qid = await Q.evaluate(() => JSON.parse(sessionStorage.getItem('tm-x-tabacct-id')));
+  const report = await P.evaluate(() => window.__tmXTabAccount.dump());
+  check('[v1.2] 診断: 別のタブの dump() にも、全タブの記録としてこのタブの出来事が出る',
+    /■ 全タブの記録/.test(report) && report.includes('<' + qid + '>') && /このタブで切り替えた/.test(report), report.slice(-1500));
+
+  await context.close();
+}
 
 (async () => {
   const browser = await chromium.launch();
@@ -477,9 +583,11 @@ const count = (events, prefix) => events.filter((e) => e.startsWith(prefix)).len
   const aFail = await state(A);
   await setActive(A, false);
   await setActive(A, true);
-  await A.waitForTimeout(2200);
+  await until(A, () => /のまま使います/.test(document.getElementById('tm-x-tabacct-root')?.shadowRoot.querySelector('.toast')?.textContent || ''), undefined, 15000);
   s = await state(A);
   check('失敗: 知らせる', /@ghost に戻せませんでした/.test(await toastText(A)) && /@alice のまま/.test(await toastText(A)), await toastText(A));
+  check('失敗: その前に1回だけ、読み込み直してやり直す', count(s.events, 'load:') === count(aFail.events, 'load:') + 1 &&
+    count(s.events, 'open-menu') === count(aFail.events, 'open-menu') + 2, s.events.slice(-8));
   check('失敗: 開いたメニューを閉じる', s.events.includes('escape') && await A.evaluate(() => !document.getElementById('accountMenu')), s.events);
   check('失敗: 何も押していない', count(s.events, 'switch:') === count(aFail.events, 'switch:') && count(s.events, 'nav:') === 0, s.events);
   check('失敗: このタブをいまのアカウント（@alice）で覚え直す（繰り返さない）', s.tab?.handle === 'alice' && s.restore === null, s);
@@ -555,6 +663,8 @@ const count = (events, prefix) => events.filter((e) => e.startsWith(prefix)).len
   check('二重起動: もう一度流しても2つ目は動かない', await C.evaluate(() =>
     document.documentElement.dataset.tmXTabAccount === window.__tmXTabAccount.version &&
     document.querySelectorAll('#tm-x-tabacct-root').length <= 1));
+
+  await v12(browser);
 
   await browser.close();
 
