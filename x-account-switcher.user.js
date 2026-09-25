@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.2.0
+// @name         X アカウント切替 v1.3.0
 // @namespace    local.hiro.tools
-// @version      1.2.0
+// @version      1.3.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -65,7 +65,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.2.0';
+    const VERSION = '1.3.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -94,13 +94,19 @@
 
     const SESSION_SNAPSHOT = 'tm-x-switch-snapshot';
 
-    // ドックの置き場所。先頭が既定
+    /*
+     * ドックの置き場所。先頭が既定。
+     * 並びは「移動」で出す表（2×2）の並び（左上・右上・左下・右下）とは別
+     */
     const POSITIONS = [
-        { key: 'left-bottom', label: '左下' },
-        { key: 'right-bottom', label: '右下' },
-        { key: 'left-top', label: '左上' },
-        { key: 'right-top', label: '右上' }
+        { key: 'left-bottom', label: '左下', arrow: '↙' },
+        { key: 'right-bottom', label: '右下', arrow: '↘' },
+        { key: 'left-top', label: '左上', arrow: '↖' },
+        { key: 'right-top', label: '右上', arrow: '↗' }
     ];
+
+    // ドックを動かし始めたと見なす指の移動量（px）。これより小さければ普通のタップ
+    const DRAG_THRESHOLD_PX = 8;
 
     // DOM変化後の再処理までの待ち時間（ミリ秒）
     const CHECK_DELAY = 250;
@@ -316,9 +322,10 @@
     let root = null;
     let dock = null;
     let listEl = null;
-    let menuEl = null;
     let tabEl = null;
     let tuckEl = null;
+    let moveEl = null;
+    let cornersEl = null;
     let toastEl = null;
 
     let busy = false;
@@ -2220,30 +2227,46 @@
     place-items: center;
 }
 .icon:active { background: rgba(244, 244, 245, 0.08); color: #f4f4f5; }
-.icon.tuck { font-size: 18px; line-height: 1; padding: 0; }
-.menu {
-    display: none;
+.tools {
+    display: flex;
     flex-direction: column;
-    gap: 2px;
-    min-width: 176px;
-    padding: 6px;
-    border-radius: 12px;
-    background: #121214;
-    border: 1px solid rgba(244, 244, 245, 0.12);
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding-top: 8px;
+    border-top: 1px solid rgba(244, 244, 245, 0.14);
 }
-.menu.open { display: flex; }
-.menu button {
+.tool {
     appearance: none;
-    border: 0;
+    width: 44px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid rgba(244, 244, 245, 0.2);
+    border-radius: 999px;
     background: transparent;
-    color: #f4f4f5;
-    font-size: 13px;
-    text-align: left;
-    padding: 9px 10px;
-    border-radius: 8px;
+    color: rgba(244, 244, 245, 0.88);
+    font-size: 11px;
+    line-height: 1;
 }
-.menu button:active { background: rgba(244, 244, 245, 0.08); }
-.menu button[aria-pressed="true"]::after { content: ' ✓'; }
+.tool:active, .tool[aria-expanded="true"] { background: rgba(244, 244, 245, 0.14); color: #f4f4f5; }
+.corners { display: none; grid-template-columns: 20px 20px; gap: 4px; }
+.corners.open { display: grid; }
+.corners button {
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid rgba(244, 244, 245, 0.2);
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(244, 244, 245, 0.88);
+    font-size: 12px;
+    line-height: 1;
+}
+.corners button[aria-pressed="true"] { background: #f4f4f5; border-color: #f4f4f5; color: #0a0a0b; }
+.dock { touch-action: none; cursor: grab; }
+.dock.dragging { cursor: grabbing; opacity: 0.85; }
+.dock.dragging .av:active { transform: none; }
 .toast {
     position: fixed;
     z-index: 2147483647;
@@ -2282,34 +2305,6 @@
     .toast { transition: none; }
 }
 `;
-    }
-
-
-    function moreIcon() {
-
-        const ns = 'http://www.w3.org/2000/svg';
-
-        const svg = document.createElementNS(ns, 'svg');
-
-        svg.setAttribute('width', '16');
-        svg.setAttribute('height', '16');
-        svg.setAttribute('viewBox', '0 0 24 24');
-        svg.setAttribute('fill', 'currentColor');
-
-
-        for (const cy of [6, 12, 18]) {
-
-            const dot = document.createElementNS(ns, 'circle');
-
-            dot.setAttribute('cx', '12');
-            dot.setAttribute('cy', String(cy));
-            dot.setAttribute('r', '1.6');
-
-            svg.appendChild(dot);
-        }
-
-
-        return svg;
     }
 
 
@@ -2366,58 +2361,25 @@
     }
 
 
-    function buildMenu() {
+    function toggleCorners(open) {
 
-        const menu = document.createElement('div');
-
-        menu.className = 'menu';
-
-
-        const add = (label, onClick, pressed) => {
-
-            const button = document.createElement('button');
-
-            button.type = 'button';
-
-            button.textContent = label;
-
-
-            if (pressed !== undefined) {
-                button.setAttribute('aria-pressed', String(pressed));
-            }
-
-
-            button.addEventListener('click', () => {
-
-                menu.classList.remove('open');
-
-                onClick();
-            });
-
-
-            menu.appendChild(button);
-        };
-
-
-        for (const position of POSITIONS) {
-
-            add(
-                position.label,
-                () => {
-                    writeJson(localStorage, STORAGE_POSITION, position.key);
-
-                    render(true);
-                },
-                getPosition() === position.key
-            );
+        if (!cornersEl) {
+            return;
         }
 
 
-        return menu;
+        const next =
+            open === undefined ? !cornersEl.classList.contains('open') : open;
+
+        cornersEl.classList.toggle('open', next);
+
+        moveEl.setAttribute('aria-expanded', String(next));
     }
 
 
     function tuck() {
+
+        toggleCorners(false);
 
         setTucked(true);
 
@@ -2455,55 +2417,86 @@
         listEl.className = 'list';
 
 
-        const more = document.createElement('button');
-
-        more.type = 'button';
-
-        more.className = 'icon more';
-
-        more.setAttribute('aria-label', '置き場所');
-
-        more.appendChild(moreIcon());
-
-
-        more.addEventListener('click', () => {
-
-            const opening = !menuEl.classList.contains('open');
-
-            /*
-             * 開くたびに作り直し、現在の設定（✓）を反映する
-             */
-            const fresh = buildMenu();
-
-            menuEl.replaceWith(fresh);
-
-            menuEl = fresh;
-
-            menuEl.classList.toggle('open', opening);
-        });
-
-
-        menuEl = buildMenu();
-
-
         /*
-         * 「しまう」は常にドックに出しておく（メニューを開かずに押せる）。
-         * 矢印はしまう向き（画面端の側）を指す
+         * アイコンの下に区切り線を引き、操作は文字のボタンで並べる
+         * （記号だけでは何のボタンか分かりにくいため）。
+         *   移動:   四隅を選ぶ表を開く。ドックを引っぱって動かすこともできる
+         *   しまう: 画面端のつまみだけにする（つまみの矢印は「出す」専用）
          */
+        const tools = document.createElement('div');
+
+        tools.className = 'tools';
+
+
+        moveEl = document.createElement('button');
+
+        moveEl.type = 'button';
+
+        moveEl.className = 'tool move';
+
+        moveEl.textContent = '移動';
+
+        moveEl.title = '置き場所を選ぶ（ドックを引っぱっても動かせます）';
+
+        moveEl.setAttribute('aria-expanded', 'false');
+
+        moveEl.addEventListener('click', () => toggleCorners());
+
+
+        cornersEl = document.createElement('div');
+
+        cornersEl.className = 'corners';
+
+
+        for (const key of ['left-top', 'right-top', 'left-bottom', 'right-bottom']) {
+
+            const position = POSITIONS.find(p => p.key === key);
+
+            const button = document.createElement('button');
+
+            button.type = 'button';
+
+            button.dataset.position = key;
+
+            button.textContent = position.arrow;
+
+            button.title = position.label;
+
+            button.setAttribute('aria-label', position.label + 'に置く');
+
+
+            button.addEventListener('click', () => {
+
+                writeJson(localStorage, STORAGE_POSITION, key);
+
+                toggleCorners(false);
+
+                render(true);
+            });
+
+
+            cornersEl.appendChild(button);
+        }
+
+
         tuckEl = document.createElement('button');
 
         tuckEl.type = 'button';
 
-        tuckEl.className = 'icon tuck';
+        tuckEl.className = 'tool tuck';
 
-        tuckEl.setAttribute('aria-label', 'しまう');
+        tuckEl.textContent = 'しまう';
 
-        tuckEl.title = 'しまう';
+        tuckEl.title = '画面端のつまみだけにする';
 
         tuckEl.addEventListener('click', tuck);
 
 
-        dock.append(listEl, more, tuckEl, menuEl);
+        tools.append(moveEl, cornersEl, tuckEl);
+
+        dock.append(listEl, tools);
+
+        enableDrag(dock);
 
 
         /*
@@ -2534,6 +2527,156 @@
 
 
         renderedSignature = '';
+    }
+
+
+    /*
+     * ドックを指（マウス）で引っぱって動かし、離したところから一番近い四隅に置く。
+     * 少し動かしただけ（DRAG_THRESHOLD_PX 未満）なら普通のタップとして扱う。
+     * 動かした後に続けて起きるクリックは捨てる（アイコンの上から引っぱっても切り替わらない）
+     */
+    function enableDrag(element) {
+
+        let start = null;
+
+        let dragging = false;
+
+        let swallowClick = false;
+
+
+        /*
+         * 指がドックの外へ出ても追えるよう、動きと離すのは window で見る
+         */
+        const onMove = event => {
+
+            if (!start || event.pointerId !== start.id) {
+                return;
+            }
+
+
+            const dx = event.clientX - start.x;
+
+            const dy = event.clientY - start.y;
+
+
+            if (!dragging) {
+
+                if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) {
+                    return;
+                }
+
+
+                dragging = true;
+
+                toggleCorners(false);
+
+                element.classList.add('dragging');
+            }
+
+
+            element.style.transform = `translate(${dx}px, ${dy}px)`;
+        };
+
+
+        const finish = (event, cancelled) => {
+
+            if (!start || event.pointerId !== start.id) {
+                return;
+            }
+
+
+            start = null;
+
+            window.removeEventListener('pointermove', onMove, true);
+
+            window.removeEventListener('pointerup', onUp, true);
+
+            window.removeEventListener('pointercancel', onCancel, true);
+
+
+            if (!dragging) {
+                return;
+            }
+
+
+            dragging = false;
+
+            swallowClick = !cancelled;
+
+
+            const rect = element.getBoundingClientRect();
+
+            element.classList.remove('dragging');
+
+            element.style.transform = '';
+
+
+            if (cancelled) {
+                return;
+            }
+
+
+            const vertical =
+                rect.top + rect.height / 2 < window.innerHeight / 2 ? 'top' : 'bottom';
+
+            const side =
+                rect.left + rect.width / 2 < window.innerWidth / 2 ? 'left' : 'right';
+
+
+            writeJson(localStorage, STORAGE_POSITION, side + '-' + vertical);
+
+            render(true);
+
+
+            /*
+             * 離した直後のクリックだけ捨てる。クリックが来ない環境でも次のタップを邪魔しない
+             */
+            setTimeout(() => {
+                swallowClick = false;
+            }, 400);
+        };
+
+
+        const onUp = event => finish(event, false);
+
+        const onCancel = event => finish(event, true);
+
+
+        element.addEventListener('pointerdown', event => {
+
+            if (event.button !== 0 || busy) {
+                return;
+            }
+
+
+            start = { x: event.clientX, y: event.clientY, id: event.pointerId };
+
+            dragging = false;
+
+
+            window.addEventListener('pointermove', onMove, true);
+
+            window.addEventListener('pointerup', onUp, true);
+
+            window.addEventListener('pointercancel', onCancel, true);
+        });
+
+
+        element.addEventListener(
+            'click',
+            event => {
+
+                if (swallowClick) {
+
+                    swallowClick = false;
+
+                    event.preventDefault();
+
+                    event.stopPropagation();
+                }
+            },
+            true
+        );
     }
 
 
@@ -2596,12 +2739,13 @@
         tabEl.textContent =
             position.startsWith('left') ? '›' : '‹';
 
-        tuckEl.textContent =
-            position.startsWith('left') ? '‹' : '›';
+        for (const button of cornersEl.querySelectorAll('button')) {
+            button.setAttribute('aria-pressed', String(button.dataset.position === position));
+        }
 
 
         if (tucked) {
-            menuEl.classList.remove('open');
+            toggleCorners(false);
         }
 
 
@@ -2761,27 +2905,27 @@
         /*
          * 別タブで覚えた一覧・設定を反映する
          */
+        /*
+         * ドックの外を押したら、四隅の表を閉じる
+         */
+        document.addEventListener(
+            'click',
+            event => {
+
+                if (root && !event.composedPath().includes(root)) {
+                    toggleCorners(false);
+                }
+            },
+            true
+        );
+
+
         window.addEventListener('storage', event => {
 
             if ([STORAGE_ACCOUNTS, STORAGE_POSITION, STORAGE_TUCKED].includes(event.key)) {
                 render(false);
             }
         });
-
-
-        /*
-         * ドックの外を押したらメニューを閉じる
-         */
-        document.addEventListener(
-            'click',
-            event => {
-
-                if (menuEl && root && !event.composedPath().includes(root)) {
-                    menuEl.classList.remove('open');
-                }
-            },
-            true
-        );
     }
 
 

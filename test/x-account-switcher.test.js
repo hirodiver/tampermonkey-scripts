@@ -319,17 +319,66 @@ const toastText = (page) =>
     await page.waitForTimeout(200);
     check('診断: ハッシュを外すとパネルが消える', await page.evaluate(() => !document.getElementById('tm-x-switch-panel')));
 
-    // 位置の変更
-    const menuClick = (label) => page.evaluate((label) => {
-      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-      sr.querySelector('.more').click();
-      [...sr.querySelectorAll('.menu button')].find((b) => b.textContent.startsWith(label)).click();
-    }, label);
+    // 位置の変更: ドックを引っぱって、離したところから一番近い隅へ
+    const dockCenterOf = (selector) => page.evaluate((selector) => {
+      const r = document.getElementById('tm-x-switch-root').shadowRoot.querySelector(selector).getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, selector);
+    const drag = async (selector, to, steps = 8) => {
+      const from = await dockCenterOf(selector);
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(to.x, to.y, { steps });
+      await page.mouse.up();
+      await page.waitForTimeout(100);
+    };
+    const dockClass = () => page.evaluate(() =>
+      document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').className);
 
-    await menuClick('右上');
-    check('操作: 位置を右上に変えられる', await page.evaluate(() =>
-      document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').classList.contains('right-top')));
+    check('操作: 記号だけのボタン（⋮）は無く、区切り線の下に文字のボタン「移動」「しまう」が並ぶ', await page.evaluate(() => {
+      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
+      const labels = [...sr.querySelectorAll('.tools > button')].map((b) => b.textContent);
+      return !sr.querySelector('.more') && JSON.stringify(labels) === JSON.stringify(['移動', 'しまう']) &&
+        getComputedStyle(sr.querySelector('.tools')).borderTopStyle === 'solid';
+    }));
+
+    // 「移動」→ 四隅の表で選ぶ
+    const corners = () => page.evaluate(() => {
+      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
+      const el = sr.querySelector('.corners');
+      return {
+        open: getComputedStyle(el).display !== 'none',
+        expanded: sr.querySelector('.move').getAttribute('aria-expanded'),
+        pressed: [...el.querySelectorAll('button')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.title)
+      };
+    });
+    check('移動: 最初は四隅の表を閉じている', !(await corners()).open, await corners());
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.move').click());
+    let cs = await corners();
+    check('移動: 押すと四隅の表が開き、いまの隅（左下）に印が付く', cs.open && cs.expanded === 'true' && JSON.stringify(cs.pressed) === '["左下"]', cs);
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.corners button[data-position="left-top"]').click());
+    cs = await corners();
+    check('移動: ↖ を押すと左上に置き、表を閉じる', /left-top/.test(await dockClass()) && !cs.open && JSON.stringify(cs.pressed) === '["左上"]', { cls: await dockClass(), cs });
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.move').click());
+    await page.mouse.click(700, 400);
+    check('移動: ドックの外を押すと表を閉じる', !(await corners()).open, await corners());
+
+    await page.evaluate(() => { events.length = 0; });
+    const beforeDrag = await page.evaluate(() => JSON.stringify(window.__tmXSwitch.accounts()));
+    await drag('.av[data-handle="bob"]', { x: 1180, y: 120 });
+    check('操作: 引っぱって右上へ離すと右上に置く', /right-top/.test(await dockClass()), await dockClass());
     check('操作: 位置を覚える', await page.evaluate(() => localStorage.getItem('tm-x-switch-position') === '"right-top"'));
+    check('操作: アイコンの上から引っぱっても切り替えない', await page.evaluate(() =>
+      !events.some((e) => e.startsWith('switch:') || e === 'open-menu')), await page.evaluate(() => events.slice()));
+    check('操作: 引っぱった後は位置のずれを残さない', await page.evaluate(() =>
+      !document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').style.transform));
+    check('操作: 引っぱっても一覧は変わらない', beforeDrag === await page.evaluate(() => JSON.stringify(window.__tmXSwitch.accounts())));
+
+    // 画面の真ん中あたりで離しても、一番近い隅に寄せる（中心より左・下 → 左下）
+    await drag('.dock .tuck', { x: 560, y: 520 });
+    check('操作: 真ん中寄りで離しても一番近い隅（左下）に寄せる', /left-bottom/.test(await dockClass()), await dockClass());
+    await drag('.dock .tuck', { x: 1250, y: 30 });
+    check('操作: 引っぱった後に「しまう」は押されない', !/tucked/.test(await dockClass()), await dockClass());
 
     // しまう → 画面端のつまみ → 戻す
     const tuckState = () => page.evaluate(() => {
@@ -346,18 +395,23 @@ const toastText = (page) =>
       };
     });
 
-    check('操作: メニューは置き場所（四隅）だけ（読み込み・消去・しまう・最小化・隠すは無い）', await page.evaluate(() => {
-      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-      sr.querySelector('.more').click();
-      const labels = [...sr.querySelectorAll('.menu button')].map((b) => b.textContent.replace(/ ✓$/, ''));
-      sr.querySelector('.more').click();
-      return JSON.stringify(labels) === JSON.stringify(['左下', '右下', '左上', '右上']);
-    }));
-    check('しまう: ボタンがドックに常に出ている（右に置いていれば › ）', await page.evaluate(() => {
+    check('しまう: ボタンがドックに常に出ている（文字で「しまう」）', await page.evaluate(() => {
       const b = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock .tuck');
       const r = b.getBoundingClientRect();
-      return b.getAttribute('aria-label') === 'しまう' && b.textContent === '›' && r.width > 0 && r.height > 0;
+      return b.textContent === 'しまう' && r.width > 0 && r.height > 0;
     }));
+
+    // 指が少しぶれただけ（しきい値未満）なら普通のタップ
+    {
+      const c = await dockCenterOf('.dock .tuck');
+      await page.mouse.move(c.x, c.y);
+      await page.mouse.down();
+      await page.mouse.move(c.x + 3, c.y + 2);
+      await page.mouse.up();
+      await page.waitForTimeout(100);
+      check('操作: 指が少しぶれただけならタップとして「しまう」が効く', /tucked/.test(await dockClass()) && /right-top/.test(await dockClass()), await dockClass());
+      await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tab').click());
+    }
     const tuckClick = () => page.evaluate(() =>
       document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock .tuck').click());
 
@@ -400,9 +454,8 @@ const toastText = (page) =>
     check('互換: v1.0 の「このタブでは隠す」の値が残っていても出る', await page.evaluate(() => !!document.getElementById('tm-x-switch-root')));
 
     // 左下に置いてしまうと、左端につまみが付く
-    await menuClick('左下');
-    check('しまう: 左に置けばボタンの矢印は ‹', await page.evaluate(() =>
-      document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock .tuck').textContent === '‹'));
+    await drag('.dock .tuck', { x: 30, y: 780 });
+    check('操作: 引っぱって左下へ離すと左下に置く', /left-bottom/.test(await dockClass()), await dockClass());
     await tuckClick();
     tuck = await tuckState();
     check('しまう: 左下に置いていれば左端・下寄りに付く', !tuck.dockShown && tuck.tabText === '›' && tuck.tabTop > 400, tuck);
