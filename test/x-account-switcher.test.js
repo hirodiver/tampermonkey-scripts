@@ -160,8 +160,10 @@ const toastText = (page) =>
         closeAll();
         const cur = document.getElementById('profileLink').getAttribute('href').slice(1);
         const menu = h('div', { role: 'menu', id: 'accountMenu' },
-          ...['alice', 'bob', 'carol'].map((hd) =>
-            userCell(hd, hd[0].toUpperCase() + hd.slice(1), () => { if (hd !== cur) switchedTo(hd); })),
+          // 現在のアカウントは押せない項目（アイコン・名前・@ハンドルはある）。他は押せる
+          ...['alice', 'bob', 'carol'].map((hd) => hd === cur ?
+            h('div', { id: 'menuCurrent' }, avatar(hd), h('span', {}, hd[0].toUpperCase() + hd.slice(1)), h('span', {}, '@' + hd), h('span', {}, '✓')) :
+            userCell(hd, hd[0].toUpperCase() + hd.slice(1), () => switchedTo(hd))),
           h('a', { href: '/i/flow/login', role: 'menuitem' }, '既存のアカウントを追加'),
           h('a', { href: '/logout', role: 'menuitem' }, '@' + cur + ' からログアウト'));
         layers.append(menu);
@@ -216,14 +218,32 @@ const toastText = (page) =>
       JSON.stringify([...learned].sort()) === JSON.stringify(['alice', 'bob', 'carol']), learned);
     check('収集: 「既存のアカウントを追加」がある一覧なら、載っていない古いアカウントを消す', !learned.includes('zed'), learned);
     check('収集: 「@alice からログアウト」を別アカウントとして覚えない', learned.filter((x) => x === 'alice').length === 1, learned);
-    check('収集: アバターは大きい版（_bigger）で覚える', await page.evaluate(() =>
-      JSON.parse(localStorage.getItem('tm-x-switch-accounts')).every((a) => /_bigger\.jpg$/.test(a.avatar))));
+    check('収集: アバターは大きい版（_bigger）で覚える（押せない現在のアカウントも）', await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('tm-x-switch-accounts')).every((a) => /_bigger\.jpg$/.test(a.avatar))),
+      await page.evaluate(() => localStorage.getItem('tm-x-switch-accounts')));
+    check('収集: 押せない現在のアカウントも表示名で覚える（ID を名前にしない）', await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('tm-x-switch-accounts')).find((a) => a.screenName === 'alice')?.name === 'Alice'),
+      await page.evaluate(() => localStorage.getItem('tm-x-switch-accounts')));
     await page.evaluate(() => closeAll());
     await page.waitForTimeout(400);
 
     let buttons = await dockButtons(page);
     check('描画: ドックに3件並ぶ', buttons && buttons.length === 3, buttons);
     check('描画: 現在のアカウント（alice）に印が付く', buttons && buttons.find((b) => b.handle === 'alice')?.current && !buttons.find((b) => b.handle === 'bob')?.current, buttons);
+
+    // v1.1.2 までに壊れて覚えた現在のアカウント（アイコン無し・名前がハンドル）を、読み込み直さなくても直す
+    await page.evaluate(() => {
+      const list = JSON.parse(localStorage.getItem('tm-x-switch-accounts'))
+        .map((a) => a.screenName === 'alice' ? { screenName: 'alice', name: 'alice', avatar: '' } : a);
+      localStorage.setItem('tm-x-switch-accounts', JSON.stringify(list));
+      document.body.append(document.createElement('i'));   // 監視を起こす
+    });
+    await page.waitForTimeout(400);
+    check('修復: 壊れて覚えた現在のアカウントのアイコンを、左下の切替ボタンから直す', await page.evaluate(() =>
+      /alice_bigger\.jpg$/.test(JSON.parse(localStorage.getItem('tm-x-switch-accounts')).find((a) => a.screenName === 'alice')?.avatar || '')),
+      await page.evaluate(() => localStorage.getItem('tm-x-switch-accounts')));
+    check('修復: ドックでも頭文字ではなくアイコンを出す', await page.evaluate(() =>
+      !!document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av[data-handle="alice"] img')));
 
     // 自分自身を押しても何もしない
     await page.evaluate(() => { events.length = 0; });

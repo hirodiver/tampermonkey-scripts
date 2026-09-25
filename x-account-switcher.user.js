@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.1.2
+// @name         X アカウント切替 v1.1.3
 // @namespace    local.hiro.tools
-// @version      1.1.2
+// @version      1.1.3
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -65,7 +65,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.1.2';
+    const VERSION = '1.1.3';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -1328,6 +1328,9 @@
         }
 
 
+        learnedSelf = repairCurrent() || learnedSelf;
+
+
         const contexts = switcherContexts();
 
         if (!contexts.length) {
@@ -1367,19 +1370,141 @@
         }
 
 
+        /*
+         * 現在のアカウントは、切替メニューの中で押せない項目になっていることがある
+         * （デスクトップ・iPad）。押せる要素だけを集めた上では拾えないので足す。
+         * アイコンと表示名もメニューの中か切替ボタンから取る
+         */
         const current = currentAccount();
 
         if (current) {
 
+            const details =
+                currentDetails(current.handle, contexts.map(context => context.container));
+
             found.push({
                 screenName: current.handle,
-                name: current.handle,
-                avatar: ''
+                name: details.name || current.handle,
+                avatar: details.avatar
             });
         }
 
 
         return remember(found, fullList) || learnedSelf;
+    }
+
+
+    /*
+     * 現在のアカウントのアイコンと表示名。
+     *   1. scopes（切替メニュー等）の中の、そのハンドルのアバター（押せない項目でもよい）
+     *   2. 切替ボタン（デスクトップ幅の左下。アバターと「表示名 @ハンドル」を持つ）
+     * 取れなければ空文字を返す
+     */
+    function currentDetails(handle, scopes) {
+
+        const key = normalizeHandle(handle);
+
+
+        for (const scope of scopes) {
+
+            for (const container of scope.querySelectorAll(`[data-testid^="${AVATAR_CONTAINER_PREFIX}"]`)) {
+
+                if (container.closest(`#${ROOT_ID}, #${PANEL_ID}`) || isPersistent(container)) {
+                    continue;
+                }
+
+
+                const testidHandle =
+                    container.getAttribute('data-testid').slice(AVATAR_CONTAINER_PREFIX.length);
+
+                const img = container.querySelector(AVATAR_IMG_SELECTOR);
+
+                if (normalizeHandle(testidHandle) !== key || !img) {
+                    continue;
+                }
+
+
+                /*
+                 * 表示名は、@ハンドルを含む最も近い入れ物から取る
+                 */
+                let holder = container.parentElement;
+
+                while (
+                    holder &&
+                    holder !== scope &&
+                    !textOf(holder).toLowerCase().includes('@' + key)
+                ) {
+                    holder = holder.parentElement;
+                }
+
+
+                const name =
+                    holder && holder !== scope ? nameOf(holder, handle) : '';
+
+                return {
+                    avatar: biggerAvatar(img.getAttribute('src')),
+                    name: name === handle ? '' : name
+                };
+            }
+        }
+
+
+        const opener = queryFirst(MENU_OPENER_SELECTORS);
+
+        const found = opener ? handleOf(opener) : null;
+
+        if (found && normalizeHandle(found.handle) === key) {
+
+            const name = nameOf(opener, found.handle);
+
+            return {
+                avatar: avatarOf(opener),
+                name: name === found.handle ? '' : name
+            };
+        }
+
+
+        return { avatar: '', name: '' };
+    }
+
+
+    /*
+     * v1.1.2 までに、アイコン無し・表示名がハンドルのまま覚えた現在のアカウントを、
+     * 読み込み直さなくても直す
+     */
+    function repairCurrent() {
+
+        const current = detectCurrentAccount();
+
+        if (!current) {
+            return false;
+        }
+
+
+        const saved =
+            loadAccounts()
+                .find(account => normalizeHandle(account.screenName) === normalizeHandle(current.handle));
+
+        if (!saved || (saved.avatar && saved.name && saved.name !== saved.screenName)) {
+            return false;
+        }
+
+
+        const details = currentDetails(current.handle, layerRoots());
+
+        if (!details.avatar && !details.name) {
+            return false;
+        }
+
+
+        return remember(
+            [{
+                screenName: saved.screenName,
+                name: details.name || saved.name,
+                avatar: details.avatar
+            }],
+            false
+        );
     }
 
 
