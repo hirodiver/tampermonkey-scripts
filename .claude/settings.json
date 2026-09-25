@@ -1,10 +1,20 @@
 {
   "permissions": {
     "allow": [
-      "mcp__github__merge_pull_request",
       "mcp__github__create_pull_request",
       "mcp__github__update_pull_request",
       "mcp__github__pull_request_read"
+    ],
+    "deny": [
+      "mcp__Gmail__send_message",
+      "mcp__Gmail__forward",
+      "mcp__Google_Drive__share_file"
+    ],
+    "ask": [
+      "mcp__github__merge_pull_request",
+      "mcp__Gmail",
+      "mcp__Google_Drive",
+      "mcp__Google_Calendar"
     ]
   }
 }
