@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.3.0
+// @name         X アカウント切替 v1.4.0
 // @namespace    local.hiro.tools
-// @version      1.3.0
+// @version      1.4.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -42,7 +42,8 @@
  *   - 個別ポスト等では左上がアイコンではなく「戻る」になり、ドロワーを開けない
  *     （v1.0.1 で、ホームでは動き、個別ポストでは動かないと報告あり）。
  *     このときは下のタブの「ホーム」でいったんホームへ移ってから開き、
- *     終わったら元のページへ戻る（v1.0.2）
+ *     終わったら元のページへ戻る（v1.0.2）。
+ *     ただし切替に成功したときは、ホームの「フォロー中」を開く（v1.4.0）
  *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
@@ -65,7 +66,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.3.0';
+    const VERSION = '1.4.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -84,7 +85,8 @@
      */
     const STORAGE_TUCKED = 'tm-x-switch-tucked';
 
-    const SESSION_RETURN = 'tm-x-switch-return';
+    // 切替を押した印（X が読み込み直した後に、ホームの「フォロー中」を開くため）
+    const SESSION_AFTER_SWITCH = 'tm-x-switch-after';
 
     // 最後に確かめられた現在のアカウント（左上のアイコンが無いページで使う）
     const SESSION_CURRENT = 'tm-x-switch-current';
@@ -125,11 +127,29 @@
     // これを過ぎても同じページに居たら、成否を確かめてボタンを戻す
     const RELOAD_TIMEOUT_MS = 8000;
 
-    // 切替後に元のページへ戻す。false ならホームのまま
-    const RETURN_TO_PREVIOUS_PAGE = true;
+    /*
+     * 切替後はホームの「フォロー中」タブを開く。
+     * false なら X に任せる（ホームのおすすめ等になる）
+     */
+    const OPEN_FOLLOWING_AFTER_SWITCH = true;
 
-    // 切替前のページを覚えておく期間（ミリ秒）。これより古い記録は捨てる
-    const RETURN_MAX_AGE_MS = 60 * 1000;
+    // 切替を押した印を有効とみなす期間（ミリ秒）。これより古い印は捨てる
+    const AFTER_SWITCH_MAX_AGE_MS = 60 * 1000;
+
+    // ホームで「フォロー中」タブが出るまで待つ上限（ミリ秒）
+    const FOLLOWING_TAB_WAIT_MS = 6000;
+
+    // ホームのタブ（x-following-tab.user.js と同じ探し方）
+    const HOME_TAB_SELECTORS = [
+        '[role="tablist"] [role="tab"]',
+        'nav[role="navigation"] [role="tab"]'
+    ];
+
+    // 「フォロー中」タブのラベル（空白を除いた完全一致）
+    const FOLLOWING_LABELS = [
+        'フォロー中',
+        'Following'
+    ];
 
     // 履歴で戻ったあと、元のページに着いたかを確かめるまでの待ち時間（ミリ秒）
     // 着いていなければ元のページを開き直す
@@ -1809,8 +1829,7 @@
 
         const startPath = location.pathname + location.search;
 
-        writeJson(sessionStorage, SESSION_RETURN, {
-            path: startPath,
+        writeJson(sessionStorage, SESSION_AFTER_SWITCH, {
             handle,
             at: Date.now()
         });
@@ -1832,7 +1851,7 @@
 
 
             /*
-             * 切替後は元のページ（左上のアイコンが無いことがある）へ戻るので、
+             * 左上のアイコンが無いページでも現在のアカウントが分かるよう、
              * 切替先を現在のアカウントとして記録しておく
              */
             writeJson(sessionStorage, SESSION_CURRENT, handle);
@@ -1869,7 +1888,7 @@
 
             takeSnapshot();
 
-            sessionStorage.removeItem(SESSION_RETURN);
+            sessionStorage.removeItem(SESSION_AFTER_SWITCH);
 
             if (hasOpenLayer()) {
                 closeLayers();
@@ -1902,11 +1921,25 @@
 
                     log('再読み込みなしで切り替わった');
 
-                    sessionStorage.removeItem(SESSION_RETURN);
-
-                    leaveTemporaryPages(startPath);
-
                     finishSwitch('切り替えました');
+
+
+                    if (OPEN_FOLLOWING_AFTER_SWITCH) {
+
+                        /*
+                         * 元のページへは戻らない（ホームへ移るので、履歴を戻す必要もない）
+                         */
+                        movedHome = false;
+
+                        openHomeFollowing();
+
+                    } else {
+
+                        sessionStorage.removeItem(SESSION_AFTER_SWITCH);
+
+                        leaveTemporaryPages(startPath);
+                    }
+
 
                     return;
                 }
@@ -1914,7 +1947,7 @@
 
                 log('切替を確認できない', '現在: @' + (currentHandle() || '不明'));
 
-                sessionStorage.removeItem(SESSION_RETURN);
+                sessionStorage.removeItem(SESSION_AFTER_SWITCH);
 
                 leaveTemporaryPages(startPath);
 
@@ -1934,41 +1967,114 @@
 
 
     /*
-     * 切替後、X はホームを開き直す。
-     * 切替前に居たページへ戻す
+     * 切替後、ホームの「フォロー中」タブを開く。
+     *   ホーム以外に居る: 下のタブ等の「ホーム」で移る。無ければ /home を開き直す
+     *   ホームに居る:     「フォロー中」タブが出るのを待ち、選ばれていなければ押す
+     * X が切替後にページを読み込み直した場合は、起動時（afterSwitchOnBoot）にここへ来る
      */
-    function restorePathIfNeeded() {
+    async function openHomeFollowing() {
 
-        const pending = readJson(sessionStorage, SESSION_RETURN, null);
+        if (location.pathname !== '/home') {
+
+            /*
+             * 読み込み直した直後はまだ描かれていないことがあるので、少し待つ
+             */
+            const link =
+                await waitFor(
+                    () => HOME_LINK_SELECTORS
+                        .flatMap(selector => [...document.querySelectorAll(selector)])
+                        .find(element => isVisible(element) && !element.closest(`#${ROOT_ID}, #${PANEL_ID}`)),
+                    MENU_WAIT_MS
+                );
+
+
+            if (link) {
+
+                log('切替後、ホームへ移る', location.pathname);
+
+                link.click();
+
+                await waitFor(() => location.pathname === '/home', MENU_WAIT_MS);
+            }
+
+
+            if (location.pathname !== '/home') {
+
+                log('切替後、ホームを開き直す', location.pathname);
+
+                /*
+                 * 読み込み直した先で「フォロー中」を開くよう、印を残しておく
+                 */
+                writeJson(sessionStorage, SESSION_AFTER_SWITCH, { at: Date.now() });
+
+                location.replace('/home');
+
+                return;
+            }
+        }
+
+
+        sessionStorage.removeItem(SESSION_AFTER_SWITCH);
+
+
+        const tab =
+            await waitFor(
+                () => {
+                    const found = HOME_TAB_SELECTORS
+                        .flatMap(selector => [...document.querySelectorAll(selector)])
+                        .find(element =>
+                            FOLLOWING_LABELS.includes(textOf(element).replace(/\s+/g, ''))
+                        );
+
+                    return found && isVisible(found) ? found : null;
+                },
+                FOLLOWING_TAB_WAIT_MS
+            );
+
+
+        if (!tab) {
+
+            log('「フォロー中」タブが見つからない');
+
+            return;
+        }
+
+
+        if (tab.getAttribute('aria-selected') === 'true') {
+
+            log('「フォロー中」は選ばれている');
+
+            return;
+        }
+
+
+        log('「フォロー中」を開く');
+
+        tab.click();
+    }
+
+
+    /*
+     * 起動時: 切替を押した直後（X が読み込み直した）なら、ホームの「フォロー中」を開く
+     */
+    function afterSwitchOnBoot() {
+
+        const pending = readJson(sessionStorage, SESSION_AFTER_SWITCH, null);
 
         if (!pending) {
             return;
         }
 
 
-        sessionStorage.removeItem(SESSION_RETURN);
+        if (!OPEN_FOLLOWING_AFTER_SWITCH || Date.now() - (pending.at || 0) > AFTER_SWITCH_MAX_AGE_MS) {
 
+            sessionStorage.removeItem(SESSION_AFTER_SWITCH);
 
-        if (!RETURN_TO_PREVIOUS_PAGE) {
             return;
         }
 
 
-        if (!pending.path || Date.now() - (pending.at || 0) > RETURN_MAX_AGE_MS) {
-            return;
-        }
-
-
-        const here = location.pathname + location.search;
-
-        if (pending.path === here) {
-            return;
-        }
-
-
-        if (location.pathname === '/home' || location.pathname === '/') {
-            location.replace(pending.path);
-        }
+        openHomeFollowing();
     }
 
 
@@ -2264,7 +2370,8 @@
     line-height: 1;
 }
 .corners button[aria-pressed="true"] { background: #f4f4f5; border-color: #f4f4f5; color: #0a0a0b; }
-.dock { touch-action: none; cursor: grab; }
+.dock { touch-action: none; cursor: grab; -webkit-user-select: none; user-select: none; }
+.dock img { -webkit-user-drag: none; }
 .dock.dragging { cursor: grabbing; opacity: 0.85; }
 .dock.dragging .av:active { transform: none; }
 .toast {
@@ -2587,6 +2694,8 @@
 
             start = null;
 
+            window.removeEventListener('dragstart', stopNativeDrag, true);
+
             window.removeEventListener('pointermove', onMove, true);
 
             window.removeEventListener('pointerup', onUp, true);
@@ -2654,12 +2763,30 @@
             dragging = false;
 
 
+            /*
+             * マウスでは押した時点で標準のドラッグ・文字選択を始めさせない
+             * （クリックは止まらない。指の操作はスクロールを touch-action で止めている）
+             */
+            if (event.pointerType === 'mouse') {
+                event.preventDefault();
+            }
+
+            window.addEventListener('dragstart', stopNativeDrag, true);
+
             window.addEventListener('pointermove', onMove, true);
 
             window.addEventListener('pointerup', onUp, true);
 
             window.addEventListener('pointercancel', onCancel, true);
         });
+
+
+        /*
+         * マウスで引っぱると、ブラウザ標準のドラッグ（画像や、ドックの下にある
+         * ページのリンク）が始まって、動かすのが取り消される（pointercancel）。
+         * ドックを押している間は標準のドラッグを止める
+         */
+        const stopNativeDrag = event => event.preventDefault();
 
 
         element.addEventListener(
@@ -2809,6 +2936,8 @@
                 img.src = account.avatar;
 
                 img.alt = '';
+
+                img.draggable = false;
 
 
                 img.addEventListener('error', () => {
@@ -3473,7 +3602,7 @@
         }
 
 
-        restorePathIfNeeded();
+        afterSwitchOnBoot();
 
         harvest();
 
