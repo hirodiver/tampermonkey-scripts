@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.0.0
+// @name         X アカウント切替 v1.0.1
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.0.1
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -33,17 +33,24 @@
  *     固まらないようにする
  *   - 初回に勝手にドロワーを開かない（読み込みはメニューから手動）
  *
+ * ■ iPhone の実機診断で分かったこと（v1.0.1）
+ *   - モバイル幅では、上のバー（TopNavBar）・下のタブ（BottomBar）・投稿ボタンも
+ *     #layers の中に常にある。#layers ＝ メニューだけの場所ではない
+ *   - 左上のアイコン（DashButton_ProfileIcon_Link）のアバターの testid は
+ *     UserAvatar-Container-unknown で、ハンドルを持たない。
+ *     aria-label も「プロフィールメニュー 表示名」で、@ハンドルは無い
+ *
  * ■ 未確認の点
- *   iPhone の X（モバイル版ウェブ）のドロワーと、アカウント一覧シートの
- *   実際の DOM は確認できていない。testid ではなく
+ *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
  *   「アバターと @ハンドルを持つ、押せる要素」「アカウント追加・ログアウトの
  *   リンクと同じ入れ物にある」という構造で狙っている。
  *
  * ■ 診断（iPhone でも使える）
  *   URL の末尾に #tmswitch を付けて開くと、画面下に診断パネルが出る。
  *   （例: https://x.com/home#tmswitch ）
- *   そのまま X の切替メニュー（左上のアイコン → アカウント一覧）を開いてから
- *   「コピー」を押すと、メニューの構造と直近の切替の記録が取れる。
+ *   パネルの「読込を試す」を押し、終わってから「コピー」を押すと、
+ *   開いたドロワーの構造と、どこで止まったかの記録が取れる。
+ *   記録はタブを閉じるまで残るので、失敗した後で #tmswitch を開いてもよい。
  *   コンソールが使える環境なら __tmXSwitch.dump() でも同じものが出る。
  */
 
@@ -54,7 +61,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.0.0';
+    const VERSION = '1.0.1';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -71,6 +78,11 @@
     const SESSION_HIDDEN = 'tm-x-switch-hidden';
 
     const SESSION_RETURN = 'tm-x-switch-return';
+
+    // 診断の記録（再読み込みしても残す）
+    const SESSION_LOG = 'tm-x-switch-log';
+
+    const SESSION_SNAPSHOT = 'tm-x-switch-snapshot';
 
     // ドックの置き場所。先頭が既定
     const POSITIONS = [
@@ -115,7 +127,7 @@
     const PANEL_REFRESH_MS = 1500;
 
     // 重なり層の構造を記録する行数の上限（診断用）
-    const SNAPSHOT_MAX_LINES = 160;
+    const SNAPSHOT_MAX_LINES = 300;
 
     /*
      * X のメニュー・ドロワー・シートが描かれる場所（上から順に試す）。
@@ -129,6 +141,24 @@
         '[role="dialog"]',
         '[role="menu"]',
         '[aria-modal="true"]'
+    ];
+
+    /*
+     * 重なり層に常に居るもの（実機診断で確認）。
+     * メニューではないので、切替先や「アカウント」ボタンを探すときは除く
+     */
+    const PERSISTENT_SELECTORS = [
+        '[data-testid="TopNavBar"]',
+        '[data-testid="BottomBar"]',
+        '[data-testid="FloatingActionButtonBase"]',
+        'aside[role="complementary"]'
+    ];
+
+    // 診断の構造記録では、上に加えてこれも省く（タブ・新着ピル）
+    const SNAPSHOT_SKIP_SELECTORS = [
+        ...PERSISTENT_SELECTORS,
+        'div[role="grid"]',
+        '[role="status"]'
     ];
 
     /*
@@ -193,7 +223,11 @@
 
     // ドロワーの中の「アカウント一覧を開く」ボタン（aria-label の部分一致）
     const MORE_ACCOUNTS_LABEL =
-        /アカウント|account/i;
+        /アカウント|account|切り替|切替|switch/i;
+
+    // 上に当たっても「一覧を開く」ボタンではないもの
+    const MORE_ACCOUNTS_EXCLUDE =
+        /管理|作成|追加|ログアウト|Manage|Create|Add|Log out/i;
 
     // アカウント一覧が独立したページとして開く場合のパス
     const SWITCH_PAGE_PATTERN = /^\/account\/switch\/?$/;
@@ -228,6 +262,11 @@
 
     const AVATAR_CONTAINER_PREFIX = 'UserAvatar-Container-';
 
+    // アバターの testid に入る、ハンドルではない値（実機で確認）
+    const PLACEHOLDER_HANDLES = [
+        'unknown'
+    ];
+
 
     // ============================================================
     // 状態
@@ -250,6 +289,38 @@
     const switchLog = [];
 
     let lastSnapshot = null;
+
+    /*
+     * 前回までの記録を引き継ぐ（失敗した後で診断を開いても見えるように）
+     */
+    (function restoreDiagnostics() {
+
+        const savedLog = readJsonEarly(SESSION_LOG);
+
+        if (Array.isArray(savedLog)) {
+            switchLog.push(...savedLog.slice(-SWITCH_LOG_MAX));
+        }
+
+
+        const savedSnapshot = readJsonEarly(SESSION_SNAPSHOT);
+
+        if (savedSnapshot && Array.isArray(savedSnapshot.lines)) {
+            lastSnapshot = savedSnapshot;
+        }
+    })();
+
+
+    function readJsonEarly(key) {
+
+        try {
+
+            return JSON.parse(sessionStorage.getItem(key) || 'null');
+
+        } catch {
+
+            return null;
+        }
+    }
 
 
     // ============================================================
@@ -343,6 +414,8 @@
 
         switchLog.push({
             時刻: new Date().toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }),
+
+            ページ: location.pathname,
             段階: step,
             詳細: detail || ''
         });
@@ -351,6 +424,9 @@
         if (switchLog.length > SWITCH_LOG_MAX) {
             switchLog.shift();
         }
+
+
+        writeJson(sessionStorage, SESSION_LOG, switchLog);
     }
 
 
@@ -452,7 +528,10 @@
                 container.getAttribute('data-testid')
                     .slice(AVATAR_CONTAINER_PREFIX.length);
 
-            if (/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
+            if (
+                /^[A-Za-z0-9_]{1,15}$/.test(handle) &&
+                !PLACEHOLDER_HANDLES.includes(handle.toLowerCase())
+            ) {
                 return { handle, source: 'アバターのtestid' };
             }
         }
@@ -483,6 +562,19 @@
         const img = element.querySelector(AVATAR_IMG_SELECTOR);
 
         return img ? biggerAvatar(img.getAttribute('src')) : '';
+    }
+
+
+    /*
+     * アバター画像の URL から大きさの違いを除いたもの。
+     * 同じアカウントなら _normal / _bigger などが違っても一致する
+     */
+    function avatarKey(url) {
+
+        return String(url || '')
+            .replace(/[?#].*$/, '')
+            .replace(/_(normal|bigger|mini|reasonably_small|x96|\d+x\d+)(\.[a-z]+)?$/i, '')
+            .replace(/\.[a-z]+$/i, '');
     }
 
 
@@ -527,7 +619,10 @@
         }
 
 
-        for (const opener of [queryFirst(MENU_OPENER_SELECTORS), findDrawerOpener()]) {
+        const drawerOpener = findDrawerOpener();
+
+
+        for (const opener of [queryFirst(MENU_OPENER_SELECTORS), drawerOpener]) {
 
             if (!opener) {
                 continue;
@@ -538,6 +633,86 @@
 
             if (found) {
                 return { handle: found.handle, source: '切替ボタン（' + found.source + '）' };
+            }
+        }
+
+
+        const fromDrawer = currentFromOpenDrawer();
+
+        if (fromDrawer) {
+            return { handle: fromDrawer.handle, source: '開いているドロワーのプロフィール' };
+        }
+
+
+        /*
+         * モバイル幅の左上のアイコンはハンドルを持たない（実機で確認）。
+         * 覚えている一覧と、アバター画像・表示名で突き合わせる
+         */
+        if (drawerOpener) {
+
+            const accounts = loadAccounts();
+
+            const img = drawerOpener.querySelector(AVATAR_IMG_SELECTOR);
+
+            const key = img ? avatarKey(img.getAttribute('src')) : '';
+
+
+            if (key) {
+
+                const byAvatar =
+                    accounts.filter(account => account.avatar && avatarKey(account.avatar) === key);
+
+                if (byAvatar.length === 1) {
+                    return { handle: byAvatar[0].screenName, source: '左上のアイコンの画像' };
+                }
+            }
+
+
+            const label = drawerOpener.getAttribute('aria-label') || '';
+
+            const byName =
+                accounts.filter(account =>
+                    account.name &&
+                    account.name !== account.screenName &&
+                    label.endsWith(' ' + account.name)
+                );
+
+            if (byName.length === 1) {
+                return { handle: byName[0].screenName, source: '左上のアイコンの表示名' };
+            }
+        }
+
+
+        return null;
+    }
+
+
+    /*
+     * ドロワーが開いていれば、その中の「自分のプロフィール」
+     * （/ハンドル へのリンクで、@ハンドルを表示しているもの）から取る
+     */
+    function currentFromOpenDrawer() {
+
+        for (const overlay of openOverlays()) {
+
+            for (const link of overlay.querySelectorAll('a[href]')) {
+
+                const match =
+                    /^\/([A-Za-z0-9_]{1,15})$/.exec(link.getAttribute('href') || '');
+
+                if (!match) {
+                    continue;
+                }
+
+
+                if (textOf(link).toLowerCase().includes('@' + match[1].toLowerCase())) {
+
+                    return {
+                        handle: match[1],
+                        name: nameOf(link, match[1]),
+                        avatar: avatarOf(link)
+                    };
+                }
             }
         }
 
@@ -596,6 +771,53 @@
 
 
         return roots;
+    }
+
+
+    function isPersistent(element) {
+
+        return !!element.closest(PERSISTENT_SELECTORS.join(','));
+    }
+
+
+    /*
+     * いま開いているメニュー・ドロワー・シート
+     */
+    function openOverlays() {
+
+        const overlays = [];
+
+
+        for (const layer of layerRoots()) {
+
+            if (layer.matches(LAYER_FALLBACK_SELECTORS.join(','))) {
+
+                overlays.push(layer);
+
+                continue;
+            }
+
+
+            for (const element of layer.querySelectorAll(LAYER_FALLBACK_SELECTORS.join(','))) {
+
+                if (!overlays.some(o => o.contains(element)) && !isPersistent(element)) {
+                    overlays.push(element);
+                }
+            }
+        }
+
+
+        if (isSwitchPage()) {
+
+            const main = document.querySelector('main');
+
+            if (main && !overlays.includes(main)) {
+                overlays.push(main);
+            }
+        }
+
+
+        return overlays;
     }
 
 
@@ -661,6 +883,11 @@
         for (const element of scope.querySelectorAll(CLICKABLE_SELECTOR)) {
 
             if (element.closest(`#${ROOT_ID}, #${PANEL_ID}`)) {
+                continue;
+            }
+
+
+            if (isPersistent(element)) {
                 continue;
             }
 
@@ -788,14 +1015,20 @@
 
         /*
          * 構造で探す: 画面上端にあり、アバターを含む押せる要素。
-         * 重なり層の中のもの（ドロワー内の自分のアイコン等）と、
-         * 投稿の中のもの（投稿者のアイコン。押すとプロフィールへ飛ぶ）は除く
+         * 開いているメニュー・ドロワーの中のもの（ドロワー内の自分のアイコン等）と、
+         * 投稿の中のもの（投稿者のアイコン。押すとプロフィールへ飛ぶ）は除く。
+         * モバイル幅の上のバーは #layers の中にあるので、#layers 全体は除かない
          */
-        const layers = layerRoots();
+        const overlays = openOverlays();
 
         for (const element of document.querySelectorAll(CLICKABLE_SELECTOR)) {
 
-            if (layers.some(layer => layer.contains(element))) {
+            if (overlays.some(overlay => overlay.contains(element))) {
+                continue;
+            }
+
+
+            if (element.closest(`#${ROOT_ID}, #${PANEL_ID}`)) {
                 continue;
             }
 
@@ -829,9 +1062,24 @@
      */
     function findMoreAccountsButton() {
 
-        for (const layer of layerRoots()) {
+        /*
+         * 開いているドロワーの中を探す。
+         * ドロワーが dialog 等の役割を持たない場合に備え、
+         * 見つからなければ重なり層全体（常に居るバーは除く）も見る
+         */
+        const overlays = openOverlays();
 
-            for (const element of layer.querySelectorAll(CLICKABLE_SELECTOR)) {
+        const scopes = overlays.length ? overlays : layerRoots();
+
+
+        for (const scope of scopes) {
+
+            for (const element of scope.querySelectorAll(CLICKABLE_SELECTOR)) {
+
+                if (isPersistent(element) || !isVisible(element)) {
+                    continue;
+                }
+
 
                 const href = element.getAttribute('href') || '';
 
@@ -840,14 +1088,15 @@
                 }
 
 
-                const label = element.getAttribute('aria-label') || '';
+                const label =
+                    element.getAttribute('aria-label') ||
+                    (textOf(element).length <= 20 ? textOf(element) : '');
 
                 if (
                     MORE_ACCOUNTS_LABEL.test(label) &&
+                    !MORE_ACCOUNTS_EXCLUDE.test(label) &&
                     !HANDLE_PATTERN.test(label) &&
-                    !isFullListMarker(element) &&
-                    !/ログアウト|Log out/i.test(label) &&
-                    isVisible(element)
+                    !isFullListMarker(element)
                 ) {
                     return element;
                 }
@@ -918,10 +1167,34 @@
      */
     function harvest() {
 
+        /*
+         * ドロワーが開いていたら、そこに出ている自分のアカウントを覚える。
+         * 左上のアイコンはハンドルを持たないので、以後は画像で突き合わせる
+         */
+        const drawerSelf = currentFromOpenDrawer();
+
+        let learnedSelf = false;
+
+        if (drawerSelf) {
+
+            const opener = findDrawerOpener();
+
+            learnedSelf =
+                remember(
+                    [{
+                        screenName: drawerSelf.handle,
+                        name: drawerSelf.name,
+                        avatar: drawerSelf.avatar || (opener ? avatarOf(opener) : '')
+                    }],
+                    false
+                );
+        }
+
+
         const contexts = switcherContexts();
 
         if (!contexts.length) {
-            return false;
+            return learnedSelf;
         }
 
 
@@ -953,7 +1226,7 @@
 
 
         if (!found.length) {
-            return false;
+            return learnedSelf;
         }
 
 
@@ -969,7 +1242,7 @@
         }
 
 
-        return remember(found, fullList);
+        return remember(found, fullList) || learnedSelf;
     }
 
 
@@ -983,6 +1256,10 @@
         for (const account of found) {
 
             const key = normalizeHandle(account.screenName);
+
+            if (!key || PLACEHOLDER_HANDLES.includes(key)) {
+                continue;
+            }
 
             const previous =
                 byHandle.get(key) ||
@@ -1097,9 +1374,20 @@
                 MENU_WAIT_MS
             );
 
+        takeSnapshot();
+
+
         if (!first) {
 
-            log('ドロワーの中に何も見つからない');
+            log(
+                'ドロワーの中に切替先も「アカウント」ボタンも見つからない',
+                '開いている入れ物: ' + openOverlays().length + '件' +
+                ' / 中の候補: ' +
+                (openOverlays()
+                    .flatMap(overlay => accountEntries(overlay))
+                    .map(entry => '@' + entry.handle)
+                    .join(' ') || 'なし')
+            );
 
             return null;
         }
@@ -1117,7 +1405,17 @@
         first.click();
 
 
-        return waitFor(want, MENU_WAIT_MS);
+        const found = await waitFor(want, MENU_WAIT_MS);
+
+        takeSnapshot();
+
+
+        if (!found) {
+            log('アカウント一覧の中に見つからない', 'ページ: ' + location.pathname);
+        }
+
+
+        return found;
     }
 
 
@@ -1199,6 +1497,8 @@
         } catch (error) {
 
             log('失敗', error.message);
+
+            takeSnapshot();
 
             sessionStorage.removeItem(SESSION_RETURN);
 
@@ -1328,9 +1628,36 @@
          * ドロワーに他のアカウントが一部だけ見えている段階では止まらない。
          * 最後まで出なかったら、見えている分だけ覚える
          */
-        const opened =
+        let opened =
             await openSwitcher(() => withEntries(true)) ||
             withEntries(false);
+
+
+        /*
+         * 一覧を開けなかった場合、開いているドロワーに他のアカウントの
+         * アイコンが見えていれば、その分だけ覚える（足すだけ）
+         */
+        if (!opened) {
+
+            const visible =
+                openOverlays().flatMap(overlay => accountEntries(overlay));
+
+            if (visible.length) {
+
+                log('ドロワーに見えている分だけ覚える', visible.map(entry => '@' + entry.handle).join(' '));
+
+                remember(
+                    visible.map(entry => ({
+                        screenName: entry.handle,
+                        name: nameOf(entry.element, entry.handle),
+                        avatar: avatarOf(entry.element)
+                    })),
+                    false
+                );
+
+                opened = true;
+            }
+        }
 
 
         if (opened) {
@@ -1870,9 +2197,7 @@
 
                     const changed = harvest();
 
-                    if (wantsPanel()) {
-                        takeSnapshot();
-                    }
+                    takeSnapshot();
 
 
                     render(changed);
@@ -1969,12 +2294,17 @@
 
     /*
      * 重なり層の骨格を残す。role / testid / aria-label / href / アバター画像を
-     * 持つ要素だけを、入れ子の深さ付きで並べる。
-     * ドロワーを閉じた後でもコピーできるよう、中身があるときに取っておく
+     * 持つ要素と、@ハンドルを含む文字を、入れ子の深さ付きで並べる。
+     *
+     * モバイル幅では上下のバーが常に重なり層に居る（実機で確認）ので、それは省く。
+     * 省いた後に何か残っていれば、メニューやドロワーが開いているとみなして記録する。
+     * 閉じた後・再読み込みした後でもコピーできるよう、タブ単位で保存する
      */
     function takeSnapshot() {
 
         const lines = [];
+
+        const skip = SNAPSHOT_SKIP_SELECTORS.join(',');
 
 
         const walk = (element, depth) => {
@@ -1984,34 +2314,50 @@
             }
 
 
+            if (element.matches(skip)) {
+                return;
+            }
+
+
+            const clickable = element.matches(CLICKABLE_SELECTOR);
+
+            const own =
+                [...element.childNodes]
+                    .filter(node => node.nodeType === Node.TEXT_NODE)
+                    .map(node => node.textContent.trim())
+                    .join(' ')
+                    .slice(0, 30);
+
+
             const interesting =
+                clickable ||
                 element.hasAttribute('role') ||
                 element.hasAttribute('data-testid') ||
                 element.hasAttribute('aria-label') ||
                 element.hasAttribute('href') ||
                 element.matches(AVATAR_IMG_SELECTOR) ||
-                element.tagName === 'BUTTON';
+                own.includes('@');
 
 
             if (interesting) {
 
-                const own =
-                    [...element.childNodes]
-                        .filter(node => node.nodeType === Node.TEXT_NODE)
-                        .map(node => node.textContent.trim())
-                        .join(' ')
-                        .slice(0, 30);
+                let line =
+                    '  '.repeat(Math.min(depth, 20)) +
+                    describe(element).replace(/ 「.*」$/, '');
 
 
-                let line = '  '.repeat(Math.min(depth, 20)) + describe(element).replace(/ 「.*」$/, '');
+                /*
+                 * 押せる要素は中の文字をまとめて出す（名前や @ハンドルが入れ子の奥にあるため）
+                 */
+                const text = clickable ? textOf(element).slice(0, 40) : own;
 
-                if (own) {
-                    line += ' 「' + own + '」';
+                if (text) {
+                    line += ' 「' + text + '」';
                 }
 
 
                 if (element.matches(AVATAR_IMG_SELECTOR)) {
-                    line += ' [アバター]';
+                    line += ' [アバター ' + (element.getAttribute('src') || '').split('/').slice(-2).join('/') + ']';
                 }
 
 
@@ -2026,17 +2372,44 @@
 
 
         for (const layer of layerRoots()) {
-            walk(layer, 0);
+
+            for (const child of layer.children) {
+                walk(child, 0);
+            }
         }
 
 
-        if (lines.length > 1) {
-
-            lastSnapshot = {
-                at: new Date().toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }),
-                lines
-            };
+        if (!lines.length) {
+            return;
         }
+
+
+        /*
+         * メニュー・ドロワーを写した記録は、小さな通知などで上書きしない
+         * （同じくメニュー・ドロワーを写したときか、1分経ったときだけ差し替える）
+         */
+        const overlay = openOverlays().length > 0;
+
+        if (
+            lastSnapshot &&
+            lastSnapshot.overlay &&
+            !overlay &&
+            Date.now() - (lastSnapshot.savedAt || 0) < 60 * 1000
+        ) {
+            return;
+        }
+
+
+        lastSnapshot = {
+            at: new Date().toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }),
+            savedAt: Date.now(),
+            page: location.pathname,
+            overlay,
+            lines
+        };
+
+
+        writeJson(sessionStorage, SESSION_SNAPSHOT, lastSnapshot);
     }
 
 
@@ -2090,6 +2463,14 @@
 
         lines.push('■ 重なり層: ' + layers.length + '件（' + layers.map(layer => describe(layer).slice(0, 40)).join(', ') + '）');
 
+        const overlays = openOverlays();
+
+        lines.push('■ いま開いているメニュー・ドロワー: ' + overlays.length + '件');
+
+        for (const overlay of overlays) {
+            lines.push('  ' + describe(overlay).slice(0, 80));
+        }
+
 
         const contexts = switcherContexts();
 
@@ -2115,11 +2496,21 @@
 
         lines.push('■ 重なり層の中の、切替に使える候補');
 
+        let candidates = 0;
+
         for (const layer of layers) {
 
             for (const entry of accountEntries(layer)) {
+
+                candidates++;
+
                 lines.push('  @' + entry.handle + '（' + entry.source + '）' + describe(entry.element));
             }
+        }
+
+
+        if (!candidates) {
+            lines.push('  （なし）');
         }
 
 
@@ -2132,7 +2523,12 @@
         }
 
         for (const entry of switchLog) {
-            lines.push('  ' + entry.時刻 + ' ' + entry.段階 + (entry.詳細 ? ': ' + entry.詳細 : ''));
+            lines.push(
+                '  ' + entry.時刻 +
+                (entry.ページ ? ' [' + entry.ページ + ']' : '') +
+                ' ' + entry.段階 +
+                (entry.詳細 ? ': ' + entry.詳細 : '')
+            );
         }
 
 
@@ -2140,13 +2536,17 @@
 
         if (lastSnapshot) {
 
-            lines.push('■ 重なり層の構造（' + lastSnapshot.at + ' 時点、' + lastSnapshot.lines.length + '行）');
+            lines.push(
+                '■ 最後に開いていたメニュー・ドロワーの構造（' + lastSnapshot.at + ' 時点' +
+                (lastSnapshot.page ? '、' + lastSnapshot.page : '') +
+                '、' + lastSnapshot.lines.length + '行。上下のバーは省略）'
+            );
 
             lines.push(...lastSnapshot.lines);
 
         } else {
 
-            lines.push('■ 重なり層の構造: まだ記録なし（切替メニューを開くと記録される）');
+            lines.push('■ メニュー・ドロワーの構造: まだ記録なし（「読込を試す」か、左上のアイコンを押すと記録される）');
         }
 
 
@@ -2233,8 +2633,8 @@
                     position: 'fixed',
                     left: '8px',
                     right: '8px',
-                    top: '8px',
-                    maxHeight: '45vh',
+                    bottom: '8px',
+                    maxHeight: '40vh',
                     overflow: 'auto',
                     zIndex: '2147483647',
                     padding: '10px',
@@ -2307,8 +2707,13 @@
             });
 
 
+        /*
+         * 左上のアイコンを隠さないよう、パネルは画面下に置く。
+         * 下にあるドックの「読込」を覆うので、同じ操作をここにも置く
+         */
         buttons.append(
             copyButton,
+            makePanelButton('読込を試す', loadFromNative),
             makePanelButton('閉じる', closePanel)
         );
 
@@ -2324,7 +2729,7 @@
             area.style,
             {
                 width: '100%',
-                height: '28vh',
+                height: '24vh',
                 background: '#111',
                 color: '#eee',
                 border: '1px solid #444',

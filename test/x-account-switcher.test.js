@@ -14,6 +14,7 @@ const path = require('path');
 //
 //   デスクトップ幅: 左下のアカウントボタン → #layers にメニュー
 //   モバイル幅:     左上のアイコン → #layers にドロワー → 「アカウント」→ 一覧シート
+//                  （#layers に上下のバーが常にある。実機診断 v1.0.0 で確認）
 //
 // Trusted Types を強制する CSP を付けて配信し、innerHTML を使うと落ちる状態で流す。
 
@@ -285,7 +286,7 @@ const toastText = (page) =>
     check('診断: dump() が現在のアカウントを出す', /現在のアカウント: @carol/.test(report), report.slice(0, 300));
     check('診断: 切替メニューの入れ物と候補を出す', /切替メニューと判定した入れ物: 1件/.test(report) && /@bob（アバターのtestid）/.test(report));
     check('診断: 直近の切替の記録を出す', /切替先を押す/.test(report) && /失敗: 切替メニューに @ghost が見つからない/.test(report));
-    check('診断: 重なり層の構造を記録する', /重なり層の構造（/.test(report) && /\[アバター\]/.test(report));
+    check('診断: 開いていたメニューの構造を記録する', /最後に開いていたメニュー・ドロワーの構造（/.test(report) && /\[アバター /.test(report));
     await page.evaluate(() => closeAll());
 
     await page.evaluate(() => { location.hash = '#tmswitch'; });
@@ -348,28 +349,52 @@ const toastText = (page) =>
   // ==========================================================
   // モバイル幅（iPhone 相当）
   // ==========================================================
+  //
+  // 実機診断（v1.0.0、iPhone）で分かった構造を再現する:
+  //   - #layers の中に、上のバー（TopNavBar）・下のタブ（BottomBar）・投稿ボタン・
+  //     タブの grid・新着ピルが常にある
+  //   - 左上のアイコンは button[data-testid=DashButton_ProfileIcon_Link]、
+  //     aria-label は「プロフィールメニュー 表示名」、アバターの testid は
+  //     UserAvatar-Container-unknown（ハンドルを持たない）
+  // ドロワーとアカウント一覧シートの中身は未確認なので推測で組んでいる。
   const mobileSetup = (opts) => {
     const root = document.getElementById('react-root');
+    const names = { alice: 'Alice', bob: 'Bob', carol: 'Carol' };
+
+    // メニュー類だけを閉じる（常に居るバーは残す）
+    window.closeAll = () => layers.querySelectorAll('.overlay').forEach((el) => el.remove());
+
+    window.selfAvatar = (handle) =>
+      h('div', { 'data-testid': 'UserAvatar-Container-unknown' },
+        h('div', { role: 'presentation' },
+          h('img', { src: 'https://pbs.twimg.com/profile_images/1/' + handle + '_normal.jpg', alt: '' })));
 
     window.current = 'alice';
     window.applyCurrent = (handle) => {
       window.current = handle;
       const opener = document.getElementById('dashButton');
-      opener.replaceChildren(avatar(handle));
+      opener.setAttribute('aria-label', 'プロフィールメニュー ' + names[handle]);
+      opener.replaceChildren(selfAvatar(handle));
+      if (location.pathname === '/account/switch') {
+        history.replaceState(null, '', '/home');
+        document.getElementById('sheet')?.remove();
+      }
     };
 
     // ドロワー: 自分（プロフィールへのリンク）、他のアカウント1件（アバターだけ）、「アカウント」ボタン
     window.openDrawer = () => {
       events.push('open-drawer');
       closeAll();
-      const others = ['alice', 'bob', 'carol'].filter((x) => x !== window.current).slice(0, 1);
-      layers.append(h('div', { role: 'dialog', 'aria-modal': 'true', id: 'drawer' },
+      const others = ['alice', 'bob', 'carol'].filter((x) => x !== window.current).slice(0, opts.noMoreButton ? 2 : 1);
+      layers.append(h('div', { role: 'dialog', 'aria-modal': 'true', id: 'drawer', class: 'overlay' },
         h('div', { 'data-testid': 'mask', onclick: () => { events.push('mask'); closeAll(); } }),
-        h('a', { href: '/' + window.current, id: 'drawerMe', onclick: (e) => { e.preventDefault(); events.push('nav:/' + window.current); } }, avatar(window.current)),
+        h('a', { href: '/' + window.current, id: 'drawerMe', onclick: (e) => { e.preventDefault(); events.push('nav:/' + window.current); } },
+          avatar(window.current), h('span', {}, names[window.current]), h('span', {}, '@' + window.current)),
         ...others.map((o) => h('div', { role: 'button', id: 'drawer-' + o, onclick: () => switchedTo(o) }, avatar(o))),
-        opts.routeSheet ?
-          h('a', { href: '/account/switch', 'aria-label': 'アカウント', id: 'drawerMore', onclick: (e) => { e.preventDefault(); window.openSheet(); } }, '⋯') :
-          h('div', { role: 'button', 'aria-label': 'アカウント', id: 'drawerMore', onclick: () => window.openSheet() }, '⋯'),
+        opts.noMoreButton ? '' :
+          opts.routeSheet ?
+            h('a', { href: '/account/switch', 'aria-label': 'アカウント', id: 'drawerMore', onclick: (e) => { e.preventDefault(); window.openSheet(); } }, '⋯') :
+            h('div', { role: 'button', 'aria-label': 'アカウント', id: 'drawerMore', onclick: () => window.openSheet() }, '⋯'),
         h('nav', {},
           h('a', { href: '/' + window.current }, 'プロフィール'),
           h('a', { href: '/i/bookmarks' }, 'ブックマーク'))));
@@ -385,30 +410,39 @@ const toastText = (page) =>
       closeAll();
       if (opts.routeSheet) history.pushState(null, '', '/account/switch');
       const parent = opts.routeSheet ? document.querySelector('main') : layers;
-      parent.append(h('div', opts.routeSheet ? { id: 'sheet' } : { role: 'dialog', 'aria-modal': 'true', id: 'sheet' },
+      parent.append(h('div', opts.routeSheet ? { id: 'sheet' } : { role: 'dialog', 'aria-modal': 'true', id: 'sheet', class: 'overlay' },
         ...['alice', 'bob', 'carol'].map((hd) =>
-          userCell(hd, hd[0].toUpperCase() + hd.slice(1), () => { if (hd !== window.current) switchedTo(hd); }, 'sheet-' + hd)),
+          userCell(hd, names[hd], () => { if (hd !== window.current) switchedTo(hd); }, 'sheet-' + hd)),
         h('a', { href: '/i/flow/signup' }, '新しいアカウントを作成'),
         h('a', { href: '/i/flow/login' }, '既存のアカウントを追加')));
     };
-    window.applyCurrentBase = window.applyCurrent;
-    window.applyCurrent = (handle) => {
-      window.applyCurrentBase(handle);
-      if (location.pathname === '/account/switch') {
-        history.replaceState(null, '', '/home');
-        document.getElementById('sheet')?.remove();
-      }
-    };
 
     const openerAttrs = {
-      id: 'dashButton', role: 'button', 'aria-label': 'プロフィールとその他のメニュー',
+      id: 'dashButton', role: 'button', 'aria-label': 'プロフィールメニュー Alice',
       style: 'position:fixed;top:8px;left:8px;width:32px;height:32px',
       onclick: () => window.openDrawer()
     };
     if (opts.testid) openerAttrs['data-testid'] = 'DashButton_ProfileIcon_Link';
 
+    // 常に居るもの（実機診断の並び）
+    layers.append(
+      h('aside', { role: 'complementary', 'aria-label': 'ポストを作成' },
+        h('div', { 'data-testid': 'FloatingActionButtonBase' },
+          h('a', { role: 'link', 'data-testid': 'FloatingActionButtons_Tweet_Button', 'aria-label': 'ポストを作成', href: '/compose/post' }))),
+      h('div', { 'data-testid': 'BottomBar' },
+        h('nav', { role: 'navigation', 'aria-label': 'メインメニュー' },
+          h('a', { role: 'link', 'data-testid': 'AppTabBar_Home_Link', 'aria-label': 'ホーム', href: '/home' }),
+          h('a', { role: 'link', 'data-testid': 'AppTabBar_Notifications_Link', 'aria-label': '通知', href: '/notifications' }))),
+      h('div', { 'data-testid': 'TopNavBar' },
+        h('button', openerAttrs, selfAvatar('alice')),
+        h('a', { role: 'link', href: '/i/premium_sign_up' }, '購入する'),
+        h('button', { role: 'button', 'aria-label': 'タイムラインを管理' })),
+      h('div', { role: 'grid' },
+        h('nav', { role: 'navigation' }, h('div', { role: 'tablist', 'data-testid': 'ScrollSnap-List' }))),
+      h('div', { role: 'status' },
+        h('button', { role: 'button', 'aria-label': '新しいポストがあります' }, h('div', { 'data-testid': 'pillLabel' }, '新しいポスト'))));
+
     root.append(
-      h('div', { id: 'topBar' }, h('div', openerAttrs, avatar('alice'))),
       h('main', { style: 'padding-top:120px' },
         h('div', { 'data-testid': 'cellInnerDiv' },
           h('article', { 'data-testid': 'tweet' },
@@ -416,12 +450,20 @@ const toastText = (page) =>
             h('span', {}, 'Dave @dave')))));
   };
 
+  const loadViaDock = (page) => page.evaluate(() => {
+    const sr = document.getElementById('tm-x-switch-root').shadowRoot;
+    const load = sr.querySelector('.load');
+    if (load) { load.click(); return; }
+    sr.querySelector('.icon').click();
+    [...sr.querySelectorAll('.menu button')].find((b) => b.textContent === 'アカウントを読み込む').click();
+  });
+
   for (const variant of [
     { testid: true, label: 'testid あり' },
     { testid: false, label: 'testid なし（構造で探す）' },
     { testid: true, routeSheet: true, label: '一覧が /account/switch のページ' }
   ]) {
-    const page = await newPage(browser, { width: 390, height: 844 });
+    const page = await newPage(browser, { width: 402, height: 668 });
     await page.goto('https://x.com/home');
     await page.evaluate(fixtures);
     await page.evaluate(mobileSetup, variant);
@@ -430,37 +472,39 @@ const toastText = (page) =>
 
     const tag = '[モバイル ' + variant.label + '] ';
 
-    check(tag + '現在のアカウントを左上のアイコンから取る', await page.evaluate(() =>
-      /現在のアカウント: @alice/.test(window.__tmXSwitch.dump())));
+    let report = await page.evaluate(() => window.__tmXSwitch.dump());
+    check(tag + 'アバターの testid の unknown をハンドルと見なさない', !/@unknown/.test(report), report.slice(0, 400));
+    check(tag + '一覧が空のうちは、現在のアカウントを「取得できない」とする', /現在のアカウント: 取得できない/.test(report), report.slice(0, 300));
+    check(tag + '左上のアイコン（#layers の中）を見つける', /ドロワー: <button[^\n]*プロフィールメニュー Alice/.test(report), report.slice(0, 600));
+    check(tag + '上下のバーを「メニュー・ドロワー」と見なさない', /いま開いているメニュー・ドロワー: 0件/.test(report), report.slice(0, 600));
+    check(tag + '上下のバーは切替先の候補に入れない', /切替に使える候補\n  （なし）/.test(report), report.slice(0, 900));
 
-    // ドロワーだけ開いても（目印が無いので）覚えない
+    // ドロワーを手で開くと、そこに出ている自分のアカウントを覚える
     await page.evaluate(() => window.openDrawer());
     await page.waitForTimeout(400);
-    if (variant.routeSheet) {
-      // ドロワーに /account/switch へのリンク（切替UIの目印）があれば、ドロワーに出ている分は覚える（足すだけ）
-      check(tag + 'ドロワーに切替ページへのリンクがあれば、出ている分だけ覚える',
-        JSON.stringify((await stored(page)).sort()) === JSON.stringify(['alice', 'bob']), await stored(page));
-    } else {
-      check(tag + 'ドロワーを開いただけでは一覧を覚えない', (await stored(page)).length === 0, await stored(page));
-    }
+    const expectedAfterDrawer = variant.routeSheet ? ['alice', 'bob'] : ['alice'];
+    check(tag + 'ドロワーを開くと、出ている自分のアカウントを覚える' + (variant.routeSheet ? '（切替ページへのリンクがあれば他も足す）' : ''),
+      JSON.stringify((await stored(page)).sort()) === JSON.stringify(expectedAfterDrawer), await stored(page));
     await page.evaluate(() => { closeAll(); events.length = 0; });
+    await page.waitForTimeout(400);
+    report = await page.evaluate(() => window.__tmXSwitch.dump());
+    check(tag + '閉じた後は、左上のアイコンの画像で現在のアカウントを特定する', /現在のアカウント: @alice（左上のアイコンの画像）/.test(report), report.slice(0, 300));
+    check(tag + '閉じた後も、ドロワーの構造が診断に残る', /最後に開いていたメニュー・ドロワーの構造/.test(report) && /drawerMe|href="\/alice"/.test(report), report.slice(-1500));
+    check(tag + '構造の記録に上下のバーを含めない', !/BottomBar|TopNavBar/.test(report.slice(report.indexOf('■ 最後に開いていた'))));
 
-    // 「読込」（一覧が空のとき）またはメニューの「アカウントを読み込む」→ ドロワー → 「アカウント」→ シートで覚えて閉じる
-    await page.evaluate(() => {
-      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-      const load = sr.querySelector('.load');
-      if (load) { load.click(); return; }
-      sr.querySelector('.icon').click();
-      [...sr.querySelectorAll('.menu button')].find((b) => b.textContent === 'アカウントを読み込む').click();
-    });
-    await page.waitForTimeout(800);
+    // 「読込」→ ドロワー → 「アカウント」→ シートで覚えて閉じる
+    await loadViaDock(page);
+    await page.waitForTimeout(900);
     let ev = await page.evaluate(() => events.slice());
     const learned = await stored(page);
     check(tag + '読込: ドロワー → アカウント一覧の順に開く', ev.includes('open-drawer') && ev.includes('open-sheet'), ev);
     check(tag + '読込: 一覧シートから3件覚える', JSON.stringify([...learned].sort()) === JSON.stringify(['alice', 'bob', 'carol']), learned);
-    check(tag + '読込: 終わったら閉じる', await page.evaluate(() => !document.getElementById('sheet') && !document.getElementById('drawer')));
+    check(tag + '読込: 終わったら閉じる（常に居るバーは残る）', await page.evaluate(() =>
+      !document.getElementById('sheet') && !document.getElementById('drawer') && !!document.getElementById('dashButton')));
     check(tag + '読込: 元のページ（/home）に居る', page.url() === 'https://x.com/home', page.url());
     check(tag + '読込: 誤って何かを押していない', !ev.some((e) => e.startsWith('switch:') || e.startsWith('nav:')), ev);
+    await page.waitForTimeout(400);
+    check(tag + '読込後: 現在のアカウント（alice）に印が付く', (await dockButtons(page)).find((b) => b.handle === 'alice')?.current, await dockButtons(page));
 
     // ドロワーに出ている bob へ切替（アバターだけのボタン）
     await page.evaluate(() => { events.length = 0; });
@@ -470,7 +514,7 @@ const toastText = (page) =>
     check(tag + '切替: ドロワーに出ているアカウントはそのまま押す', ev.includes('switch:bob') && !ev.includes('open-sheet'), ev);
     check(tag + '切替: ドロワーの自分のアイコン（プロフィールへのリンク）や投稿を押さない', !ev.some((e) => e.startsWith('nav:')), ev);
     await page.waitForTimeout(900);
-    check(tag + '切替後: 印が bob に移る', (await dockButtons(page)).find((b) => b.handle === 'bob')?.current, await dockButtons(page));
+    check(tag + '切替後: 印が bob に移る（左上のアイコンの画像で判定）', (await dockButtons(page)).find((b) => b.handle === 'bob')?.current, await dockButtons(page));
 
     // ドロワーに出ていない carol へ切替（一覧シートまで開く）
     await page.evaluate(() => { events.length = 0; });
@@ -478,6 +522,50 @@ const toastText = (page) =>
     await page.waitForTimeout(900);
     ev = await page.evaluate(() => events.slice());
     check(tag + '切替: ドロワーに無いアカウントは一覧シートを開いて押す', ev.includes('open-sheet') && ev.includes('switch:carol'), ev);
+
+    if (variant.label === 'testid あり') {
+      // 再読み込みしても、切替の記録と構造の記録が残る
+      await page.goto('https://x.com/home');
+      await page.evaluate(fixtures);
+      await page.evaluate(mobileSetup, variant);
+      await page.evaluate(SCRIPT);
+      await page.waitForTimeout(300);
+      report = await page.evaluate(() => window.__tmXSwitch.dump());
+      check(tag + '再読み込み後も、直近の切替の記録が残る', /読み込み完了/.test(report) && /切替先を押す/.test(report), report.slice(0, 1500));
+      check(tag + '再読み込み後も、メニュー・ドロワーの構造が残る', /最後に開いていたメニュー・ドロワーの構造/.test(report));
+    }
+
+    await page.close();
+  }
+
+  // ドロワーに「アカウント」ボタンが見つからない場合（未確認の構造への備え）
+  {
+    const page = await newPage(browser, { width: 402, height: 668 });
+    await page.goto('https://x.com/home#tmswitch');
+    await page.evaluate(fixtures);
+    await page.evaluate(mobileSetup, { testid: true, noMoreButton: true });
+    await page.evaluate(SCRIPT);
+    await page.waitForTimeout(400);
+    const tag = '[モバイル 一覧ボタンなし] ';
+
+    check(tag + '診断パネルは左上のアイコンを隠さないよう画面下に出る', await page.evaluate(() => {
+      const r = document.getElementById('tm-x-switch-panel').getBoundingClientRect();
+      return r.top > 100;
+    }));
+
+    // パネルの「読込を試す」
+    await page.evaluate(() => [...document.querySelectorAll('#tm-x-switch-panel button')].find((b) => b.textContent === '読込を試す').click());
+    await page.waitForTimeout(1500);
+    const learned = await stored(page);
+    check(tag + 'パネルの「読込を試す」で読み込める', learned.length > 0, learned);
+    check(tag + '一覧を開けなくても、ドロワーに見えている分（自分 + 2件）は覚える',
+      JSON.stringify([...learned].sort()) === JSON.stringify(['alice', 'bob', 'carol']), learned);
+    await page.waitForTimeout(1600);
+    const text = await page.evaluate(() => document.querySelector('#tm-x-switch-panel textarea').value);
+    check(tag + '記録に「アカウント」ボタンが無かったことが出る', /ドロワーの中に切替先も「アカウント」ボタンも見つからない/.test(text), text.slice(0, 2000));
+    check(tag + '記録にドロワーの中の候補が出る', /中の候補: @bob @carol/.test(text), text.slice(0, 2000));
+    check(tag + 'ドロワーの構造に @ハンドルの文字が出る', /「Alice ?@alice」/.test(text), text.slice(-1500));
+    check(tag + '閉じる', await page.evaluate(() => !document.getElementById('drawer')));
 
     await page.close();
   }
