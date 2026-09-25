@@ -205,6 +205,24 @@ function check(name, cond, extra) {
   // パネルを閉じておく（後続のテストで開き直す）
   await page.evaluate(() => document.querySelector('.tm-ychide-open').click());
 
+  // --- 同じ場所のボタンで戻す ---
+  await page.evaluate(() => window.mkMessage('r1', 'UC_RRR', '戻す人', '一度消して戻す本文'));
+  await page.waitForTimeout(150);
+  await page.evaluate(() => document.querySelector('#r1 > .tm-ychide-btn').click());
+  await page.waitForTimeout(200);
+  check('戻す: 消した後はボタンが「発言を戻す」になる', await page.evaluate(() =>
+    document.querySelector('#r1 > .tm-ychide-btn').textContent === '発言を戻す'));
+  check('戻す: ボタンは1つのまま', await page.evaluate(() =>
+    document.querySelectorAll('#r1 > .tm-ychide-btn').length === 1));
+  const beforeRestore = await page.evaluate(() => window.__tmChatHide.list().length);
+  await page.evaluate(() => document.querySelector('#r1 > .tm-ychide-btn').click());
+  await page.waitForTimeout(200);
+  check('戻す: 押すと本文が見える', await page.evaluate(() =>
+    getComputedStyle(document.querySelector('#r1 #message')).display !== 'none'));
+  check('戻す: 登録も解除される', (await page.evaluate(() => window.__tmChatHide.list().length)) === beforeRestore - 1);
+  check('戻す: ボタンが「発言を消す」に戻る', await page.evaluate(() =>
+    document.querySelector('#r1 > .tm-ychide-btn').textContent === '発言を消す'));
+
   // --- パネル ---
   check('パネル: 開くボタンがある', await page.evaluate(() => !!document.querySelector('.tm-ychide-open')));
   await page.evaluate(() => document.querySelector('.tm-ychide-open').click());

@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.6
+// @name         YouTube チャット非表示 v1.7
 // @namespace    https://www.youtube.com/
-// @version      1.6
+// @version      1.7
 // @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（基本は名前を残して本文だけ消す。一覧から「まるごと消す」に切り替え可・チャンネルID単位）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -351,6 +351,25 @@
         apply();
     }
 
+    // ボタンから解除するとき用。追加時と同じ条件で相手を探す。
+    function removeAuthor(id, name) {
+        const index = entries.findIndex(e =>
+            id ? e.id === id : !e.id && e.name === name
+        );
+
+        if (index !== -1) {
+            removeAt(index);
+            return;
+        }
+
+        // IDで登録した相手でも、表示名しか取れない要素から
+        // 押されることがある。その場合は表示名で探す。
+        const byName = entries.findIndex(e =>
+            e.name && name && e.name.toLowerCase() === name.toLowerCase()
+        );
+        if (byName !== -1) removeAt(byName);
+    }
+
     function removeAt(index) {
         entries.splice(index, 1);
         saveEntries();
@@ -506,33 +525,45 @@
      * （うっかり押して完全に見えなくなるのを避けるため）。
      */
     function ensureButtons(el) {
-        if (el.querySelector(':scope > .tm-ychide-btn')) return;
+        let btn = el.querySelector(':scope > .tm-ychide-btn');
 
-        el.appendChild(
-            makeButton(
-                el,
-                'text',
-                '発言を消す',
-                '名前は残し、本文を消す（まるごと消すには「非表示リスト」から切り替え）'
-            )
-        );
-    }
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.className = 'tm-ychide-btn tm-ychide-btn-text';
+            btn.type = 'button';
 
-    function makeButton(el, mode, label, title) {
-        const btn = document.createElement('button');
-        btn.className =
-            'tm-ychide-btn tm-ychide-btn-' + mode;
-        btn.type = 'button';
-        btn.textContent = label;
-        btn.title = title;
+            // 押した時点の状態で動作を決める。
+            // 登録済みなら解除（発言を戻す）、未登録なら本文を消す。
+            btn.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
 
-        btn.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            addAuthor(authorIdOf(el), authorNameOf(el), mode);
-        });
+                const id = authorIdOf(el);
+                const name = authorNameOf(el);
 
-        return btn;
+                if (modeOf(el)) {
+                    removeAuthor(id, name);
+                } else {
+                    addAuthor(id, name, 'text');
+                }
+            });
+
+            el.appendChild(btn);
+        }
+
+        /*
+         * 同じ場所のボタンで戻せるよう、状態に合わせて表示を切り替える。
+         * 要素は使い回されるので、毎回書き直す。
+         */
+        const registered = !!modeOf(el);
+        const label = registered ? '発言を戻す' : '発言を消す';
+
+        if (btn.textContent !== label) {
+            btn.textContent = label;
+            btn.title = registered
+                ? 'この人の登録を解除して、発言を元どおり表示する'
+                : '名前は残し、本文を消す（まるごと消すには「非表示リスト」から切り替え）';
+        }
     }
 
     /*
