@@ -456,6 +456,8 @@ const toastText = (page) =>
         opts.noMoreButton ? '' :
           opts.unlabeledMore ?
             h('div', { role: 'button', id: 'drawerMore', onclick: () => window.openSheet() }, '⋯') :
+          opts.realSwitchPage ?
+            h('a', { role: 'link', 'data-testid': 'switcher', 'aria-label': 'すべてのアカウントを表示', href: '/account/switch', id: 'drawerMore', onclick: (e) => { e.preventDefault(); window.openSheet(); } }, '⋯') :
           opts.routeSheet ?
             h('a', { href: '/account/switch', 'aria-label': 'アカウント', id: 'drawerMore', onclick: (e) => { e.preventDefault(); window.openSheet(); } }, '⋯') :
             h('div', { role: 'button', 'aria-label': 'アカウント', id: 'drawerMore', onclick: () => window.openSheet() }, '⋯'),
@@ -474,6 +476,23 @@ const toastText = (page) =>
       closeAll();
       if (opts.routeSheet) history.pushState(null, '', '/account/switch');
       const parent = opts.routeSheet ? document.querySelector('main') : layers;
+      // 実機（iPhone、v1.1.1 の診断）の /account/switch: 現在のアカウントは押せない li、
+      // 他は button。どちらも testid は AccountSwitcher_Switch_Button
+      if (opts.realSwitchPage) {
+        parent.append(h('div', { id: 'sheet' },
+          h('button', { role: 'button', 'data-testid': 'app-bar-back', 'aria-label': '戻る', onclick: () => history.back() }),
+          h('h2', { role: 'heading' }, 'アカウント'),
+          ...['alice', 'bob', 'carol'].map((hd) => hd === window.current ?
+            h('li', { role: 'listitem', 'data-testid': 'AccountSwitcher_Switch_Button', id: 'sheet-' + hd },
+              avatar(hd), h('span', {}, names[hd]), h('span', {}, '@' + hd)) :
+            h('button', { role: 'button', 'data-testid': 'AccountSwitcher_Switch_Button', 'aria-label': '@' + hd + 'に切り替える', id: 'sheet-' + hd, onclick: () => switchedTo(hd) },
+              avatar(hd), h('span', {}, names[hd]), h('span', {}, '@' + hd))),
+          h('div', { role: 'separator' }),
+          h('button', { role: 'button', 'data-testid': 'AccountSwitcher_Add_Button' }, '既存のアカウントを追加'),
+          h('a', { role: 'link', href: 'https://help.x.com/managing-your-account' }, '詳細はこちら'),
+          h('button', { role: 'button' }, 'すべてのアカウントからログアウト')));
+        return;
+      }
       parent.append(h('div', opts.routeSheet ? { id: 'sheet' } : { role: 'dialog', 'aria-modal': 'true', id: 'sheet', class: 'overlay' },
         ...['alice', 'bob', 'carol'].map((hd) =>
           userCell(hd, names[hd], () => { if (hd !== window.current) switchedTo(hd); }, 'sheet-' + hd)),
@@ -522,7 +541,8 @@ const toastText = (page) =>
   for (const variant of [
     { testid: true, label: 'testid あり' },
     { testid: false, label: 'testid なし（構造で探す）' },
-    { testid: true, routeSheet: true, label: '一覧が /account/switch のページ' }
+    { testid: true, routeSheet: true, label: '一覧が /account/switch のページ' },
+    { testid: true, routeSheet: true, realSwitchPage: true, label: '実機の /account/switch（v1.1.1 の診断）' }
   ]) {
     const page = await newPage(browser, { width: 402, height: 668 });
     await page.goto('https://x.com/home');
@@ -602,7 +622,8 @@ const toastText = (page) =>
   // 個別ポスト（左上が「戻る」でアイコンが無い）。v1.0.1 の実機報告
   for (const variant of [
     { testid: true, startOnStatus: true, label: '個別ポスト' },
-    { testid: true, startOnStatus: true, routeSheet: true, label: '個別ポスト + 一覧が /account/switch のページ' }
+    { testid: true, startOnStatus: true, routeSheet: true, label: '個別ポスト + 一覧が /account/switch のページ' },
+    { testid: true, startOnStatus: true, routeSheet: true, realSwitchPage: true, label: '個別ポスト + 実機の /account/switch' }
   ]) {
     const page = await newPage(browser, { width: 402, height: 668 });
     const STATUS = 'https://x.com/dave/status/1';

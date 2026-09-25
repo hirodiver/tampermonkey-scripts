@@ -194,11 +194,25 @@ v1.1.0 で「読込」が「アカウント一覧を開けませんでした」�
 - X は部品を初めて開くときに読み込むので、メニュー・ドロワーを待つ上限（`MENU_WAIT_MS`）を
   3秒から5秒に延ばした
 
+### iPhone の一覧ページで読み込めない問題（v1.1.2）
+
+v1.1.1 の「記録をコピー」で取れた実機の記録で原因が分かった。iPhone では、ドロワーの
+「すべてのアカウントを表示」（`a[data-testid="switcher"][href="/account/switch"]`）から
+独立したページ `/account/switch` が開き、その中は次のようになっている。
+
+- 現在のアカウント: `li[role="listitem"][data-testid="AccountSwitcher_Switch_Button"]`（押せない）
+- 他のアカウント: `button[data-testid="AccountSwitcher_Switch_Button"][aria-label="@ハンドルに切り替える"]`
+- `AccountSwitcher_Add_Button`（既存のアカウントを追加）、「すべてのアカウントからログアウト」
+
+v1.1.1 までは `AccountSwitcher_` で始まる testid をすべて「目印」と見なし、
+アカウントの候補から外していた。そのため一覧のページは開けても候補が0件になり、
+「アカウント一覧が出ない」で失敗していた。v1.1.2 では `AccountSwitcher_Switch_Button` を
+アカウントの項目として扱い、押せない `li` も候補に含める。
+
 ### 未確認の点
 
-**iPhone のドロワーとアカウント一覧の中身の DOM はまだ確認していない**（v1.0.0 の診断では
-ドロワーの中身が記録されなかった）。testid に頼らず構造で狙っているが、当たらない場合は
-下の診断で構造を取ってから直す。
+iPhone のドロワーの中身の DOM は、全体をまだ確認していない。一覧のページ
+（`/account/switch`）の構造は v1.1.1 の診断で確認済み。
 
 ### 診断（iPhone 可）
 
@@ -226,10 +240,11 @@ node --check x-account-switcher.user.js
 NODE_PATH=$(npm root -g) node test/x-account-switcher.test.js
 ```
 
-Trusted Types を強制する CSP を付けた模擬ページで157項目を確認する。
+Trusted Types を強制する CSP を付けた模擬ページで190項目を確認する。
 デスクトップ幅（左下のボタン → メニュー）と、モバイル幅（左上のアイコン → ドロワー →
 一覧シート。testid あり／なし／一覧が `/account/switch` のページ／「アカウント」ボタンなし／
-個別ポスト（左上が「戻る」）から／自動では一覧を開けない、の各通り）で、
+実機の `/account/switch`（ホーム・個別ポストから）／個別ポスト（左上が「戻る」）から／
+自動では一覧を開けない、の各通り）で、
 モバイル幅は実機診断の構造（`#layers` に上下のバーが常にある、アバターの testid が `unknown`）を再現している。
 タイムラインのユーザーやポストの「…」メニューを覚えない／切替メニューの3件だけ覚える／
 古いアカウントを消す／`unknown` をハンドルと見なさない／上下のバーを候補に入れない／

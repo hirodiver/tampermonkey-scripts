@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.1.1
+// @name         X アカウント切替 v1.1.2
 // @namespace    local.hiro.tools
-// @version      1.1.1
+// @version      1.1.2
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -65,7 +65,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.1.1';
+    const VERSION = '1.1.2';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -245,6 +245,13 @@
 
     const MARKER_TEXT =
         /既存のアカウントを追加|アカウントを管理|新しいアカウントを作成|ログアウト|Add an existing account|Manage accounts|Create a new account|Log out/i;
+
+    /*
+     * 切替メニューの中の、アカウントそのものを指す項目（実機で確認、v1.1.1 の診断）。
+     * testid は AccountSwitcher_ で始まるので目印も兼ねるが、切替先として扱う。
+     * /account/switch のページでは、現在のアカウントは押せない li、他は button
+     */
+    const ACCOUNT_ITEM_SELECTOR = '[data-testid="AccountSwitcher_Switch_Button"]';
 
     // 上の目印のうち「一覧がすべて出ている」ことを示すもの（アカウント追加）
     const FULL_LIST_HREFS = [
@@ -963,7 +970,7 @@
         const entries = [];
 
 
-        for (const element of scope.querySelectorAll(CLICKABLE_SELECTOR)) {
+        for (const element of scope.querySelectorAll(CLICKABLE_SELECTOR + ',' + ACCOUNT_ITEM_SELECTOR)) {
 
             if (element.closest(`#${ROOT_ID}, #${PANEL_ID}`)) {
                 continue;
@@ -980,7 +987,7 @@
             }
 
 
-            if (isMarker(element)) {
+            if (isMarker(element) && !element.matches(ACCOUNT_ITEM_SELECTOR)) {
                 continue;
             }
 
