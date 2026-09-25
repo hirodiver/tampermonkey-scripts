@@ -12,6 +12,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `x-hide-note-notice.user.js` | X ノート通知非表示 | x.com / twitter.com |
 | `x-hide-spaces-bar.user.js` | X スペース帯非表示 | x.com / twitter.com |
 | `x-bottom-bar-opaque.user.js` | X 下部メニュー不透明化 | x.com / twitter.com |
+| `x-account-switcher.user.js` | X アカウント切替 | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
@@ -41,6 +42,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-note-notice.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-spaces-bar.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-bottom-bar-opaque.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-account-switcher.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
@@ -84,6 +86,86 @@ Tampermonkey は取得した中身の `@version` が同じなら、エラーを�
 通常の「更新を確認」でそのまま新しい名前に切り替わる（実測で確認済み、2026-09）。
 別スクリプトとして登録されるのは、下記の YouTube Full Dates (JST) のように
 `@namespace` ごと変えた場合。
+
+## X アカウント切替 について（ファイル: `x-account-switcher.user.js`）
+
+画面端に、ログイン中のアカウントのアイコンを並べた小さな帯（ドック）を出す。
+アイコンを押すと、X 本体の切替メニューを代わりに開いて該当アカウントを押す。
+切替そのものは X 本体が行うので、非公式APIは叩かない。
+
+Grok が作った「TapShift」（v1.1.0）を元に作り直したもの。
+
+### 使い方
+
+1. 初回はドックに「読込」ボタンだけが出る。押すと X の切替メニュー
+   （iPhone では左上のアイコン → ドロワー → アカウント一覧）を開いて一覧を覚え、閉じる。
+   X の切替メニューを自分で開いたときも、その場で覚える
+2. 以後はドックのアイコンを押すだけで切り替わる。現在のアカウントには白い輪が付く
+3. 切替後、X はホームを開き直すが、切替前に居たページへ自動で戻す
+   （`RETURN_TO_PREVIOUS_PAGE`。1分以上前の記録では戻さない）
+4. ドック下の「⋮」から、位置（四隅）・最小化・読み込み直し・一覧の消去・
+   「このタブでは隠す」ができる
+
+### 元版（TapShift）から直したこと
+
+| 元版の問題 | 直し方 |
+|---|---|
+| ページ全体の `UserCell` と `[role=menuitem]` から一覧を拾っていた。フォロワー一覧やおすすめユーザー、ポストの「…」メニュー（「@xxxさんをフォロー」）の相手まで自分のアカウントとして登録された | 「既存のアカウントを追加」「ログアウト」等の目印と同じ入れ物にある、**アバターと @ハンドルを持つ押せる要素**だけを覚える |
+| 切替先をページ全体から探していた。タイムラインに同名ユーザーが出ていると、それを押してプロフィールへ飛ぶ | X の重なり層（`#layers`。メニュー・ドロワー・シートが描かれる場所）の中だけを探す。プロフィールへのリンク（`/ハンドル`）は押さない |
+| `innerHTML` を使っていた | `createElement` と `textContent`、SVG は `createElementNS` |
+| 切替後に再読み込みが起きないと、ボタンが押せないまま固まった | 一定時間（`RELOAD_TIMEOUT_MS`）で成否を確かめてボタンを戻す |
+| 初回に勝手にドロワーを開いていた | 読み込みは「読込」ボタンかメニューから手動で行う |
+| ログアウトしたアカウントが一覧に残り続けた | 「既存のアカウントを追加」がある一覧（全件が出ている）を読んだら、保存済みを置き換える |
+| モバイル幅で現在のアカウントを取れなかった（下のタブにプロフィールが無い） | 左上のアイコンのアバター（`UserAvatar-Container-ハンドル`）からも取る |
+
+### 作りの要点
+
+- ハンドルは、アバターの入れ物の testid → `aria-label` → 表示テキストの順に探す。
+  ドロワーの「他のアカウント」はアバターだけで文字を持たないことがあるため
+- 開く経路は、デスクトップ幅の左下のアカウントボタン → 無ければ左上のアイコン
+  （ドロワー）→ ドロワーに切替先が無ければ「アカウント」ボタン（`aria-label` に
+  「アカウント」を含む／`/account/switch` へのリンク）で一覧を開く
+- 一覧が重なり層ではなく独立したページ（`/account/switch`）として開く場合も、
+  そのページの本文を探す。読み込みの後は `history.back()` で戻る
+- ドックは Shadow DOM の中に置く。X の CSS の影響を受けず、X 側の
+  `MutationObserver` にも自作要素の変化が上がらない
+- 一覧は `localStorage`（キー `tm-x-switch-accounts`）。`storage` イベントを見ているので、
+  別タブで覚えた分も反映される
+
+### 未確認の点
+
+**iPhone の X（モバイル版ウェブ）のドロワーとアカウント一覧の実際の DOM は確認していない。**
+testid に頼らず構造で狙っているが、当たらない場合は下の診断で構造を取ってから直す。
+
+### 診断（iPhone 可）
+
+URL の末尾に `#tmswitch` を付けて開く（例: `https://x.com/home#tmswitch`）。
+画面上に診断パネルが出た状態で、X の切替メニュー（左上のアイコン → アカウント一覧）を
+開き、閉じてから「コピー」を押す。コンソールが使える環境なら `__tmXSwitch.dump()` でも同じものが出る。
+
+- **■ 現在のアカウント**: 取れたハンドルと取得元
+- **■ 開くボタン**: メニュー・ドロワー・アカウント一覧の各ボタンが見つかったか
+- **■ 切替メニューと判定した入れ物**: 目印と、中にあった候補（ハンドル・取得元・要素）
+- **■ 直近の切替の記録**: どの段階まで進んで、どこで止まったか
+- **■ 重なり層の構造**: 最後に切替メニューが開いていたときの骨格（role / testid /
+  aria-label / href / アバター）。閉じた後でもコピーできる
+
+### 検証
+
+```
+node --check x-account-switcher.user.js
+NODE_PATH=$(npm root -g) node test/x-account-switcher.test.js
+```
+
+Trusted Types を強制する CSP を付けた模擬ページで78項目を確認する。
+デスクトップ幅（左下のボタン → メニュー）と、モバイル幅（左上のアイコン → ドロワー →
+一覧シート。testid あり／なし／一覧が `/account/switch` のページ、の3通り）で、
+タイムラインのユーザーやポストの「…」メニューを覚えない／切替メニューの3件だけ覚える／
+古いアカウントを消す／タイムラインの同名ユーザーやドロワーの自分のアイコンを押さない／
+確認シートを押す／見つからないときに知らせてボタンを戻す／元のページへ戻す／
+消されたドックを作り直す、など。
+
+模擬DOMは X の実DOMではない（特にモバイルは推測で組んだ）ため、**実機確認の代わりにはならない**。
 
 ## YouTube チャット非表示 について（ファイル: `youtube-hide-chat-users.user.js`）
 
