@@ -54,6 +54,8 @@ const KNOWN_HOSTS = [
     'youtube.com',
     'youtu.be',
     'youtube-nocookie.com',
+    'ytimg.com',
+    'ggpht.com',
     'x.com',
     't.co',
     'twitter.com',
@@ -68,6 +70,23 @@ const KNOWN_HOSTS = [
     '127.0.0.1'
 ];
 
+// 中身の行を調べない文書（ファイル名での判定は SENSITIVE_* で別に行う）
+const DOC_EXTENSIONS = [
+    '.md',
+    '.txt'
+];
+
+// 通信の記述を調べないテスト（GM_xmlhttpRequest などはモックとして出てくる）
+const TEST_PREFIXES = [
+    'test/'
+];
+
+// 追加行にあれば確認する通信の記述（TRUSTED_SITES 専用のスクリプトでは見ない）
+const NETWORK_PATTERNS = [
+    { re: /\bfetch\s*\(/,                                why: 'fetch による通信を追加' },
+    { re: /XMLHttpRequest|GM[._]xml[hH]ttpRequest/,      why: 'XHR による通信を追加' }
+];
+
 // GitHub は自分のリポジトリだけ許す（@updateURL などの差し替え対策）
 const GITHUB_HOSTS = [
     'github.com',
@@ -76,20 +95,31 @@ const GITHUB_HOSTS = [
 
 const GITHUB_OWNER = 'hirodiver';
 
+// ここに挙げたサイトだけで動くユーザースクリプトは、
+// fetch・XHR の追加では止めない（送信先の URL と難読化は引き続き見る）
+const TRUSTED_SITES = [
+    'x.com',
+    'twitter.com',
+    'youtube.com'
+];
+
 // 追加行にあれば確認する記述と、その理由
 const RISKY_PATTERNS = [
-    { re: /@grant\s+(?!none\b)\S+/,                      why: '@grant で特権 API を追加' },
-    { re: /@connect\b/,                                  why: '@connect で通信先を追加' },
+    { re: /@grant\s+(GM[._](cookie|download|addElement)|GM\.cookie)/, why: '強い権限の @grant を追加' },
     { re: /@(require|resource)\b/,                       why: '外部ファイルの読み込みを追加' },
     { re: /@(match|include)\s+(\*:\/\/\*\/\*|<all_urls>|\*$|https?:\/\/\*\/)/, why: '全サイトで動く @match' },
-    { re: /\bfetch\s*\(/,                                why: 'fetch による通信を追加' },
-    { re: /XMLHttpRequest|GM[._]xml[hH]ttpRequest/,      why: 'XHR による通信を追加' },
     { re: /sendBeacon|new\s+WebSocket|EventSource/,      why: '外部送信の手段を追加' },
     { re: /\beval\s*\(|new\s+Function\s*\(/,             why: '文字列をコードとして実行' },
     { re: /document\.cookie/,                            why: 'Cookie に触れる' },
-    { re: /\batob\s*\(|String\.fromCharCode/,            why: '難読化の可能性' },
+    { re: /\batob\s*\(|String\.fromCharCode\s*\((?!\s*\d+\s*\))/, why: '難読化の可能性' },
     { re: /\bimport\s*\(/,                               why: '動的 import' }
 ];
+
+// PR のマージ先ブランチ
+const BASE_BRANCH = 'main';
+
+// 浅いクローンで分岐点が見つからないとき、さかのぼって取る履歴の数
+const DEEPEN_COMMITS = 500;
 
 // git コマンドの制限時間（ミリ秒）
 const GIT_TIMEOUT_MS = 40000;
@@ -113,6 +143,14 @@ function isSensitivePath(file) {
     return SENSITIVE_EXTENSIONS.includes(path.extname(file).toLowerCase());
 }
 
+function matchesHost(host, known) {
+    return host === known || host.endsWith('.' + known);
+}
+
+function isKnownHost(host) {
+    return KNOWN_HOSTS.some((known) => matchesHost(host.toLowerCase(), known));
+}
+
 function isKnownUrl(url) {
     let parsed;
 
@@ -124,22 +162,50 @@ function isKnownUrl(url) {
 
     const host = parsed.hostname.toLowerCase();
 
-    const matchesHost = (known) => host === known || host.endsWith('.' + known);
-
-    if (GITHUB_HOSTS.some(matchesHost)) {
+    if (GITHUB_HOSTS.some((known) => matchesHost(host, known))) {
         return parsed.pathname.toLowerCase().startsWith('/' + GITHUB_OWNER.toLowerCase() + '/');
     }
 
-    return KNOWN_HOSTS.some(matchesHost);
+    return isKnownHost(host);
 }
 
-function inspectAddedLine(file, line) {
+// ユーザースクリプトの @match / @include がすべて TRUSTED_SITES か
+function isTrustedSiteScript(file, content) {
+    if (!file.endsWith('.user.js') || !content) {
+        return false;
+    }
+
+    const targets = [...content.matchAll(/^\s*\/\/\s*@(?:match|include)\s+(\S+)/gm)]
+        .map((m) => m[1]);
+
+    if (targets.length === 0) {
+        return false;
+    }
+
+    return targets.every((target) => {
+        const host = (target.match(/^[a-z*]+:\/\/([^/]+)/i) || [])[1];
+
+        return Boolean(host) && TRUSTED_SITES.some((site) => matchesHost(host.toLowerCase(), site));
+    });
+}
+
+function inspectAddedLine(file, line, trustedSite) {
     const findings = [];
 
-    for (const { re, why } of RISKY_PATTERNS) {
+    const patterns = trustedSite
+        ? RISKY_PATTERNS
+        : [...RISKY_PATTERNS, ...NETWORK_PATTERNS];
+
+    for (const { re, why } of patterns) {
         if (re.test(line)) {
             findings.push(`${file}: ${why} — ${line.trim().slice(0, 80)}`);
         }
+    }
+
+    const connect = line.match(/@connect\s+(\S+)/);
+
+    if (connect && !isKnownHost(connect[1])) {
+        findings.push(`${file}: 未知の通信先への @connect — ${connect[1]}`);
     }
 
     const urls = line.match(/https?:\/\/[^\s'"`<>)\]]+/g) || [];
@@ -153,7 +219,8 @@ function inspectAddedLine(file, line) {
     return findings;
 }
 
-function inspectDiff(files, diffText) {
+// readHead(file) は PR 側のファイル内容を返す（なければ null）
+function inspectDiff(files, diffText, readHead) {
     const findings = [];
 
     for (const file of files) {
@@ -163,15 +230,22 @@ function inspectDiff(files, diffText) {
     }
 
     let currentFile = null;
+    let trustedSite = false;
 
     for (const line of diffText.split('\n')) {
         if (line.startsWith('+++ ')) {
             currentFile = line.replace(/^\+\+\+ (b\/)?/, '');
+            trustedSite = isTrustedSiteScript(currentFile, readHead(currentFile))
+                || TEST_PREFIXES.some((prefix) => currentFile.startsWith(prefix));
+            continue;
+        }
+
+        if (DOC_EXTENSIONS.includes(path.extname(currentFile || '').toLowerCase())) {
             continue;
         }
 
         if (line.startsWith('+') && currentFile) {
-            findings.push(...inspectAddedLine(currentFile, line.slice(1)));
+            findings.push(...inspectAddedLine(currentFile, line.slice(1), trustedSite));
         }
     }
 
@@ -232,31 +306,40 @@ function findRepoDir(owner, repo) {
     return null;
 }
 
-function defaultBranch(dir) {
+function hasMergeBase(dir, a, b) {
     try {
-        return git(dir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-            .trim()
-            .replace(/^origin\//, '');
+        git(dir, ['merge-base', a, b]);
+        return true;
     } catch (e) {
-        return 'main';
+        return false;
     }
 }
 
 function collectPrDiff(dir, pullNumber) {
-    const base = defaultBranch(dir);
     const baseRef = 'refs/merge-guard/base';
     const headRef = `refs/merge-guard/pr-${pullNumber}`;
 
-    git(dir, [
-        'fetch',
-        '--quiet',
-        '--no-tags',
-        'origin',
-        `+refs/heads/${base}:${baseRef}`,
+    const refspecs = [
+        `+refs/heads/${BASE_BRANCH}:${baseRef}`,
         `+refs/pull/${pullNumber}/head:${headRef}`
-    ]);
+    ];
 
-    const range = `${baseRef}...${headRef}`;
+    git(dir, ['fetch', '--quiet', '--no-tags', 'origin', ...refspecs]);
+
+    // 浅いクローンでは分岐点までの履歴がないことがある。足して取り直す。
+    if (!hasMergeBase(dir, baseRef, headRef)) {
+        try {
+            git(dir, ['fetch', '--quiet', '--no-tags', `--deepen=${DEEPEN_COMMITS}`, 'origin', ...refspecs]);
+        } catch (e) {
+            // 浅いクローンでなければ --deepen は失敗する。下の比較に任せる。
+        }
+    }
+
+    // 分岐点が見つからなければ main との直接比較に落とす。
+    // main 側の新しい変更も差分に混ざるので、確認が出やすい側に倒れる。
+    const range = hasMergeBase(dir, baseRef, headRef)
+        ? `${baseRef}...${headRef}`
+        : `${baseRef}..${headRef}`;
 
     const files = git(dir, ['diff', '--name-only', range])
         .split('\n')
@@ -264,7 +347,15 @@ function collectPrDiff(dir, pullNumber) {
 
     const diffText = git(dir, ['diff', '--unified=0', '--no-color', range]);
 
-    return { files, diffText };
+    const readHead = (file) => {
+        try {
+            return git(dir, ['show', `${headRef}:${file}`]);
+        } catch (e) {
+            return null;
+        }
+    };
+
+    return { files, diffText, readHead };
 }
 
 // ============================================================
@@ -316,7 +407,7 @@ function judge(owner, repo, pullNumber) {
         return { ask: true, reason: `PR #${pullNumber} の差分を取得できませんでした: ${String(e.message).split('\n')[0]}` };
     }
 
-    const findings = inspectDiff(result.files, result.diffText);
+    const findings = inspectDiff(result.files, result.diffText, result.readHead);
 
     if (findings.length > 0) {
         return { ask: true, reason: formatFindings(pullNumber, findings) };
