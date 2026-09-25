@@ -13,6 +13,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `x-hide-spaces-bar.user.js` | X スペース帯非表示 | x.com / twitter.com |
 | `x-bottom-bar-opaque.user.js` | X 下部メニュー不透明化 | x.com / twitter.com |
 | `x-account-switcher.user.js` | X アカウント切替 | x.com / twitter.com |
+| `x-tab-account.user.js` | X タブ別アカウント | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
@@ -43,6 +44,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hide-spaces-bar.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-bottom-bar-opaque.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-account-switcher.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-tab-account.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
@@ -302,6 +304,82 @@ X が読み込み直した後の起動で「フォロー中」を開く（ホー
 消されたドックを作り直す、など。
 
 模擬DOMは X の実DOMではない（特にモバイルは推測で組んだ）ため、**実機確認の代わりにはならない**。
+
+## X タブ別アカウント について（ファイル: `x-tab-account.user.js`）
+
+X のアカウントをタブごとに覚え、タブを前面に出したときに、そのタブで使っていたアカウントとページへ戻す。
+X は全タブで1つのアカウントしか使えない（Cookie が共通）ので、擬似的に複数アカウントを同時に使うためのもの。
+**デスクトップの Chrome 向け**（左下のアカウントボタンがある幅で使う）。
+
+使わなくなったときに外しやすいよう、X アカウント切替（`x-account-switcher.user.js`）とは別のスクリプトにしている。
+両方入れても干渉しない。切替は X 本体の切替メニューを代わりに押して行い、非公式APIは叩かない。
+
+### 使い方
+
+1. タブA で X を開く（@A で閲覧）。タブB でも X を開く
+2. タブB で @B に切り替える（X の切替メニューでも、X アカウント切替のドックでもよい）
+3. タブA を前面に出すと、@A に切り替え、タブA で最後に見ていたページを開き直す。
+   タブB に戻ると @B に戻る
+
+何もしなくてよい。新しいタブは、開いたときのアカウントで覚える。そのタブで自分で切り替えると、
+切り替えた先のアカウントで覚え直す。
+
+### 作りの要点
+
+- **覚える場所**: タブのアカウントとページは `sessionStorage`（キー `tm-x-tabacct-tab`。タブごと）、
+  いまブラウザで有効なアカウントは `localStorage`（キー `tm-x-tabacct-active`。全タブ共通）。
+  前面に出したタブのアカウントが、有効なアカウントと違えば戻す
+- **「有効なアカウント」は、実際のアカウントが画面に出ているときだけ書く。** 読み込んだ直後の画面と、
+  ページ内で表示が切り替わったとき。別タブで切り替えた後のタブは、画面が古いまま残るため
+- **自分で切り替えたのか、別タブで切り替えられたのかの区別**: 読み込んだ直後の画面のアカウントが
+  「有効なアカウント」と違えば、まだどのタブも知らない切替＝このタブで切り替えた、と見なして覚え直す。
+  別タブで切り替えた後なら、そのタブが既に「有効なアカウント」を書き換えている
+- **古い画面のタブは、読み込み直してから切り替える。** 古い画面の X の切替メニューでは、戻したいアカウントが
+  「現在」扱いで押せないため。戻すときは最大3回ページが読み込まれる（読み込み直し → 切替 → 元のページ）
+- **切り替えるのは、タブが前面にあり、かつフォーカスがある間だけ。** 裏のタブが勝手にアカウントを変えると、
+  作業中のタブが古い画面のまま別アカウントになり、誤って別アカウントで投稿しかねない。
+  2つのウインドウを並べていても、操作しているほうだけが切り替わる。戻す途中で別のタブへ移ったら中断し、
+  次に前面に出したときにやり直す
+- 覚えるページはパスとクエリ。ログイン・ログアウトの流れと `/account/…` は覚えない。スクロール位置は戻さない
+  （タイムラインは後から読み込まれるため、確実に戻せない）
+- 戻せなかったとき（ログアウトしたアカウント等）は知らせて、そのタブをいまのアカウントで覚え直す。
+  覚えたままだと、前面に出すたびに失敗を繰り返すため
+- 切替先は X の重なり層（`#layers`）の中の「アバターと @ハンドルを持つ押せる要素」だけを押す。
+  タイムラインの同名ユーザーは押さない。メニューに無いときは一覧ページ（`/account/switch`）を開いて探す。
+  この辺りの探し方は X アカウント切替と同じ
+
+### 注意
+
+- **切り替えた直後、ほかのタブはすべて別アカウントの状態になっている。** 画面は古いままなので、
+  前面に出して戻るのを待ってから操作する（トースト「@A に戻しています…」→「@A に戻しました」）
+- ウインドウの幅が狭く、X がモバイル向けの画面（左下のアカウントボタンが無い）になっていると戻せない
+
+### 診断
+
+コンソールで `__tmXTabAccount.dump()` を実行すると、このタブのアカウントとページ・有効なアカウント・
+画面のアカウント・直近の記録が出る。`__tmXTabAccount.forget()` でこのタブの記憶を消し、
+いまのアカウントで覚え直す。
+
+### 検証
+
+```
+node --check x-tab-account.user.js
+NODE_PATH=$(npm root -g) node test/x-tab-account.test.js
+```
+
+1つのブラウザコンテキストに複数のページを開いてタブを模し（`localStorage` 共通・`sessionStorage` 別）、
+Trusted Types を強制する CSP を付けた模擬ページで52項目を確認する。X の模擬は、ログイン中のアカウントを
+全タブ共通の値に持ち、画面は読み込んだ時点のアカウントで固定する（別タブの切替では古いまま）。
+タブの前面・裏とフォーカスは `document.visibilityState` / `document.hasFocus()` を差し替えて模す。
+
+タブB で切り替えるとタブB を覚え直す／裏のタブA は何もしない／タブA を前面に出すと読み込み直してから
+@A に戻し、覚えていたページを開く／タブB に戻すと @B とそのページに戻る／合っていれば何もしない／
+並べたウインドウでフォーカスが無ければ切り替えない／X が読み込み直さずに切り替える場合・確認シートが出る場合・
+一覧ページから選ぶ場合／戻せないときは知らせて覚え直し、繰り返さない／裏で読み込まれても切り替えず、
+前面に来たら切り替える／自分で切り替えた直後にフォーカスが外れていても元へ戻さない／
+ログインの流れをページとして覚えない、など。
+
+模擬DOMは X の実DOMではないため、**実機確認の代わりにはならない**。
 
 ## YouTube チャット非表示 について（ファイル: `youtube-hide-chat-users.user.js`）
 
