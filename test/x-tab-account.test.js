@@ -57,6 +57,9 @@ function mockX() {
   let shown = cookie();
   ev('load:' + location.pathname + ':' + shown);
 
+  // ページを組み立てている最中（document-end より前）に、もう覆われているか
+  ev('cover-at-parse:' + location.pathname + ':' + !!document.getElementById('tm-x-tabacct-cover'));
+
   const h = (tag, attrs = {}, ...children) => {
     const el = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -137,6 +140,8 @@ function mockX() {
   };
 
   const renderApp = () => {
+    // X はルートごとにタイトルを変える（未読数が付くこともある）
+    document.title = '(2) ' + (location.pathname === '/home' ? 'ホーム' : location.pathname) + ' / X';
     root.replaceChildren(
       h('header', { role: 'banner' },
         h('a', { 'data-testid': 'AppTabBar_Profile_Link', href: '/' + shown, id: 'profileLink' }, 'プロフィール'),
@@ -149,7 +154,10 @@ function mockX() {
   };
 
   window.mockNav = nav;
-  window.addEventListener('popstate', renderApp);
+  // nopop: 戻る・進む（popstate）で描き替えない X
+  window.addEventListener('popstate', () => {
+    if (localStorage.getItem('mock-nopop') !== 'yes') renderApp();
+  });
 
   // SPA の描画が遅れて来るのを模す
   setTimeout(renderApp, 100);
@@ -157,7 +165,7 @@ function mockX() {
 
 const HTML = `<!doctype html><meta charset="utf-8"><title>x-mock</title>
 <style>
-  body { margin: 0; }
+  body { margin: 0; background-color: rgb(21, 32, 43); }
   img { width: 32px; height: 32px; display: block; }
   [role="button"], [role="menuitem"], a, button, li { display: block; min-height: 20px; }
   #layers > * { position: fixed; top: 0; left: 300px; width: 300px; background: #fff; }
@@ -262,6 +270,8 @@ const state = (page) =>
     active: JSON.parse(localStorage.getItem('tm-x-tabacct-active') || 'null')?.handle,
     cookie: localStorage.getItem('mock-cookie') || 'alice',
     restore: sessionStorage.getItem('tm-x-tabacct-restore'),
+    heading: document.querySelector('main h1')?.textContent || '',
+    covered: !!document.getElementById('tm-x-tabacct-cover') || !!sessionStorage.getItem('tm-x-tabacct-cover'),
     events: JSON.parse(sessionStorage.getItem('mock-events') || '[]')
   }));
 
@@ -347,6 +357,18 @@ const count = (events, prefix) => events.filter((e) => e.startsWith(prefix)).len
   check('タブA: 有効なアカウントが @alice になり、タブの記憶はそのまま', s.active === 'alice' && s.tab?.handle === 'alice' && s.tab?.url === '/dave/status/1', s);
   check('タブA: 戻す途中の印を消す', s.restore === null, s.restore);
   check('タブA: 「戻しました」と知らせる', (await toastText(A)).includes('@alice に戻しました'), await toastText(A));
+  {
+    const loads = s.events.filter((e) => e.startsWith('load:'));
+    check('タブA: 元のページへは読み込み直さずに移る（読み込みは「読み込み直し」と「切替」の2回だけ）',
+      loads.join(' ') === 'load:/home:alice load:/dave/status/1:bob load:/home:alice' && s.heading === '/dave/status/1', { loads, heading: s.heading });
+    const covers = s.events.filter((e) => e.startsWith('cover-at-parse:'));
+    check('覆い: 戻している途中の読み込みは、ページを組み立てる前から覆われている',
+      covers.slice(-2).join(' ') === 'cover-at-parse:/dave/status/1:true cover-at-parse:/home:true', covers);
+    check('覆い: ふだんの読み込みは覆わない', covers[0] === 'cover-at-parse:/home:false', covers);
+    check('覆い: 戻し終わったら外す', !s.covered, s);
+    check('覆い: X の背景色を覚えて、覆いの色に使う', await A.evaluate(() =>
+      JSON.parse(localStorage.getItem('tm-x-tabacct-theme') || 'null')?.bg === 'rgb(21, 32, 43)'));
+  }
   s = await state(B);
   check('タブB: タブA が戻している間、裏のタブB は何もしない', count(s.events, 'load:') === bLoadsBefore && s.url === '/notifications', s);
 
@@ -419,6 +441,35 @@ const count = (events, prefix) => events.filter((e) => e.startsWith(prefix)).len
   check('一覧ページ: タブの記憶に /account/switch を入れない', s.tab?.url === '/dave/status/1', s.tab);
 
   // ==========================================================
+  // 画面の中の移動に X が反応しない（nopop）→ 読み込み直して元のページを開く
+  // ==========================================================
+  await setMode(A, 'reload');
+  await A.evaluate(() => localStorage.setItem('mock-nopop', 'yes'));
+  await switchTab(A, B);
+  s = await state(B);
+  check('元のページが切替後の着地先（/home）と同じなら、移らずに終わる', s.shown === 'carol' && s.url === '/home', s);
+  await switchTab(B, A);
+  s = await state(A);
+  check('描き替えない X: 読み込み直して元のページを開く', s.shown === 'alice' && s.url === '/dave/status/1' && s.heading === '/dave/status/1' &&
+    s.events[s.events.length - 2] === 'load:/dave/status/1:alice', s.events.slice(-6));
+  check('描き替えない X: 読み込み直した先でも覆い、開いたら外す',
+    s.events[s.events.length - 1] === 'cover-at-parse:/dave/status/1:true' && !s.covered, { ev: s.events.slice(-6), covered: s.covered });
+  check('描き替えない X: 読み込み直した先で「戻しました」と知らせる', (await toastText(A)).includes('@alice に戻しました'), await toastText(A));
+  await A.evaluate(() => localStorage.removeItem('mock-nopop'));
+
+  // 覆いの保険: 古い覆いの印は使わない。戻す途中でなければ、読み込んだ後に外す
+  await A.evaluate(() => sessionStorage.setItem('tm-x-tabacct-cover', JSON.stringify({ handle: 'alice', at: Date.now() - 5 * 60 * 1000 })));
+  await A.reload();
+  await idle(A);
+  s = await state(A);
+  check('覆いの保険: 古い覆いの印では覆わない', s.events[s.events.length - 1] === 'cover-at-parse:/dave/status/1:false' && !s.covered, s.events.slice(-3));
+  await A.evaluate(() => sessionStorage.setItem('tm-x-tabacct-cover', JSON.stringify({ handle: 'alice', at: Date.now() })));
+  await A.reload();
+  await idle(A);
+  s = await state(A);
+  check('覆いの保険: 戻す途中でなければ、読み込んだ後に外す', s.events[s.events.length - 1] === 'cover-at-parse:/dave/status/1:true' && !s.covered, s.events.slice(-3));
+
+  // ==========================================================
   // 戻せない（ログアウトしたアカウント）
   // ==========================================================
   await setMode(A, 'reload');
@@ -432,6 +483,7 @@ const count = (events, prefix) => events.filter((e) => e.startsWith(prefix)).len
   check('失敗: 開いたメニューを閉じる', s.events.includes('escape') && await A.evaluate(() => !document.getElementById('accountMenu')), s.events);
   check('失敗: 何も押していない', count(s.events, 'switch:') === count(aFail.events, 'switch:') && count(s.events, 'nav:') === 0, s.events);
   check('失敗: このタブをいまのアカウント（@alice）で覚え直す（繰り返さない）', s.tab?.handle === 'alice' && s.restore === null, s);
+  check('失敗: 覆いを外す', !s.covered, s);
   const opens = count(s.events, 'open-menu');
   await setActive(A, false);
   await setActive(A, true);
