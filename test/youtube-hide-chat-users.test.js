@@ -104,9 +104,9 @@ function check(name, cond, extra) {
   check('初期: 何も登録していなければ全部見える', (await shown('m1')) === true && (await shown('m2')) === true);
 
   // --- ボタンの設置 ---
-  check('ボタン: 発言ごとに「発言を消す」ボタンが1つだけ付く', await page.evaluate(() => {
+  check('ボタン: 発言ごとに「けす」ボタンが1つだけ付く', await page.evaluate(() => {
     const btns = document.querySelectorAll('#m1 > .tm-ychide-btn');
-    return btns.length === 1 && btns[0].textContent === '発言を消す';
+    return btns.length === 1 && btns[0].textContent === 'けす';
   }));
   check('ボタン: まるごと消すボタンは発言には出ない', await page.evaluate(() => !document.querySelector('#m1 > .tm-ychide-btn-all')));
 
@@ -210,8 +210,8 @@ function check(name, cond, extra) {
   await page.waitForTimeout(150);
   await page.evaluate(() => document.querySelector('#r1 > .tm-ychide-btn').click());
   await page.waitForTimeout(200);
-  check('戻す: 消した後はボタンが「発言を戻す」になる', await page.evaluate(() =>
-    document.querySelector('#r1 > .tm-ychide-btn').textContent === '発言を戻す'));
+  check('戻す: 消した後はボタンが「もどす」になる', await page.evaluate(() =>
+    document.querySelector('#r1 > .tm-ychide-btn').textContent === 'もどす'));
   check('戻す: ボタンは1つのまま', await page.evaluate(() =>
     document.querySelectorAll('#r1 > .tm-ychide-btn').length === 1));
   const beforeRestore = await page.evaluate(() => window.__tmChatHide.list().length);
@@ -220,8 +220,8 @@ function check(name, cond, extra) {
   check('戻す: 押すと本文が見える', await page.evaluate(() =>
     getComputedStyle(document.querySelector('#r1 #message')).display !== 'none'));
   check('戻す: 登録も解除される', (await page.evaluate(() => window.__tmChatHide.list().length)) === beforeRestore - 1);
-  check('戻す: ボタンが「発言を消す」に戻る', await page.evaluate(() =>
-    document.querySelector('#r1 > .tm-ychide-btn').textContent === '発言を消す'));
+  check('戻す: ボタンが「けす」に戻る', await page.evaluate(() =>
+    document.querySelector('#r1 > .tm-ychide-btn').textContent === 'けす'));
 
   // --- パネル ---
   check('パネル: 開くボタンがある', await page.evaluate(() => !!document.querySelector('.tm-ychide-open')));

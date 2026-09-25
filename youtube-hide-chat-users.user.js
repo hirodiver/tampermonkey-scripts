@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.7
+// @name         YouTube チャット非表示 v1.8
 // @namespace    https://www.youtube.com/
-// @version      1.7
+// @version      1.8
 // @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（基本は名前を残して本文だけ消す。一覧から「まるごと消す」に切り替え可・チャンネルID単位）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -556,13 +556,13 @@
          * 要素は使い回されるので、毎回書き直す。
          */
         const registered = !!modeOf(el);
-        const label = registered ? '発言を戻す' : '発言を消す';
+        const label = registered ? 'もどす' : 'けす';
 
         if (btn.textContent !== label) {
             btn.textContent = label;
             btn.title = registered
-                ? 'この人の登録を解除して、発言を元どおり表示する'
-                : '名前は残し、本文を消す（まるごと消すには「非表示リスト」から切り替え）';
+                ? 'この人の登録を解除して、発言を元どおり表示する（発言を戻す）'
+                : '名前は残し、本文を消す（発言を消す。まるごと消すには「非表示リスト」から切り替え）';
         }
     }
 
