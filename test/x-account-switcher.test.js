@@ -447,13 +447,15 @@ const toastText = (page) =>
     window.openDrawer = () => {
       events.push('open-drawer');
       closeAll();
-      const others = ['alice', 'bob', 'carol'].filter((x) => x !== window.current).slice(0, opts.noMoreButton ? 2 : 1);
+      const others = ['alice', 'bob', 'carol'].filter((x) => x !== window.current).slice(0, opts.noOthers ? 0 : opts.noMoreButton ? 2 : 1);
       layers.append(h('div', { role: 'dialog', 'aria-modal': 'true', id: 'drawer', class: 'overlay' },
         h('div', { 'data-testid': 'mask', onclick: () => { events.push('mask'); closeAll(); } }),
         h('a', { href: '/' + window.current, id: 'drawerMe', onclick: (e) => { e.preventDefault(); events.push('nav:/' + window.current); } },
           avatar(window.current), h('span', {}, names[window.current]), h('span', {}, '@' + window.current)),
         ...others.map((o) => h('div', { role: 'button', id: 'drawer-' + o, onclick: () => switchedTo(o) }, avatar(o))),
         opts.noMoreButton ? '' :
+          opts.unlabeledMore ?
+            h('div', { role: 'button', id: 'drawerMore', onclick: () => window.openSheet() }, '⋯') :
           opts.routeSheet ?
             h('a', { href: '/account/switch', 'aria-label': 'アカウント', id: 'drawerMore', onclick: (e) => { e.preventDefault(); window.openSheet(); } }, '⋯') :
             h('div', { role: 'button', 'aria-label': 'アカウント', id: 'drawerMore', onclick: () => window.openSheet() }, '⋯'),
@@ -699,6 +701,47 @@ const toastText = (page) =>
     check(tag + '記録にドロワーの中の候補が出る', /中の候補: @bob @carol/.test(text), text.slice(0, 2000));
     check(tag + 'ドロワーの構造に @ハンドルの文字が出る', /「Alice ?@alice」/.test(text), text.slice(-1500));
     check(tag + '閉じる', await page.evaluate(() => !document.getElementById('drawer')));
+
+    await page.close();
+  }
+
+  // 自動では一覧を開けない場合（「アカウント」ボタンに名前が無く、ドロワーに他のアカウントも無い）
+  // → ドロワーを開いたまま残し、手で続きを押せばその場で覚える
+  {
+    const page = await newPage(browser, { width: 402, height: 668 });
+    await page.goto('https://x.com/home');
+    await page.evaluate(fixtures);
+    await page.evaluate(mobileSetup, { testid: true, unlabeledMore: true, noOthers: true });
+    await page.evaluate(SCRIPT);
+    await page.waitForTimeout(400);
+    const tag = '[モバイル 自動で開けない] ';
+
+    await loadViaDock(page);
+    await page.waitForTimeout(1400);
+    const text = await toastText(page);
+    check(tag + '失敗の案内に止まった段階が出る', /ドロワーの中に「アカウント」ボタンが見つからない/.test(text), text);
+    check(tag + '失敗の案内に「記録をコピー」ボタンが付き、押せる', await page.evaluate(() => {
+      const t = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.toast');
+      return t.querySelector('button')?.textContent === '記録をコピー' && getComputedStyle(t).pointerEvents === 'auto';
+    }));
+    check(tag + 'ドロワーは閉じずに残す', await page.evaluate(() => !!document.getElementById('drawer')));
+    check(tag + 'ドックのボタンは押せる状態に戻る', await page.evaluate(() => {
+      const buttons = [...document.getElementById('tm-x-switch-root').shadowRoot.querySelectorAll('.list button')];
+      return buttons.length > 0 && buttons.every((b) => !b.disabled);
+    }));
+    check(tag + '記録に失敗の段階が残る', await page.evaluate(() =>
+      /読み込み失敗[\s\S]*ドロワーの中に「アカウント」ボタンが見つからない/.test(window.__tmXSwitch.dump())));
+
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.toast button').click());
+    await page.waitForTimeout(300);
+    check(tag + '「記録をコピー」を押すと結果を知らせる', /コピー/.test(await toastText(page)), await toastText(page));
+
+    // 続きを手で押す
+    await page.evaluate(() => document.getElementById('drawerMore').click());
+    await page.waitForTimeout(600);
+    check(tag + '手で一覧を開くと、その場で3件覚える',
+      JSON.stringify((await stored(page)).sort()) === JSON.stringify(['alice', 'bob', 'carol']), await stored(page));
+    check(tag + '覚えたことを知らせる', /3件のアカウントを覚えました/.test(await toastText(page)), await toastText(page));
 
     await page.close();
   }

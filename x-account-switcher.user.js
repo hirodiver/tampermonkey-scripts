@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.1.0
+// @name         X アカウント切替 v1.1.1
 // @namespace    local.hiro.tools
-// @version      1.1.0
+// @version      1.1.1
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -65,7 +65,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.1.0';
+    const VERSION = '1.1.1';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -106,7 +106,8 @@
     const CHECK_DELAY = 250;
 
     // 切替メニューの項目が出るまで待つ上限（ミリ秒）
-    const MENU_WAIT_MS = 3000;
+    // X はドロワーや一覧の部品を初めて開くときに読み込むので、長めに取る
+    const MENU_WAIT_MS = 5000;
 
     // 待つ間の確認間隔（ミリ秒）
     const POLL_MS = 100;
@@ -130,6 +131,9 @@
 
     // トーストの表示時間（ミリ秒）
     const TOAST_MS = 2200;
+
+    // 読み込みに失敗したときの案内の表示時間（ミリ秒）。「記録をコピー」を押せるよう長めに
+    const FAILURE_TOAST_MS = 12000;
 
     // 切替の記録を何件残すか（診断用）
     const SWITCH_LOG_MAX = 40;
@@ -319,6 +323,15 @@
 
     // 切替UIを開くためにホームへ移ったか（終わったら元のページへ戻る）
     let movedHome = false;
+
+    // 切替UIを開く途中で止まった段階（読み込み失敗の案内に出す）
+    let openFailure = '';
+
+    /*
+     * 読み込みに失敗し、ドロワー等を開いたまま手での操作を待っているか。
+     * その間に一覧を覚えたら知らせる
+     */
+    let waitingForManual = false;
 
     const switchLog = [];
 
@@ -1445,6 +1458,8 @@
 
         movedHome = false;
 
+        openFailure = '';
+
 
         const already = want();
 
@@ -1486,6 +1501,9 @@
 
 
         if (!drawerOpener) {
+
+            openFailure = '左上のアイコンが見つからない';
+
             return null;
         }
 
@@ -1505,6 +1523,11 @@
 
 
         if (!first) {
+
+            openFailure =
+                openOverlays().length ?
+                    'ドロワーの中に「アカウント」ボタンが見つからない' :
+                    'ドロワーが開かない';
 
             log(
                 'ドロワーの中に切替先も「アカウント」ボタンも見つからない',
@@ -1538,6 +1561,9 @@
 
 
         if (!found) {
+
+            openFailure = 'アカウント一覧が出ない';
+
             log('アカウント一覧の中に見つからない', 'ページ: ' + location.pathname);
         }
 
@@ -1879,19 +1905,47 @@
 
             log('読み込み完了', loadAccounts().map(a => '@' + a.screenName).join(' '));
 
+
+            if (hasOpenLayer()) {
+                closeLayers();
+            }
+
+
+            leaveTemporaryPages(startPath);
+
+
+            busy = false;
+
+            render(true);
+
+            toast(loadAccounts().length + '件のアカウントを覚えました');
+
+            return;
+        }
+
+
+        const reason = openFailure || '切替メニューを開けない';
+
+        log('読み込み失敗', reason);
+
+        takeSnapshot();
+
+
+        /*
+         * 手で開けば覚えられるので、途中まで開いたドロワー等は閉じずに残し、
+         * 続きを押してもらう（開いた一覧は監視でその場で覚える）
+         */
+        const leftOpen = hasOpenLayer();
+
+
+        if (!leftOpen) {
+            leaveTemporaryPages(startPath);
         } else {
-
-            log('読み込み失敗');
+            movedHome = false;
         }
 
 
-        if (hasOpenLayer()) {
-            closeLayers();
-        }
-
-
-        leaveTemporaryPages(startPath);
-
+        waitingForManual = leftOpen;
 
         busy = false;
 
@@ -1899,10 +1953,35 @@
 
 
         toast(
-            opened ?
-                loadAccounts().length + '件のアカウントを覚えました' :
-                'アカウント一覧を開けませんでした。X の切替メニューを一度手で開いてください'
+            (leftOpen ?
+                '自動で開けませんでした（' + reason + '）。続きを手で開くと、その場で覚えます' :
+                'アカウント一覧を開けませんでした（' + reason + '）。X の切替メニューを一度手で開いてください'),
+            {
+                label: '記録をコピー',
+                onClick: copyReport
+            }
         );
+    }
+
+
+    /*
+     * 診断の記録をクリップボードへ写す（失敗の案内から1タップで取れるように）
+     */
+    async function copyReport() {
+
+        takeSnapshot();
+
+
+        try {
+
+            await navigator.clipboard.writeText(buildReport());
+
+            toast('記録をコピーしました。そのまま貼り付けて送ってください');
+
+        } catch {
+
+            toast('コピーできませんでした。URL の末尾に #tmswitch を付けて開くと記録が見られます');
+        }
     }
 
 
@@ -2051,6 +2130,19 @@
     transition: opacity 0.15s ease;
 }
 .toast.show { opacity: 1; }
+.toast.actionable.show { pointer-events: auto; }
+.toast button {
+    appearance: none;
+    display: block;
+    margin: 8px auto 0;
+    padding: 6px 14px;
+    border: 1px solid rgba(244, 244, 245, 0.3);
+    border-radius: 999px;
+    background: transparent;
+    color: #f4f4f5;
+    font: inherit;
+}
+.toast button:active { background: rgba(244, 244, 245, 0.12); }
 @media (prefers-reduced-motion: reduce) {
     .av:active { transform: none; }
     .toast { transition: none; }
@@ -2087,14 +2179,39 @@
     }
 
 
-    function toast(message) {
+    /*
+     * action を渡すと、押せるボタンを添えて長めに出す
+     */
+    function toast(message, action) {
 
         if (!toastEl) {
             return;
         }
 
 
-        toastEl.textContent = message;
+        toastEl.replaceChildren(document.createTextNode(message));
+
+
+        if (action) {
+
+            const button = document.createElement('button');
+
+            button.type = 'button';
+
+            button.textContent = action.label;
+
+            button.addEventListener('click', () => {
+
+                toastEl.classList.remove('show');
+
+                action.onClick();
+            });
+
+            toastEl.appendChild(button);
+        }
+
+
+        toastEl.classList.toggle('actionable', !!action);
 
         toastEl.classList.add('show');
 
@@ -2104,7 +2221,7 @@
         toastTimer =
             setTimeout(
                 () => toastEl.classList.remove('show'),
-                TOAST_MS
+                action ? FAILURE_TOAST_MS : TOAST_MS
             );
     }
 
@@ -2451,6 +2568,19 @@
 
 
                     render(changed);
+
+
+                    /*
+                     * 読み込みに失敗して手での操作を待っている間に覚えたら知らせる
+                     */
+                    if (waitingForManual && changed) {
+                        toast(loadAccounts().length + '件のアカウントを覚えました');
+                    }
+
+
+                    if (waitingForManual && !hasOpenLayer()) {
+                        waitingForManual = false;
+                    }
                 },
                 CHECK_DELAY
             );
