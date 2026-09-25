@@ -1,0 +1,19 @@
+# 秘密情報（API キー・パスワードなど）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 依存パッケージ・ログ
+node_modules/
+*.log
+
+# OS・エディタが作るファイル
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code の個人用設定
+.claude/settings.local.json
