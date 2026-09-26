@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.4.1
+// @name         X アカウント切替 v1.5.0
 // @namespace    local.hiro.tools
-// @version      1.4.1
+// @version      1.5.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -66,7 +66,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.4.1';
+    const VERSION = '1.5.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -348,6 +348,7 @@
     let tabEl = null;
     let tuckEl = null;
     let moveEl = null;
+    let reloadEl = null;
     let cornersEl = null;
     let toastEl = null;
 
@@ -2407,6 +2408,8 @@
     font-size: 11px;
     line-height: 1;
 }
+.tool[hidden] { display: none; }
+.tool[disabled] { opacity: 0.45; }
 .tool:active, .tool[aria-expanded="true"] { background: rgba(244, 244, 245, 0.14); color: #f4f4f5; }
 .corners { display: none; grid-template-columns: 20px 20px; gap: 4px; }
 .corners.open { display: grid; }
@@ -2581,6 +2584,7 @@
          * アイコンの下に区切り線を引き、操作は文字のボタンで並べる
          * （記号だけでは何のボタンか分かりにくいため）。
          *   移動:   四隅を選ぶ表を開く。ドックを引っぱって動かすこともできる
+         *   読込:   一覧を読み直す（関係ないアカウントが入ったときの直し用）
          *   しまう: 画面端のつまみだけにする（つまみの矢印は「出す」専用）
          */
         const tools = document.createElement('div');
@@ -2652,7 +2656,29 @@
         tuckEl.addEventListener('click', tuck);
 
 
-        tools.append(moveEl, cornersEl, tuckEl);
+        /*
+         * 読み直しは、切替メニューの一覧すべて（「既存のアカウントを追加」がある）を
+         * 読めたときだけ置き換える。途中で失敗しても今の一覧は残るので、確認は出さない
+         */
+        reloadEl = document.createElement('button');
+
+        reloadEl.type = 'button';
+
+        reloadEl.className = 'tool reload';
+
+        reloadEl.textContent = '読込';
+
+        reloadEl.title = 'アカウント一覧を読み直す（関係ないアカウントが入ったときなど）';
+
+        reloadEl.addEventListener('click', () => {
+
+            toggleCorners(false);
+
+            loadFromNative();
+        });
+
+
+        tools.append(moveEl, cornersEl, reloadEl, tuckEl);
 
         dock.append(listEl, tools);
 
@@ -2927,6 +2953,14 @@
         if (tucked) {
             toggleCorners(false);
         }
+
+
+        /*
+         * 一覧が空のときは、アイコン欄の大きな「読込」だけにする
+         */
+        reloadEl.hidden = !accounts.length;
+
+        reloadEl.disabled = busy;
 
 
         listEl.replaceChildren();

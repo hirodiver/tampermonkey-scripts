@@ -206,6 +206,8 @@ const toastText = (page) =>
     check('起動: ドックが出る（Shadow DOM）', await page.evaluate(() => !!document.getElementById('tm-x-switch-root')?.shadowRoot));
     check('起動: 一覧が空なら「読込」ボタンを出す', await page.evaluate(() =>
       !!document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.load')));
+    check('起動: 一覧が空のうちは、下の「読込」は出さない（二重にしない）', await page.evaluate(() =>
+      document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .reload').hidden));
     check('起動: 勝手に切替メニューを開かない', !(await page.evaluate(() => events.includes('open-menu'))));
     check('誤登録: タイムラインのユーザー（UserCell・投稿）を覚えない', (await stored(page)).length === 0, await stored(page));
 
@@ -276,6 +278,28 @@ const toastText = (page) =>
     await page.waitForTimeout(300);
     check('誤登録: 画像の拡大やいいね一覧を開いても、中のユーザーを覚えない（一覧は3件のまま）',
       JSON.stringify((await stored(page)).sort()) === JSON.stringify(['alice', 'bob', 'carol']), await stored(page));
+
+    // 関係ないアカウントが入ってしまったら、下の「読込」で読み直して消す
+    await page.evaluate(() => {
+      const list = JSON.parse(localStorage.getItem('tm-x-switch-accounts'));
+      list.push({ screenName: 'stranger', name: 'Stranger', avatar: '' });
+      localStorage.setItem('tm-x-switch-accounts', JSON.stringify(list));
+      document.body.append(document.createElement('i'));
+      events.length = 0;
+    });
+    await page.waitForTimeout(400);
+    check('読込: 一覧があるときは、下に「読込」ボタンが出る', await page.evaluate(() => {
+      const b = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .reload');
+      return !b.hidden && b.getBoundingClientRect().height > 0;
+    }));
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .reload').click());
+    await page.waitForTimeout(700);
+    check('読込: 切替メニューを開いて読み直し、関係ないアカウントを消す（本物の3件だけ残る）',
+      JSON.stringify((await stored(page)).sort()) === JSON.stringify(['alice', 'bob', 'carol']), await stored(page));
+    check('読込: 読み直した後はメニューを閉じ、何も押していない', await page.evaluate(() =>
+      !document.getElementById('accountMenu') && events.includes('open-menu') && !events.some((e) => e.startsWith('switch:'))),
+      await page.evaluate(() => events.slice()));
+    check('読込: 覚えた件数を知らせる', /3件のアカウントを覚えました/.test(await toastText(page)), await toastText(page));
 
     // v1.1.2 までに壊れて覚えた現在のアカウント（アイコン無し・名前がハンドル）を、読み込み直さなくても直す
     await page.evaluate(() => {
@@ -385,10 +409,10 @@ const toastText = (page) =>
     const dockClass = () => page.evaluate(() =>
       document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').className);
 
-    check('操作: 記号だけのボタン（⋮）は無く、区切り線の下に文字のボタン「移動」「しまう」が並ぶ', await page.evaluate(() => {
+    check('操作: 記号だけのボタン（⋮）は無く、区切り線の下に文字のボタン「移動」「読込」「しまう」が並ぶ', await page.evaluate(() => {
       const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-      const labels = [...sr.querySelectorAll('.tools > button')].map((b) => b.textContent);
-      return !sr.querySelector('.more') && JSON.stringify(labels) === JSON.stringify(['移動', 'しまう']) &&
+      const labels = [...sr.querySelectorAll('.tools > button')].filter((b) => !b.hidden).map((b) => b.textContent);
+      return !sr.querySelector('.more') && JSON.stringify(labels) === JSON.stringify(['移動', '読込', 'しまう']) &&
         getComputedStyle(sr.querySelector('.tools')).borderTopStyle === 'solid';
     }));
 
