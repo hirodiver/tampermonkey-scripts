@@ -53,6 +53,32 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/tenbin-ai-biz-terms-expand-all.user.js
 
+### 新しいスクリプトを入れるとき
+
+上の URL は **`main` に入ってから**でないと開けない（開くと「404: Not Found」になる）。
+作ったばかりのスクリプトは、まず作業ブランチにだけある。
+
+**`main` にマージ済みなら（いつもの入れ方）**
+
+1. マージから数分待つ（配信側のキャッシュのため。下の「自動更新の仕組み」参照）
+2. Tampermonkey を入れたブラウザ（Safari など）で、上の一覧の URL を開く
+3. インストール画面が出たら「インストール」を押す
+4. 対象のページを開いて動くか確かめる（ページが開いたままなら再読み込みする）
+
+**まだ作業ブランチにしかないとき（先に試したい場合）**
+
+URL の `main` の部分を作業ブランチ名に置き換えて開けば、同じ手順で入れられる。
+
+```
+https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/<ブランチ名>/<ファイル名>
+```
+
+この方法で入れても、以後の更新は `main` から届く（スクリプト内の `@updateURL` が
+`main` を指しているため）。マージ前は更新の確認が空振りするだけで害はない。
+
+**作業した側（Claude）へ**: 新しいスクリプトを作ったら、報告の最後に
+**インストール用の URL と、それがいま開けるか（`main` に入っているか）**を必ず書くこと。
+
 ## 自動更新の仕組み
 
 各スクリプトの `@updateURL` / `@downloadURL` は上記 raw URL（`main` ブランチ）を指している。
