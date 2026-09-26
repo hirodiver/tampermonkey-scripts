@@ -243,6 +243,40 @@ const toastText = (page) =>
     check('描画: ドックに3件並ぶ', buttons && buttons.length === 3, buttons);
     check('描画: 現在のアカウント（alice）に印が付く', buttons && buttons.find((b) => b.handle === 'alice')?.current && !buttons.find((b) => b.handle === 'bob')?.current, buttons);
 
+    // 重なり層に開く、切替メニュー以外の画面（画像の拡大・いいねしたユーザー一覧）。
+    // 中の投稿者やユーザーを「自分」として覚えない（v1.4.0 まで、開くたびに一覧が伸びていた）
+    await page.evaluate(() => {
+      layers.append(h('div', { role: 'dialog', 'aria-modal': 'true', id: 'photoModal' },
+        h('img', { src: 'https://pbs.twimg.com/media/photo.jpg', alt: '画像' }),
+        h('article', { 'data-testid': 'tweet' },
+          h('a', { href: '/dave' }, avatar('dave'), h('span', {}, 'Dave'), h('span', {}, '@dave')),
+          h('span', {}, 'ふつうの投稿'))));
+    });
+    await page.waitForTimeout(400);
+    await page.evaluate(() => closeAll());
+    await page.evaluate(() => {
+      layers.append(h('div', { role: 'dialog', 'aria-modal': 'true', id: 'likesModal' },
+        h('h2', {}, 'いいねしたユーザー'),
+        ...['eve', 'frank'].map((hd) =>
+          h('div', { 'data-testid': 'UserCell' },
+            h('a', { href: '/' + hd }, avatar(hd)),
+            h('a', { href: '/' + hd }, h('span', {}, hd.toUpperCase()), h('span', {}, '@' + hd)),
+            h('div', { role: 'button' }, 'フォロー')))));
+    });
+    await page.waitForTimeout(400);
+    await page.evaluate(() => closeAll());
+    // 「ログアウト」を含む長い文章（プロフィール文など）の入れ物と、ユーザー
+    await page.evaluate(() => {
+      layers.append(h('div', { id: 'hoverCard' },
+        h('div', { role: 'button' }, avatar('gina'), h('span', {}, 'Gina @gina'),
+          h('span', {}, '毎朝ログアウトしてから寝るのが日課です。いつもありがとうございます。よろしくね'))));
+    });
+    await page.waitForTimeout(400);
+    await page.evaluate(() => closeAll());
+    await page.waitForTimeout(300);
+    check('誤登録: 画像の拡大やいいね一覧を開いても、中のユーザーを覚えない（一覧は3件のまま）',
+      JSON.stringify((await stored(page)).sort()) === JSON.stringify(['alice', 'bob', 'carol']), await stored(page));
+
     // v1.1.2 までに壊れて覚えた現在のアカウント（アイコン無し・名前がハンドル）を、読み込み直さなくても直す
     await page.evaluate(() => {
       const list = JSON.parse(localStorage.getItem('tm-x-switch-accounts'))
@@ -667,6 +701,17 @@ const toastText = (page) =>
     await page.evaluate(() => { closeAll(); events.length = 0; });
     await page.waitForTimeout(400);
     report = await page.evaluate(() => window.__tmXSwitch.dump());
+    // いいねしたユーザー一覧（重なり層）を開いても、中のユーザーを自分として覚えない
+    await page.evaluate(() => {
+      layers.append(h('div', { role: 'dialog', 'aria-modal': 'true', id: 'likesModal', class: 'overlay' },
+        h('div', { 'data-testid': 'UserCell' },
+          h('a', { href: '/eve' }, avatar('eve')),
+          h('a', { href: '/eve' }, h('span', {}, 'Eve'), h('span', {}, '@eve')))));
+    });
+    await page.waitForTimeout(400);
+    check(tag + '誤登録: いいね一覧のユーザーを自分として覚えない', !(await stored(page)).includes('eve'), await stored(page));
+    await page.evaluate(() => closeAll());
+    await page.waitForTimeout(300);
     check(tag + '閉じた後は、左上のアイコンの画像で現在のアカウントを特定する', /現在のアカウント: @alice（左上のアイコンの画像）/.test(report), report.slice(0, 300));
     check(tag + '閉じた後も、ドロワーの構造が診断に残る', /最後に開いていたメニュー・ドロワーの構造/.test(report) && /drawerMe|href="\/alice"/.test(report), report.slice(-1500));
     check(tag + '構造の記録に上下のバーを含めない', !/BottomBar|TopNavBar/.test(report.slice(report.indexOf('■ 最後に開いていた'))));

@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.4.0
+// @name         X アカウント切替 v1.4.1
 // @namespace    local.hiro.tools
-// @version      1.4.0
+// @version      1.4.1
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -66,7 +66,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.4.0';
+    const VERSION = '1.4.1';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -278,6 +278,9 @@
      * /account/switch のページでは、現在のアカウントは押せない li、他は button
      */
     const ACCOUNT_ITEM_SELECTOR = '[data-testid="AccountSwitcher_Switch_Button"]';
+
+    // 文言の目印として見る要素の文字数の上限（「@ハンドル からログアウト」が収まる長さ）
+    const MARKER_TEXT_MAX_LENGTH = 40;
 
     // 上の目印のうち「一覧がすべて出ている」ことを示すもの（アカウント追加）
     const FULL_LIST_HREFS = [
@@ -811,7 +814,37 @@
      */
     function currentFromOpenDrawer() {
 
+        /*
+         * 左上のアイコンからドロワーを開く画面幅（モバイル）でだけ使う。
+         * デスクトップ幅では、画像の拡大・返信・いいね一覧などの重なり層に出る
+         * 投稿者やユーザーを「自分」と取り違え、一覧が伸びていた（v1.4.0 まで）
+         */
+        if (queryFirst(MENU_OPENER_SELECTORS)) {
+            return null;
+        }
+
+
+        const opener = findDrawerOpener();
+
+        if (!opener) {
+            return null;
+        }
+
+
+        const openerImg = opener.querySelector(AVATAR_IMG_SELECTOR);
+
+        const openerKey = openerImg ? avatarKey(openerImg.getAttribute('src')) : '';
+
+
         for (const overlay of openOverlays()) {
+
+            /*
+             * ポストを含む重なり層（画像の拡大・返信など）はドロワーではない
+             */
+            if (overlay.querySelector('article, [data-testid="tweet"]')) {
+                continue;
+            }
+
 
             for (const link of overlay.querySelectorAll('a[href]')) {
 
@@ -823,14 +856,28 @@
                 }
 
 
-                if (textOf(link).toLowerCase().includes('@' + match[1].toLowerCase())) {
-
-                    return {
-                        handle: match[1],
-                        name: nameOf(link, match[1]),
-                        avatar: avatarOf(link)
-                    };
+                if (!textOf(link).toLowerCase().includes('@' + match[1].toLowerCase())) {
+                    continue;
                 }
+
+
+                /*
+                 * 左上のアイコン（自分）と画像が違うアカウントは自分ではない
+                 */
+                const avatar =
+                    avatarOf(link) ||
+                    currentDetails(match[1], [overlay]).avatar;
+
+                if (openerKey && avatar && avatarKey(avatar) !== openerKey) {
+                    continue;
+                }
+
+
+                return {
+                    handle: match[1],
+                    name: nameOf(link, match[1]),
+                    avatar
+                };
             }
         }
 
@@ -955,7 +1002,13 @@
         }
 
 
-        return MARKER_TEXT.test(textOf(element));
+        /*
+         * 文言の目印は短い要素に限る。ポストやプロフィール文など、長い文章に
+         * 「ログアウト」等が含まれているだけの入れ物を切替メニューと取り違えないため
+         */
+        const text = textOf(element);
+
+        return text.length <= MARKER_TEXT_MAX_LENGTH && MARKER_TEXT.test(text);
     }
 
 
