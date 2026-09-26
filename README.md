@@ -17,6 +17,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
+| `youtube-chat-highlight.user.js` | YouTube チャット強調 | www.youtube.com/live_chat |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 | `tenbin-ai-biz-terms-expand-all.user.js` | 天秤AI 約款一括展開 | biz.tenbin.ai/trust |
 
@@ -48,6 +49,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-highlight.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/tenbin-ai-biz-terms-expand-all.user.js
 
@@ -503,6 +505,47 @@ NODE_PATH=$(npm root -g) node test/youtube-hide-chat-users.test.js
 再読み込み後の保持）を確認する。
 
 Xの実DOMやチャットの実際の描画とは異なるため、**実機確認の代わりにはならない**。
+
+## YouTube チャット強調 について（ファイル: `youtube-chat-highlight.user.js`）
+
+ライブチャットで、指定した文字列を含む発言を**まるごと**強調表示する。
+文字列は**名前（@ハンドル含む）・チャンネルID・発言の本文**のどこかに含まれていれば当たる。
+
+### 使い方
+
+1. 画面右上（チャット上部の見出し帯のすぐ下）の **「強調ワード」** ボタンで入力欄が開く。
+   YouTube チャット非表示も入れているときは、「非表示リスト」ボタンの左隣に並ぶ
+2. 強調したい文字列を**改行区切り**で入力する（入力したそばから反映・保存される）。
+   どれか1つでも含む発言が、黄色の帯＋薄い黄色の背景＋太字になる。
+   スーパーチャット等の色つきの発言は、黄色の枠でも示す
+3. 入力欄の下に、いま表示中の発言のうち何件を強調しているかが出る。
+   空にすると何も強調しない
+
+### 作りの要点
+
+- 見た目（入力欄の形・説明文・強調色）は **YouTube 配信予定リストの「強調ワード」に揃えた**
+- 判定は部分一致。**大文字小文字と全角半角（ＡＢＣ / ABC）は区別しない**（NFKC で揃えてから比べる）
+- 本文の絵文字は画像なので、代替テキスト（`:partying_face:` 等）を文字として見る
+- チャンネルIDは `author-external-channel-id` 属性、無ければ Polymer の `__data` を浅く掘って探す
+  （YouTube チャット非表示と同じ）
+- チャットは要素を使い回すため、毎回すべて判定し直し、外れた要素は強調を戻す
+- 設定は `localStorage`（キー `tm-yt-chat-highlight-words`）。配信予定リストの強調ワードとは**別に保存**する。
+  `storage` イベントを見ているので、ポップアウト側で変えた分は埋め込み側にも反映される
+- **効かないときは**、コンソールで `__tmChatHighlight.dump()` を実行すると、発言ごとに
+  取得できたチャンネルID・表示名・本文・強調したかどうかが出る
+
+### 検証
+
+```
+node --check youtube-chat-highlight.user.js
+NODE_PATH=$(npm root -g) node test/youtube-chat-highlight.test.js
+```
+
+チャット欄の構造を模したDOMで25項目（本文・名前・チャンネルIDでの一致／大文字小文字・全角半角／
+絵文字の代替テキスト／改行区切りの複数語／新着・スパチャ・ティッカー／要素の使い回し／
+空にしたら全部外れる／再読み込み後の保持／「非表示リスト」ボタンと重ならない）を確認する。
+
+実際のチャットの描画とは異なるため、**実機確認の代わりにはならない**。
 
 ## YouTube Full Dates (JST) について
 
