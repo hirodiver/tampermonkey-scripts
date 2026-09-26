@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.5.0
+// @name         X アカウント切替 v1.5.1
 // @namespace    local.hiro.tools
-// @version      1.5.0
+// @version      1.5.1
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -66,7 +66,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.5.0';
+    const VERSION = '1.5.1';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -2584,7 +2584,7 @@
          * アイコンの下に区切り線を引き、操作は文字のボタンで並べる
          * （記号だけでは何のボタンか分かりにくいため）。
          *   移動:   四隅を選ぶ表を開く。ドックを引っぱって動かすこともできる
-         *   読込:   一覧を読み直す（関係ないアカウントが入ったときの直し用）
+         *   更新:   一覧を読み直す（関係ないアカウントが入ったときの直し用）
          *   しまう: 画面端のつまみだけにする（つまみの矢印は「出す」専用）
          */
         const tools = document.createElement('div');
@@ -2666,7 +2666,7 @@
 
         reloadEl.className = 'tool reload';
 
-        reloadEl.textContent = '読込';
+        reloadEl.textContent = '更新';
 
         reloadEl.title = 'アカウント一覧を読み直す（関係ないアカウントが入ったときなど）';
 
@@ -2956,7 +2956,7 @@
 
 
         /*
-         * 一覧が空のときは、アイコン欄の大きな「読込」だけにする
+         * 一覧が空のときは、アイコン欄の大きな「読込」だけにする（下の「更新」は隠す）
          */
         reloadEl.hidden = !accounts.length;
 
