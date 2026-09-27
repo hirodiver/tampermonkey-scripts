@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.5.1
+// @name         X アカウント切替 v1.6.0
 // @namespace    local.hiro.tools
-// @version      1.5.1
+// @version      1.6.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -45,6 +45,12 @@
  *     終わったら元のページへ戻る（v1.0.2）。
  *     ただし切替に成功したときは、ホームの「フォロー中」を開く（v1.4.0）
  *
+ * ■ iPhone で下の隅に置くとき（v1.6.0）
+ *   下のタブの上に浮いている X のボタン（右下の投稿ボタン、左下のアイコン等）を
+ *   隠さないよう、同じ側に浮いている要素を実際に測り、その上にドックを置く。
+ *   測れなかったときも、下のタブから投稿ボタン1つ分は上げる。
+ *   下のタブが無い画面（デスクトップ・iPad）は従来の位置のまま
+ *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
  *   「アバターと @ハンドルを持つ、押せる要素」「アカウント追加・ログアウトの
@@ -66,7 +72,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.5.1';
+    const VERSION = '1.6.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -106,6 +112,46 @@
         { key: 'left-top', label: '左上', arrow: '↖' },
         { key: 'right-top', label: '右上', arrow: '↗' }
     ];
+
+    /*
+     * 下の隅に置くときの高さ（モバイル幅だけ。v1.6.0）。
+     * 下のタブ（BottomBar）がある画面では、ドックと同じ側で下のタブより上に浮いている
+     * X の要素（右下の投稿ボタン・左下のアイコン等）を測り、その上に置く。
+     * 下のタブが無い画面（デスクトップ・iPad）は CSS の既定の位置のまま
+     */
+    const BOTTOM_BAR_SELECTORS = [
+        '[data-testid="BottomBar"]'
+    ];
+
+    // 下のタブより上に浮いている要素として測るもの（押せる要素 CLICKABLE_SELECTOR に加えて）
+    const FLOATING_SELECTORS = [
+        'img[src*="profile_images"]',
+        'img[src*="default_profile"]',
+        '[data-testid^="UserAvatar-Container-"]',
+        '[data-testid="FloatingActionButtonBase"]'
+    ];
+
+    // 測らないもの（上のバー・通知・新着ピル。一時的に出る・下の隅には来ない）
+    const FLOATING_SKIP_SELECTORS = [
+        '[data-testid="TopNavBar"]',
+        '[role="alert"]',
+        '[role="status"]'
+    ];
+
+    // 浮いている要素とドックの間に空ける幅（px）
+    const BOTTOM_GAP_PX = 12;
+
+    /*
+     * 何も測れなくても、下のタブの上端からこの高さまでは何かが浮いているとみなす（px）。
+     * X の投稿ボタン1つ分（56px＋下の余白16px）。ドックはさらに BOTTOM_GAP_PX 上に置く
+     */
+    const MOBILE_MIN_LIFT_PX = 72;
+
+    // 画面の左右の端からこの幅の中にある要素を、その側の要素とみなす（px。ドックの幅＋余白）
+    const SIDE_BAND_PX = 96;
+
+    // ドックの下端を上げる上限（画面の高さに対する割合）
+    const MAX_BOTTOM_RATIO = 0.5;
 
     // ドックを動かし始めたと見なす指の移動量（px）。これより小さければ普通のタップ
     const DRAG_THRESHOLD_PX = 8;
@@ -2286,6 +2332,196 @@
 
 
     // ============================================================
+    // 下の隅の高さ（モバイル幅で X の浮いているボタンを隠さない）
+    // ============================================================
+
+    /*
+     * 下のタブ（モバイル幅にだけある）。
+     * デスクトップ幅（左下の切替ボタンが見えている）では使わない
+     */
+    function findBottomBar() {
+
+        const menuOpener = queryFirst(MENU_OPENER_SELECTORS);
+
+        if (menuOpener && isVisible(menuOpener)) {
+            return null;
+        }
+
+
+        const bar = queryFirst(BOTTOM_BAR_SELECTORS);
+
+        return bar && isVisible(bar) ? bar : null;
+    }
+
+
+    /*
+     * 画面に浮いている要素か。
+     * X の重なり層（#layers。下のタブや投稿ボタンが居る）の中か、position: fixed の中
+     */
+    function isFloating(element) {
+
+        const layer = queryFirst(LAYER_SELECTORS);
+
+        if (layer && layer.contains(element)) {
+            return true;
+        }
+
+
+        for (let node = element; node && node !== document.body; node = node.parentElement) {
+
+            if (getComputedStyle(node).position === 'fixed') {
+                return true;
+            }
+        }
+
+
+        return false;
+    }
+
+
+    /*
+     * 左下・右下に置くときの、ドックの下端（画面の下端からの px）を測る。
+     *
+     *   基準:   下のタブの上端から MOBILE_MIN_LIFT_PX 上
+     *   さらに: 同じ側で下のタブより上に浮いている要素（投稿ボタン・アイコン等）の
+     *           上端から BOTTOM_GAP_PX 上。基準より高ければこちら
+     *
+     * 下のタブが無い画面（デスクトップ・iPad）では null（CSS の既定の位置のまま）
+     */
+    function measureBottomLift() {
+
+        const bar = findBottomBar();
+
+        if (!bar) {
+            return null;
+        }
+
+
+        const barTop = bar.getBoundingClientRect().top;
+
+        const width = window.innerWidth;
+
+        const height = window.innerHeight;
+
+        const maxBottom = Math.round(height * MAX_BOTTOM_RATIO);
+
+
+        const result = {
+            bar: describe(bar),
+            left: { top: barTop - MOBILE_MIN_LIFT_PX, by: '（下のタブから最低限上げる）' },
+            right: { top: barTop - MOBILE_MIN_LIFT_PX, by: '（下のタブから最低限上げる）' }
+        };
+
+
+        const overlays = openOverlays();
+
+        const skip = FLOATING_SKIP_SELECTORS.join(',');
+
+
+        for (const element of document.querySelectorAll([CLICKABLE_SELECTOR, ...FLOATING_SELECTORS].join(','))) {
+
+            if (element.closest(`#${ROOT_ID}, #${PANEL_ID}`) || element.closest(skip)) {
+                continue;
+            }
+
+
+            /*
+             * 下のタブそのものは基準に使っている。開いているドロワー等の中身は測らない
+             */
+            if (bar.contains(element) || overlays.some(overlay => overlay.contains(element))) {
+                continue;
+            }
+
+
+            const rect = element.getBoundingClientRect();
+
+            if (rect.width <= 0 || rect.height <= 0) {
+                continue;
+            }
+
+
+            /*
+             * 下のタブより上に始まり、画面の下半分に収まっているもの
+             */
+            if (rect.top >= barTop || rect.top < height - maxBottom) {
+                continue;
+            }
+
+
+            const sides = [];
+
+            if (rect.left < SIDE_BAND_PX) {
+                sides.push('left');
+            }
+
+            if (rect.right > width - SIDE_BAND_PX) {
+                sides.push('right');
+            }
+
+
+            if (!sides.length || !isFloating(element)) {
+                continue;
+            }
+
+
+            for (const side of sides) {
+
+                /*
+                 * 最低限の高さと同じなら、決め手として実物の要素を記録する（診断用）
+                 */
+                if (rect.top <= result[side].top) {
+                    result[side] = { top: rect.top, by: describe(element) };
+                }
+            }
+        }
+
+
+        for (const side of ['left', 'right']) {
+
+            result[side].bottom =
+                Math.min(
+                    maxBottom,
+                    Math.ceil(height - result[side].top + BOTTOM_GAP_PX)
+                );
+        }
+
+
+        return result;
+    }
+
+
+    /*
+     * 測った高さを CSS 変数でドックとつまみに渡す。測れない画面では既定の位置に戻す
+     */
+    function applyBottomLift() {
+
+        if (!dock || !tabEl) {
+            return;
+        }
+
+
+        /*
+         * 上の隅に置いている間は測らない（ページ全体の要素を見るので、無駄に回さない）
+         */
+        const measured =
+            getPosition().endsWith('-bottom') ? measureBottomLift() : null;
+
+
+        for (const element of [dock, tabEl]) {
+
+            for (const side of ['left', 'right']) {
+
+                if (measured) {
+                    element.style.setProperty('--lift-' + side, measured[side].bottom + 'px');
+                } else {
+                    element.style.removeProperty('--lift-' + side);
+                }
+            }
+        }
+    }
+
+
+    // ============================================================
     // ドックの描画
     // ============================================================
 
@@ -2311,8 +2547,8 @@
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
 }
-.dock.left-bottom  { left: max(10px, env(safe-area-inset-left));  bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
-.dock.right-bottom { right: max(10px, env(safe-area-inset-right)); bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
+.dock.left-bottom  { left: max(10px, env(safe-area-inset-left));  bottom: var(--lift-left, calc(62px + env(safe-area-inset-bottom, 0px))); }
+.dock.right-bottom { right: max(10px, env(safe-area-inset-right)); bottom: var(--lift-right, calc(62px + env(safe-area-inset-bottom, 0px))); }
 .dock.left-top     { left: max(10px, env(safe-area-inset-left));  top: calc(58px + env(safe-area-inset-top, 0px)); }
 .dock.right-top    { right: max(10px, env(safe-area-inset-right)); top: calc(58px + env(safe-area-inset-top, 0px)); }
 .list {
@@ -2344,7 +2580,8 @@
 .tab:active { background: rgba(10, 10, 11, 0.95); }
 .tab.left-bottom, .tab.left-top   { left: env(safe-area-inset-left, 0px);  border-left: 0;  border-radius: 0 12px 12px 0; }
 .tab.right-bottom, .tab.right-top { right: env(safe-area-inset-right, 0px); border-right: 0; border-radius: 12px 0 0 12px; }
-.tab.left-bottom, .tab.right-bottom { bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
+.tab.left-bottom  { bottom: var(--lift-left, calc(62px + env(safe-area-inset-bottom, 0px))); }
+.tab.right-bottom { bottom: var(--lift-right, calc(62px + env(safe-area-inset-bottom, 0px))); }
 .tab.left-top, .tab.right-top       { top: calc(58px + env(safe-area-inset-top, 0px)); }
 .av {
     appearance: none;
@@ -2915,6 +3152,12 @@
         mount();
 
 
+        /*
+         * X の下のタブや投稿ボタンは後から出たり消えたりするので、描き直さないときも測る
+         */
+        applyBottomLift();
+
+
         const accounts = loadAccounts();
 
         const current = currentHandle();
@@ -3134,6 +3377,12 @@
             },
             true
         );
+
+
+        /*
+         * 画面の向き・大きさが変わったら、下の隅の高さを測り直す
+         */
+        window.addEventListener('resize', scheduleCheck);
 
 
         window.addEventListener('storage', event => {
@@ -3393,6 +3642,26 @@
 
         if (!candidates) {
             lines.push('  （なし）');
+        }
+
+
+        lines.push('');
+
+        lines.push('■ 下の隅の高さ（下のタブがある画面だけ）');
+
+        const lift = measureBottomLift();
+
+        if (lift) {
+
+            lines.push('  下のタブ: ' + lift.bar);
+
+            lines.push('  左下: 画面下端から ' + lift.left.bottom + 'px（' + lift.left.by + '）');
+
+            lines.push('  右下: 画面下端から ' + lift.right.bottom + 'px（' + lift.right.by + '）');
+
+        } else {
+
+            lines.push('  （下のタブが無いので既定の位置）');
         }
 
 
