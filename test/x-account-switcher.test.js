@@ -992,6 +992,187 @@ const toastText = (page) =>
     await page.close();
   }
 
+  // ==========================================================
+  // 下の隅の高さ（v1.6.0）
+  // ==========================================================
+  //
+  // iPhone の下のタブ（BottomBar）の上に浮いている、右下の投稿ボタンと左下のアイコンを
+  // ドックが隠さないこと。下のタブの高さ・投稿ボタンの位置は X の見た目に寄せた推測
+  {
+    const lift = (width, height) => ({ width, height });
+
+    // 下のタブ・投稿ボタン・左下のアイコンを #layers に置く。どれも fixed
+    const setupBottom = (opts) => {
+      const root = document.getElementById('react-root');
+      layers.append(
+        opts.fab ? h('aside', { role: 'complementary', 'aria-label': 'ポストを作成' },
+          h('div', { 'data-testid': 'FloatingActionButtonBase', id: 'fab', style: 'position:fixed;right:16px;bottom:' + (opts.barHeight + 16) + 'px;width:56px;height:56px;top:auto;left:auto' },
+            h('a', { role: 'link', 'data-testid': 'FloatingActionButtons_Tweet_Button', 'aria-label': 'ポストを作成', href: '/compose/post', style: 'display:block;width:56px;height:56px' }))) : '',
+        opts.leftIcon ? h('div', { id: 'leftIconWrap', style: 'position:fixed;left:12px;bottom:' + (opts.barHeight + 12) + 'px;width:40px;height:40px;top:auto' },
+          h('a', { href: '/alice', id: 'leftIcon', 'aria-label': 'プロフィール', style: 'display:block;width:40px;height:40px' }, avatar('alice'))) : '',
+        opts.bar ? h('div', { 'data-testid': 'BottomBar', id: 'bottomBar', style: 'position:fixed;left:0;right:0;bottom:0;top:auto;width:100%;height:' + opts.barHeight + 'px' },
+          h('nav', { role: 'navigation' },
+            h('a', { 'data-testid': 'AppTabBar_Home_Link', href: '/home', style: 'display:inline-block;width:60px;height:40px' }, 'ホーム'),
+            h('a', { href: '/notifications', style: 'display:inline-block;width:60px;height:40px' }, '通知'))) : '');
+      // タイムラインのポスト（fixed ではない）。画面の下の左端に来ても避けない
+      root.append(h('main', {},
+        h('div', { style: 'height:' + (window.innerHeight - opts.barHeight - 120) + 'px' }),
+        h('div', { 'data-testid': 'cellInnerDiv' },
+          h('article', { 'data-testid': 'tweet' },
+            h('a', { href: '/dave', id: 'timelineDave', style: 'display:block;width:40px;height:40px' }, avatar('dave')))),
+        h('div', { style: 'height:2000px' })));
+      localStorage.setItem('tm-x-switch-accounts', JSON.stringify([
+        { screenName: 'alice', name: 'Alice', avatar: '' },
+        { screenName: 'bob', name: 'Bob', avatar: '' }
+      ]));
+      if (opts.position) localStorage.setItem('tm-x-switch-position', JSON.stringify(opts.position));
+      if (opts.tucked) localStorage.setItem('tm-x-switch-tucked', 'true');
+    };
+
+    const bootBottom = async (viewport, opts) => {
+      const page = await newPage(browser, viewport);
+      await page.goto('https://x.com/home');
+      await page.evaluate(fixtures);
+      await page.evaluate(setupBottom, { barHeight: 53, bar: true, fab: true, leftIcon: true, ...opts });
+      await page.evaluate(SCRIPT);
+      await page.waitForTimeout(400);
+      return page;
+    };
+
+    const rects = (page) => page.evaluate(() => {
+      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
+      const r = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, width: b.width }; };
+      return {
+        dock: r(sr.querySelector('.dock')),
+        tab: r(sr.querySelector('.tab')),
+        fab: r(document.getElementById('fab')),
+        leftIcon: r(document.getElementById('leftIcon')),
+        bar: r(document.getElementById('bottomBar')),
+        dave: r(document.getElementById('timelineDave')),
+        height: window.innerHeight
+      };
+    });
+
+    const overlaps = (a, b) => a && b && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+    // --- 右下: 投稿ボタンを隠さない
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'right-bottom' });
+      const r = await rects(page);
+      check('下の隅: 右下に置くと、投稿ボタンと重ならない', !overlaps(r.dock, r.fab), r);
+      check('下の隅: 右下は投稿ボタンの上端から 12px 以上空ける', r.dock.bottom <= r.fab.top - 11.5, r);
+      check('下の隅: 右下は下のタブとも重ならない', !overlaps(r.dock, r.bar), r);
+      check('下の隅: 右下のドックは画面の上にはみ出さない', r.dock.top >= 0, r);
+      const report = await page.evaluate(() => window.__tmXSwitch.dump());
+      check('下の隅: 診断に測った高さと、決め手の要素（投稿ボタン）が出る',
+        /右下: 画面下端から \d+px（<(div|a)[^>]*(FloatingActionButton|ポストを作成)/.test(report), report.split('\n').filter((l) => /下の隅|左下|右下|下のタブ/.test(l)));
+      await page.close();
+    }
+
+    // --- 左下: 左下のアイコンを隠さない。タイムラインのポストは避けない
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'left-bottom' });
+      const r = await rects(page);
+      check('下の隅: 左下に置くと、左下のアイコンと重ならない', !overlaps(r.dock, r.leftIcon), r);
+      check('下の隅: 左下は下のタブと重ならない', !overlaps(r.dock, r.bar), r);
+      await page.close();
+    }
+
+    // --- 左下に大きな浮いている要素があれば、その上まで上げる（最低限の高さより上）
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'left-bottom' });
+      // X が描き直して、左下に大きな要素が出たとき
+      await page.evaluate(() => {
+        document.getElementById('leftIconWrap').remove();
+        layers.append(h('div', { id: 'leftIconWrap', style: 'position:fixed;left:12px;bottom:65px;width:40px;height:120px;top:auto' },
+          h('a', { href: '/alice', id: 'leftIcon', 'aria-label': 'プロフィール', style: 'display:block;width:40px;height:120px' }, avatar('alice'))));
+      });
+      await page.waitForTimeout(500);
+      const r = await rects(page);
+      check('下の隅: 後から大きくなった左下の要素も測り直して避ける', !overlaps(r.dock, r.leftIcon) && r.dock.bottom <= r.leftIcon.top - 11.5, r);
+      await page.close();
+    }
+
+    // --- 左下に何も無くても、下のタブから投稿ボタン1つ分は上げる
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'left-bottom', leftIcon: false });
+      const r = await rects(page);
+      check('下の隅: 左下に何も無くても、下のタブの上端から投稿ボタン1つ分＋12px は上げる', r.dock.bottom <= r.bar.top - 72 - 11.5, r);
+      check('下の隅: タイムラインのポスト（fixed でない）で位置が変わらない',
+        r.dave.left < 96 && r.dave.top < r.bar.top - 72 && Math.abs((r.bar.top - 72 - 12) - r.dock.bottom) <= 1, r);
+      await page.close();
+    }
+
+    // --- しまったときのつまみも同じ高さ
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'right-bottom', tucked: true });
+      const r = await rects(page);
+      check('下の隅: しまったときのつまみも投稿ボタンと重ならない', r.tab && r.tab.width > 0 && !overlaps(r.tab, r.fab), r);
+      await page.close();
+    }
+
+    // --- 投稿ボタンが後から出ても、その上へずらす
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'right-bottom', fab: false });
+      await page.evaluate(() => {
+        layers.append(h('div', { 'data-testid': 'FloatingActionButtonBase', id: 'fab', style: 'position:fixed;right:16px;bottom:69px;width:56px;height:56px;top:auto;left:auto' }));
+      });
+      await page.waitForTimeout(500);
+      const r = await rects(page);
+      check('下の隅: 投稿ボタンが後から出ても重ならない', !overlaps(r.dock, r.fab), r);
+      await page.close();
+    }
+
+    // --- ドロワー等が開いている間は、その中身で位置を変えない
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'left-bottom', leftIcon: false });
+      const before = (await rects(page)).dock.bottom;
+      await page.evaluate(() => {
+        layers.append(h('div', { role: 'dialog', 'aria-modal': 'true', style: 'position:fixed;left:0;top:0;width:280px;height:100%' },
+          h('a', { href: '/i/bookmarks', style: 'position:absolute;left:10px;bottom:150px;width:200px;height:40px' }, 'ブックマーク')));
+      });
+      await page.waitForTimeout(500);
+      const after = (await rects(page)).dock.bottom;
+      check('下の隅: 開いたドロワーの中身では位置を変えない', Math.abs(before - after) <= 1, { before, after });
+      await page.close();
+    }
+
+    // --- 上の隅は変えない
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'right-top' });
+      const r = await rects(page);
+      check('下の隅: 右上に置いたときは従来どおり（上から 58px）', Math.abs(r.dock.top - 58) <= 1, r);
+      await page.evaluate(() => {
+        const sr = document.getElementById('tm-x-switch-root').shadowRoot;
+        sr.querySelector('.move').click();
+        sr.querySelector('.corners button[data-position="right-bottom"]').click();
+      });
+      await page.waitForTimeout(100);
+      const moved = await rects(page);
+      check('下の隅: 「移動」で右上から右下へ移すと、すぐ投稿ボタンの上に置く', !overlaps(moved.dock, moved.fab) && moved.dock.bottom <= moved.fab.top - 11.5, moved);
+      await page.close();
+    }
+
+    // --- デスクトップ・iPad（下のタブが無い／左下の切替ボタンがある）は従来の位置
+    {
+      const page = await bootBottom(lift(820, 1180), { position: 'right-bottom', bar: false });
+      const r = await rects(page);
+      check('下の隅: 下のタブが無い画面（iPad 等）は従来どおり下から 62px', Math.abs((r.height - r.dock.bottom) - 62) <= 1, r);
+      await page.close();
+    }
+    {
+      const page = await bootBottom(lift(1280, 800), { position: 'left-bottom' });
+      await page.evaluate(() => {
+        document.getElementById('react-root').append(
+          h('div', { role: 'button', 'data-testid': 'SideNav_AccountSwitcher_Button', 'aria-label': 'アカウントメニュー', style: 'position:fixed;left:10px;bottom:10px;width:220px;height:50px' }, avatar('alice')));
+      });
+      await page.waitForTimeout(500);
+      const r = await rects(page);
+      check('下の隅: デスクトップ幅（左下の切替ボタンがある）は従来どおり下から 62px', Math.abs((r.height - r.dock.bottom) - 62) <= 1, r);
+      await page.close();
+    }
+  }
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
