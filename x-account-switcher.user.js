@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.6.0
+// @name         X アカウント切替 v1.7.0
 // @namespace    local.hiro.tools
-// @version      1.6.0
+// @version      1.7.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -72,7 +72,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.6.0';
+    const VERSION = '1.7.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -104,13 +104,14 @@
 
     /*
      * ドックの置き場所。先頭が既定。
-     * 並びは「移動」で出す表（2×2）の並び（左上・右上・左下・右下）とは別
+     * ドックを引っぱって離したところから一番近い隅に置く
+     * （v1.7.0 で「移動」ボタンと四隅の表は廃止）
      */
     const POSITIONS = [
-        { key: 'left-bottom', label: '左下', arrow: '↙' },
-        { key: 'right-bottom', label: '右下', arrow: '↘' },
-        { key: 'left-top', label: '左上', arrow: '↖' },
-        { key: 'right-top', label: '右上', arrow: '↗' }
+        { key: 'left-bottom', label: '左下' },
+        { key: 'right-bottom', label: '右下' },
+        { key: 'left-top', label: '左上' },
+        { key: 'right-top', label: '右上' }
     ];
 
     /*
@@ -393,9 +394,7 @@
     let listEl = null;
     let tabEl = null;
     let tuckEl = null;
-    let moveEl = null;
     let reloadEl = null;
-    let cornersEl = null;
     let toastEl = null;
 
     let busy = false;
@@ -2647,22 +2646,7 @@
 }
 .tool[hidden] { display: none; }
 .tool[disabled] { opacity: 0.45; }
-.tool:active, .tool[aria-expanded="true"] { background: rgba(244, 244, 245, 0.14); color: #f4f4f5; }
-.corners { display: none; grid-template-columns: 20px 20px; gap: 4px; }
-.corners.open { display: grid; }
-.corners button {
-    appearance: none;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: 1px solid rgba(244, 244, 245, 0.2);
-    border-radius: 6px;
-    background: transparent;
-    color: rgba(244, 244, 245, 0.88);
-    font-size: 12px;
-    line-height: 1;
-}
-.corners button[aria-pressed="true"] { background: #f4f4f5; border-color: #f4f4f5; color: #0a0a0b; }
+.tool:active { background: rgba(244, 244, 245, 0.14); color: #f4f4f5; }
 .dock { touch-action: none; cursor: grab; -webkit-user-select: none; user-select: none; }
 .dock img { -webkit-user-drag: none; }
 .dock.dragging { cursor: grabbing; opacity: 0.85; }
@@ -2761,25 +2745,7 @@
     }
 
 
-    function toggleCorners(open) {
-
-        if (!cornersEl) {
-            return;
-        }
-
-
-        const next =
-            open === undefined ? !cornersEl.classList.contains('open') : open;
-
-        cornersEl.classList.toggle('open', next);
-
-        moveEl.setAttribute('aria-expanded', String(next));
-    }
-
-
     function tuck() {
-
-        toggleCorners(false);
 
         setTucked(true);
 
@@ -2820,64 +2786,13 @@
         /*
          * アイコンの下に区切り線を引き、操作は文字のボタンで並べる
          * （記号だけでは何のボタンか分かりにくいため）。
-         *   移動:   四隅を選ぶ表を開く。ドックを引っぱって動かすこともできる
          *   更新:   一覧を読み直す（関係ないアカウントが入ったときの直し用）
          *   しまう: 画面端のつまみだけにする（つまみの矢印は「出す」専用）
+         * 置き場所はドックを引っぱって変える（v1.7.0 で「移動」ボタンは廃止）
          */
         const tools = document.createElement('div');
 
         tools.className = 'tools';
-
-
-        moveEl = document.createElement('button');
-
-        moveEl.type = 'button';
-
-        moveEl.className = 'tool move';
-
-        moveEl.textContent = '移動';
-
-        moveEl.title = '置き場所を選ぶ（ドックを引っぱっても動かせます）';
-
-        moveEl.setAttribute('aria-expanded', 'false');
-
-        moveEl.addEventListener('click', () => toggleCorners());
-
-
-        cornersEl = document.createElement('div');
-
-        cornersEl.className = 'corners';
-
-
-        for (const key of ['left-top', 'right-top', 'left-bottom', 'right-bottom']) {
-
-            const position = POSITIONS.find(p => p.key === key);
-
-            const button = document.createElement('button');
-
-            button.type = 'button';
-
-            button.dataset.position = key;
-
-            button.textContent = position.arrow;
-
-            button.title = position.label;
-
-            button.setAttribute('aria-label', position.label + 'に置く');
-
-
-            button.addEventListener('click', () => {
-
-                writeJson(localStorage, STORAGE_POSITION, key);
-
-                toggleCorners(false);
-
-                render(true);
-            });
-
-
-            cornersEl.appendChild(button);
-        }
 
 
         tuckEl = document.createElement('button');
@@ -2907,15 +2822,10 @@
 
         reloadEl.title = 'アカウント一覧を読み直す（関係ないアカウントが入ったときなど）';
 
-        reloadEl.addEventListener('click', () => {
-
-            toggleCorners(false);
-
-            loadFromNative();
-        });
+        reloadEl.addEventListener('click', loadFromNative);
 
 
-        tools.append(moveEl, cornersEl, reloadEl, tuckEl);
+        tools.append(reloadEl, tuckEl);
 
         dock.append(listEl, tools);
 
@@ -2990,8 +2900,6 @@
 
 
                 dragging = true;
-
-                toggleCorners(false);
 
                 element.classList.add('dragging');
             }
@@ -3188,16 +3096,6 @@
         tabEl.textContent =
             position.startsWith('left') ? '›' : '‹';
 
-        for (const button of cornersEl.querySelectorAll('button')) {
-            button.setAttribute('aria-pressed', String(button.dataset.position === position));
-        }
-
-
-        if (tucked) {
-            toggleCorners(false);
-        }
-
-
         /*
          * 一覧が空のときは、アイコン欄の大きな「読込」だけにする（下の「更新」は隠す）
          */
@@ -3362,29 +3260,14 @@
 
 
         /*
-         * 別タブで覚えた一覧・設定を反映する
-         */
-        /*
-         * ドックの外を押したら、四隅の表を閉じる
-         */
-        document.addEventListener(
-            'click',
-            event => {
-
-                if (root && !event.composedPath().includes(root)) {
-                    toggleCorners(false);
-                }
-            },
-            true
-        );
-
-
-        /*
          * 画面の向き・大きさが変わったら、下の隅の高さを測り直す
          */
         window.addEventListener('resize', scheduleCheck);
 
 
+        /*
+         * 別タブで覚えた一覧・設定を反映する
+         */
         window.addEventListener('storage', event => {
 
             if ([STORAGE_ACCOUNTS, STORAGE_POSITION, STORAGE_TUCKED].includes(event.key)) {
