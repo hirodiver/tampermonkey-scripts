@@ -409,33 +409,12 @@ const toastText = (page) =>
     const dockClass = () => page.evaluate(() =>
       document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').className);
 
-    check('操作: 記号だけのボタン（⋮）は無く、区切り線の下に文字のボタン「移動」「更新」「しまう」が並ぶ', await page.evaluate(() => {
+    check('操作: 区切り線の下に文字のボタン「更新」「しまう」だけが並ぶ（「移動」と四隅の表は無い。v1.7.0）', await page.evaluate(() => {
       const sr = document.getElementById('tm-x-switch-root').shadowRoot;
       const labels = [...sr.querySelectorAll('.tools > button')].filter((b) => !b.hidden).map((b) => b.textContent);
-      return !sr.querySelector('.more') && JSON.stringify(labels) === JSON.stringify(['移動', '更新', 'しまう']) &&
+      return !sr.querySelector('.more, .move, .corners') && JSON.stringify(labels) === JSON.stringify(['更新', 'しまう']) &&
         getComputedStyle(sr.querySelector('.tools')).borderTopStyle === 'solid';
     }));
-
-    // 「移動」→ 四隅の表で選ぶ
-    const corners = () => page.evaluate(() => {
-      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-      const el = sr.querySelector('.corners');
-      return {
-        open: getComputedStyle(el).display !== 'none',
-        expanded: sr.querySelector('.move').getAttribute('aria-expanded'),
-        pressed: [...el.querySelectorAll('button')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.title)
-      };
-    });
-    check('移動: 最初は四隅の表を閉じている', !(await corners()).open, await corners());
-    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.move').click());
-    let cs = await corners();
-    check('移動: 押すと四隅の表が開き、いまの隅（左下）に印が付く', cs.open && cs.expanded === 'true' && JSON.stringify(cs.pressed) === '["左下"]', cs);
-    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.corners button[data-position="left-top"]').click());
-    cs = await corners();
-    check('移動: ↖ を押すと左上に置き、表を閉じる', /left-top/.test(await dockClass()) && !cs.open && JSON.stringify(cs.pressed) === '["左上"]', { cls: await dockClass(), cs });
-    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.move').click());
-    await page.mouse.click(700, 400);
-    check('移動: ドックの外を押すと表を閉じる', !(await corners()).open, await corners());
 
     await page.evaluate(() => { events.length = 0; });
     const beforeDrag = await page.evaluate(() => JSON.stringify(window.__tmXSwitch.accounts()));
@@ -1142,14 +1121,14 @@ const toastText = (page) =>
       const page = await bootBottom(lift(390, 664), { position: 'right-top' });
       const r = await rects(page);
       check('下の隅: 右上に置いたときは従来どおり（上から 58px）', Math.abs(r.dock.top - 58) <= 1, r);
-      await page.evaluate(() => {
-        const sr = document.getElementById('tm-x-switch-root').shadowRoot;
-        sr.querySelector('.move').click();
-        sr.querySelector('.corners button[data-position="right-bottom"]').click();
-      });
+      // ドックを引っぱって右下へ移す
+      await page.mouse.move(r.dock.left + 20, r.dock.top + 20);
+      await page.mouse.down();
+      await page.mouse.move(360, 600, { steps: 8 });
+      await page.mouse.up();
       await page.waitForTimeout(100);
       const moved = await rects(page);
-      check('下の隅: 「移動」で右上から右下へ移すと、すぐ投稿ボタンの上に置く', !overlaps(moved.dock, moved.fab) && moved.dock.bottom <= moved.fab.top - 11.5, moved);
+      check('下の隅: 引っぱって右上から右下へ移すと、すぐ投稿ボタンの上に置く', !overlaps(moved.dock, moved.fab) && moved.dock.bottom <= moved.fab.top - 11.5, moved);
       await page.close();
     }
 
