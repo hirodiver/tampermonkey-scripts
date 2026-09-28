@@ -1132,6 +1132,52 @@ const toastText = (page) =>
       await page.close();
     }
 
+    // --- iPhone 幅では、何があっても範囲（下から 132〜240px）に収める（v1.7.1）
+    const dockBottom = (page) => page.evaluate(() =>
+      Math.round(window.innerHeight - document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').getBoundingClientRect().bottom));
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'right-bottom' });
+      const before = await dockBottom(page);
+      // X が描き直して、下のタブと投稿ボタンが一瞬消えた
+      await page.evaluate(() => { document.getElementById('bottomBar').remove(); document.getElementById('fab').remove(); });
+      await page.waitForTimeout(500);
+      const gone = await dockBottom(page);
+      check('範囲: 下のタブを見失っても、既定の 62px へ下がらず最後に測れた高さのまま', gone === before && gone > 62, { before, gone });
+      const report = await page.evaluate(() => window.__tmXSwitch.dump());
+      check('範囲: 診断に範囲・最後に測れた値・いまの下端が出る',
+        /範囲: 132〜240px/.test(report) && /最後に測れた値: 左 \d+px・右 \d+px/.test(report) && /いまのドックの下端: 画面下端から \d+px/.test(report),
+        report.split('\n').filter((l) => /範囲|最後に|いまのドック/.test(l)));
+
+      // 次に開いたとき、下のタブが出る前でも最後に測れた高さから始める
+      await page.goto('https://x.com/home');
+      await page.evaluate(fixtures);
+      await page.evaluate(SCRIPT);
+      await page.waitForTimeout(300);
+      check('範囲: 次に開いたとき、下のタブが出る前でも最後に測れた高さに置く', await dockBottom(page) === before, { before, now: await dockBottom(page) });
+      await page.close();
+    }
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'left-bottom', bar: false, fab: false, leftIcon: false });
+      check('範囲: 一度も測れていなくても、下限（132px）より下には置かない', await dockBottom(page) === 132, await dockBottom(page));
+      await page.close();
+    }
+    {
+      // 下のタブの高さを取り違えた（低すぎる）とき
+      const page = await bootBottom(lift(390, 664), { position: 'left-bottom', barHeight: 10, fab: false, leftIcon: false });
+      check('範囲: 測った値が低すぎても下限（132px）に上げる', await dockBottom(page) === 132, await dockBottom(page));
+      await page.close();
+    }
+    {
+      // 左下に背の高い浮いている要素がある（測った値が高すぎる）とき
+      const page = await bootBottom(lift(390, 664), { position: 'left-bottom', leftIcon: false });
+      await page.evaluate(() => {
+        layers.append(h('a', { href: '/x', id: 'tallThing', style: 'position:fixed;left:8px;bottom:60px;width:60px;height:250px;top:auto' }, 'x'));
+      });
+      await page.waitForTimeout(500);
+      check('範囲: 測った値が高すぎても上限（240px）で止める', await dockBottom(page) === 240, await dockBottom(page));
+      await page.close();
+    }
+
     // --- デスクトップ・iPad（下のタブが無い／左下の切替ボタンがある）は従来の位置
     {
       const page = await bootBottom(lift(820, 1180), { position: 'right-bottom', bar: false });
