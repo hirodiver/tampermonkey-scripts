@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.7.0
+// @name         X アカウント切替 v1.7.1
 // @namespace    local.hiro.tools
-// @version      1.7.0
+// @version      1.7.1
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -72,7 +72,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.7.0';
+    const VERSION = '1.7.1';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -90,6 +90,9 @@
      * （tm-x-switch-hidden）は廃止し、これにまとめた
      */
     const STORAGE_TUCKED = 'tm-x-switch-tucked';
+
+    // 最後に測れた下の隅の高さ（測れなかったときと、次に開いたときの最初の位置に使う）
+    const STORAGE_LIFT = 'tm-x-switch-lift';
 
     // 切替を押した印（X が読み込み直した後に、ホームの「フォロー中」を開くため）
     const SESSION_AFTER_SWITCH = 'tm-x-switch-after';
@@ -153,6 +156,17 @@
 
     // ドックの下端を上げる上限（画面の高さに対する割合）
     const MAX_BOTTOM_RATIO = 0.5;
+
+    /*
+     * この幅（px）以下の画面（iPhone 等）では、下の隅の高さを必ず次の範囲に収める（v1.7.1）。
+     * 測り損ねた・測った値がおかしいときでも、下のタブや投稿ボタンに重なる位置へは下げない。
+     * 値は画面の下端からの px。どちらにもセーフエリア（ホームバー）の分を足す
+     */
+    const MOBILE_MAX_WIDTH = 599;
+
+    const MOBILE_BOTTOM_MIN_PX = 132;
+
+    const MOBILE_BOTTOM_MAX_PX = 240;
 
     // ドックを動かし始めたと見なす指の移動量（px）。これより小さければ普通のタップ
     const DRAG_THRESHOLD_PX = 8;
@@ -2506,17 +2520,59 @@
             getPosition().endsWith('-bottom') ? measureBottomLift() : null;
 
 
+        let lift = null;
+
+
+        if (measured) {
+
+            lift = {
+                left: measured.left.bottom,
+                right: measured.right.bottom
+            };
+
+
+            if (isNarrowScreen()) {
+                writeJson(localStorage, STORAGE_LIFT, lift);
+            }
+
+        } else if (isNarrowScreen()) {
+
+            /*
+             * 下のタブが一瞬消えた・ドロワーを開いている等で測れなかったときは、
+             * 既定の位置（下から 62px）へ戻さず、最後に測れた高さのままにする。
+             * それも無ければ CSS の下限（MOBILE_BOTTOM_MIN_PX）に置く
+             */
+            lift = savedLift();
+        }
+
+
         for (const element of [dock, tabEl]) {
 
             for (const side of ['left', 'right']) {
 
-                if (measured) {
-                    element.style.setProperty('--lift-' + side, measured[side].bottom + 'px');
+                if (lift) {
+                    element.style.setProperty('--lift-' + side, lift[side] + 'px');
                 } else {
                     element.style.removeProperty('--lift-' + side);
                 }
             }
         }
+    }
+
+
+    function isNarrowScreen() {
+
+        return window.innerWidth <= MOBILE_MAX_WIDTH;
+    }
+
+
+    function savedLift() {
+
+        const saved = readJson(localStorage, STORAGE_LIFT, null);
+
+        return saved && Number.isFinite(saved.left) && Number.isFinite(saved.right) ?
+            saved :
+            null;
     }
 
 
@@ -2581,6 +2637,18 @@
 .tab.right-bottom, .tab.right-top { right: env(safe-area-inset-right, 0px); border-right: 0; border-radius: 12px 0 0 12px; }
 .tab.left-bottom  { bottom: var(--lift-left, calc(62px + env(safe-area-inset-bottom, 0px))); }
 .tab.right-bottom { bottom: var(--lift-right, calc(62px + env(safe-area-inset-bottom, 0px))); }
+/*
+ * iPhone 等の幅では、測った高さがどうであっても下限・上限の間に収める。
+ * 測れていない（変数が無い）ときは下限に置く
+ */
+@media (max-width: ${MOBILE_MAX_WIDTH}px) {
+    .dock.left-bottom, .tab.left-bottom {
+        bottom: clamp(calc(${MOBILE_BOTTOM_MIN_PX}px + env(safe-area-inset-bottom, 0px)), var(--lift-left, 0px), calc(${MOBILE_BOTTOM_MAX_PX}px + env(safe-area-inset-bottom, 0px)));
+    }
+    .dock.right-bottom, .tab.right-bottom {
+        bottom: clamp(calc(${MOBILE_BOTTOM_MIN_PX}px + env(safe-area-inset-bottom, 0px)), var(--lift-right, 0px), calc(${MOBILE_BOTTOM_MAX_PX}px + env(safe-area-inset-bottom, 0px)));
+    }
+}
 .tab.left-top, .tab.right-top       { top: calc(58px + env(safe-area-inset-top, 0px)); }
 .av {
     appearance: none;
@@ -3544,7 +3612,27 @@
 
         } else {
 
-            lines.push('  （下のタブが無いので既定の位置）');
+            lines.push('  （いまは測れない）');
+        }
+
+
+        if (isNarrowScreen()) {
+
+            const saved = savedLift();
+
+            lines.push(
+                '  範囲: ' + MOBILE_BOTTOM_MIN_PX + '〜' + MOBILE_BOTTOM_MAX_PX + 'px（＋セーフエリア）' +
+                ' / 最後に測れた値: ' + (saved ? '左 ' + saved.left + 'px・右 ' + saved.right + 'px' : 'なし')
+            );
+        }
+
+
+        if (dock && getPosition().endsWith('-bottom') && !isTucked()) {
+
+            lines.push(
+                '  いまのドックの下端: 画面下端から ' +
+                Math.round(window.innerHeight - dock.getBoundingClientRect().bottom) + 'px'
+            );
         }
 
 
