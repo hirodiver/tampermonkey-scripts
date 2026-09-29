@@ -209,7 +209,7 @@ async function main() {
     async function load(page, html) {
 
         await page.route(
-            'https://example.test/**',
+            'https://example.com/**',
             route =>
                 route.fulfill({
                     contentType: 'text/html; charset=utf-8',
@@ -217,7 +217,7 @@ async function main() {
                 })
         );
 
-        await page.goto('https://example.test/page');
+        await page.goto('https://example.com/page');
 
         await page.addScriptTag({ content: SCRIPT });
     }
