@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.0.0
+// @name         ページ本文コピー v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.1.0
 // @description  表示中のページ本文（または選択範囲）をMarkdownにしてクリップボードへコピーする。AIに貼る用。
 // @match        *://*/*
 // @grant        none
@@ -15,7 +15,7 @@
 
 /*
  * 使い方
- *   - 右下のボタン、または Alt+Shift+C でコピー
+ *   - ボタン（ドラッグで好きな位置へ動かせる）、または Alt+Shift+C でコピー
  *   - 文字を選択していれば、選択範囲だけをコピー（周辺メニューの除外はしない）
  *   - 選択していなければ、本文を自動判定してコピー
  *
@@ -62,6 +62,25 @@
 
     // dump() の表に出す最大行数
     const DUMP_LIMIT = 400;
+
+    // ボタンの大きさ・画面端との余白（px）
+    const BUTTON_SIZE = 40;
+    const EDGE_MARGIN = 4;
+
+    // ボタンの初期位置。
+    // 真ん中の上はタイトル、右上はメニューボタンと重なりやすいので、
+    // 上端から少し下がった、中央よりやや右に置く
+    const INITIAL_X_RATIO = 0.7;   // ボタン中心の横位置（画面幅に対する割合）
+    const INITIAL_TOP = 88;        // 上端からの距離（px）
+
+    // この距離（px）以上動かしたらドラッグ、未満ならタップとみなす
+    const DRAG_THRESHOLD = 6;
+
+    // 位置の保存キー（localStorage。サイトごとに別々に覚える）
+    const POSITION_KEY = 'tm-copy-text-position';
+
+    // ボタンの透明度（ふだん）
+    const IDLE_OPACITY = '0.5';
 
     // 本文コンテナの候補（上から順に試す。狭いものが先）
     const BODY_SELECTORS = [
@@ -1626,7 +1645,184 @@
     // UI（Shadow DOM。サイトのCSSに影響されない）
     // ============================================================
 
+    let hostEl = null;
     let toastEl = null;
+
+
+    // ------------------------------------------------------------
+    // 位置
+    // ------------------------------------------------------------
+
+    /*
+     * 画面の外へ出ないように収める
+     */
+    function clampPosition(left, top) {
+
+        const maxLeft =
+            Math.max(
+                EDGE_MARGIN,
+                window.innerWidth - BUTTON_SIZE - EDGE_MARGIN
+            );
+
+        const maxTop =
+            Math.max(
+                EDGE_MARGIN,
+                window.innerHeight - BUTTON_SIZE - EDGE_MARGIN
+            );
+
+        return {
+            left:
+                Math.min(Math.max(left, EDGE_MARGIN), maxLeft),
+
+            top:
+                Math.min(Math.max(top, EDGE_MARGIN), maxTop)
+        };
+    }
+
+
+    function applyPosition(left, top) {
+
+        const position =
+            clampPosition(left, top);
+
+        hostEl.style.left = position.left + 'px';
+        hostEl.style.top = position.top + 'px';
+    }
+
+
+    /*
+     * 保存は画面に対する割合で持つ。
+     * 縦横の回転や画面サイズの変化があっても、画面内に収まる
+     */
+    function readSavedPosition() {
+
+        try {
+
+            const raw =
+                localStorage.getItem(POSITION_KEY);
+
+            if (!raw) {
+                return null;
+            }
+
+            const value = JSON.parse(raw);
+
+            if (
+                typeof value.x === 'number' &&
+                typeof value.y === 'number'
+            ) {
+                return value;
+            }
+
+        } catch (error) {
+
+            // 保存できない環境では初期位置に戻るだけ
+        }
+
+        return null;
+    }
+
+
+    function savePosition() {
+
+        const rect =
+            hostEl.getBoundingClientRect();
+
+        const value = {
+            x:
+                rect.left /
+                Math.max(1, window.innerWidth - BUTTON_SIZE),
+
+            y:
+                rect.top /
+                Math.max(1, window.innerHeight - BUTTON_SIZE)
+        };
+
+        try {
+
+            localStorage.setItem(
+                POSITION_KEY,
+                JSON.stringify(value)
+            );
+
+        } catch (error) {
+
+            // 保存できなくても動作には影響しない
+        }
+    }
+
+
+    function placeButton() {
+
+        if (!hostEl) {
+            return;
+        }
+
+        const saved = readSavedPosition();
+
+        if (saved) {
+
+            applyPosition(
+                saved.x * (window.innerWidth - BUTTON_SIZE),
+                saved.y * (window.innerHeight - BUTTON_SIZE)
+            );
+
+            return;
+        }
+
+        applyPosition(
+            window.innerWidth * INITIAL_X_RATIO - BUTTON_SIZE / 2,
+            INITIAL_TOP
+        );
+    }
+
+
+    // ------------------------------------------------------------
+    // トースト
+    // ------------------------------------------------------------
+
+    /*
+     * ボタンが画面の上半分にあれば下へ、下半分にあれば上へ出す。
+     * 横は、余白の広いほうへ伸ばす。どの位置でも画面内に収まる
+     */
+    function placeToast() {
+
+        const rect =
+            hostEl.getBoundingClientRect();
+
+        const below =
+            rect.top + BUTTON_SIZE / 2 <
+            window.innerHeight / 2;
+
+        const extendRight =
+            rect.left + BUTTON_SIZE / 2 <
+            window.innerWidth / 2;
+
+        const room =
+            extendRight
+                ? window.innerWidth - rect.left - EDGE_MARGIN
+                : rect.right - EDGE_MARGIN;
+
+        Object.assign(
+            toastEl.style,
+            {
+                top:
+                    below ? (BUTTON_SIZE + 8) + 'px' : 'auto',
+
+                bottom:
+                    below ? 'auto' : (BUTTON_SIZE + 8) + 'px',
+
+                left:
+                    extendRight ? '0' : 'auto',
+
+                right:
+                    extendRight ? 'auto' : '0',
+
+                maxWidth:
+                    Math.max(120, Math.min(320, room)) + 'px'
+            }
+        );
+    }
 
 
     function showToast(message, isError = false) {
@@ -1636,6 +1832,8 @@
         }
 
         toastEl.textContent = message;
+
+        placeToast();
 
         Object.assign(
             toastEl.style,
@@ -1658,6 +1856,10 @@
             );
     }
 
+
+    // ------------------------------------------------------------
+    // コピー
+    // ------------------------------------------------------------
 
     async function copyPage() {
 
@@ -1712,29 +1914,33 @@
     }
 
 
+    // ------------------------------------------------------------
+    // ボタン（ドラッグで動かせる）
+    // ------------------------------------------------------------
+
     function buildUi() {
 
         if (document.getElementById(HOST_ID)) {
             return;
         }
 
-        const host = document.createElement('div');
+        hostEl = document.createElement('div');
 
-        host.id = HOST_ID;
+        hostEl.id = HOST_ID;
 
         Object.assign(
-            host.style,
+            hostEl.style,
             {
                 all: 'initial',
                 position: 'fixed',
-                right: '16px',
-                bottom: '16px',
+                width: BUTTON_SIZE + 'px',
+                height: BUTTON_SIZE + 'px',
                 zIndex: '2147483647'
             }
         );
 
         const shadow =
-            host.attachShadow({ mode: 'open' });
+            hostEl.attachShadow({ mode: 'open' });
 
 
         const button =
@@ -1745,25 +1951,142 @@
         button.textContent = '📋';
 
         button.title =
-            'ページ本文をMarkdownでコピー（Alt+Shift+C）';
+            'ページ本文をMarkdownでコピー（Alt+Shift+C）／ドラッグで移動';
 
         Object.assign(
             button.style,
             {
-                width: '40px',
-                height: '40px',
+                width: BUTTON_SIZE + 'px',
+                height: BUTTON_SIZE + 'px',
                 border: 'none',
                 borderRadius: '50%',
                 background: '#1f2933',
                 color: '#fff',
                 fontSize: '18px',
-                lineHeight: '40px',
-                cursor: 'pointer',
-                opacity: '0.35',
+                lineHeight: BUTTON_SIZE + 'px',
+                padding: '0',
+                cursor: 'grab',
+                opacity: IDLE_OPACITY,
                 boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-                transition: 'opacity 0.15s'
+                transition: 'opacity 0.15s',
+
+                // 指でドラッグしても、ページがスクロールしない
+                touchAction: 'none',
+
+                // 長押しで文字選択・メニューが出ない
+                userSelect: 'none',
+                webkitUserSelect: 'none',
+                webkitTouchCallout: 'none'
             }
         );
+
+
+        // ----------------------------------------------------------
+        // ドラッグ
+        // ----------------------------------------------------------
+
+        let drag = null;
+
+        // ドラッグの直後に click が来ても、コピーを走らせない
+        let suppressClick = false;
+
+
+        button.addEventListener(
+            'pointerdown',
+            event => {
+
+                if (
+                    event.pointerType === 'mouse' &&
+                    event.button !== 0
+                ) {
+                    return;
+                }
+
+                suppressClick = false;
+
+                const rect =
+                    hostEl.getBoundingClientRect();
+
+                drag = {
+                    pointerId: event.pointerId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    originLeft: rect.left,
+                    originTop: rect.top,
+                    moved: false
+                };
+
+                try {
+                    button.setPointerCapture(event.pointerId);
+                } catch (error) {
+                    // 取れなくても、ボタン上の動きは追える
+                }
+            }
+        );
+
+
+        button.addEventListener(
+            'pointermove',
+            event => {
+
+                if (!drag || event.pointerId !== drag.pointerId) {
+                    return;
+                }
+
+                const dx = event.clientX - drag.startX;
+                const dy = event.clientY - drag.startY;
+
+                if (
+                    !drag.moved &&
+                    Math.hypot(dx, dy) < DRAG_THRESHOLD
+                ) {
+                    return;
+                }
+
+                drag.moved = true;
+
+                button.style.opacity = '1';
+
+                applyPosition(
+                    drag.originLeft + dx,
+                    drag.originTop + dy
+                );
+
+                event.preventDefault();
+            }
+        );
+
+
+        function endDrag(event) {
+
+            if (!drag || event.pointerId !== drag.pointerId) {
+                return;
+            }
+
+            const moved = drag.moved;
+
+            drag = null;
+
+            try {
+                button.releasePointerCapture(event.pointerId);
+            } catch (error) {
+                // すでに解放済み
+            }
+
+            button.style.opacity = IDLE_OPACITY;
+
+            if (moved) {
+
+                suppressClick = true;
+
+                savePosition();
+            }
+        }
+
+
+        button.addEventListener('pointerup', endDrag);
+        button.addEventListener('pointercancel', endDrag);
+
 
         button.addEventListener(
             'mouseenter',
@@ -1772,7 +2095,12 @@
 
         button.addEventListener(
             'mouseleave',
-            () => { button.style.opacity = '0.35'; }
+            () => {
+
+                if (!drag) {
+                    button.style.opacity = IDLE_OPACITY;
+                }
+            }
         );
 
         // ボタンを押しても選択範囲が解除されないようにする
@@ -1781,8 +2109,27 @@
             event => event.preventDefault()
         );
 
-        button.addEventListener('click', copyPage);
 
+        // キーボード操作・タップ・クリックはここでコピーする
+        button.addEventListener(
+            'click',
+            () => {
+
+                if (suppressClick) {
+
+                    suppressClick = false;
+
+                    return;
+                }
+
+                copyPage();
+            }
+        );
+
+
+        // ----------------------------------------------------------
+        // トースト
+        // ----------------------------------------------------------
 
         toastEl = document.createElement('div');
 
@@ -1790,9 +2137,6 @@
             toastEl.style,
             {
                 position: 'absolute',
-                right: '0',
-                bottom: '52px',
-                maxWidth: '320px',
                 width: 'max-content',
                 padding: '8px 12px',
                 borderRadius: '8px',
@@ -1806,7 +2150,9 @@
 
         shadow.append(toastEl, button);
 
-        (document.documentElement).appendChild(host);
+        document.documentElement.appendChild(hostEl);
+
+        placeButton();
     }
 
 
@@ -1834,6 +2180,10 @@
         },
         true
     );
+
+
+    // 画面サイズ・向きが変わっても、ボタンを画面内に収める
+    window.addEventListener('resize', placeButton);
 
 
     /*
