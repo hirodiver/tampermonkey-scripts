@@ -20,6 +20,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `youtube-chat-highlight.user.js` | YouTube チャット強調 | www.youtube.com/live_chat |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 | `tenbin-ai-biz-terms-expand-all.user.js` | 天秤AI 約款一括展開 | biz.tenbin.ai/trust |
+| `page-to-markdown.user.js` | ページ本文コピー | 全サイト |
 
 **`@name` は短く、末尾に `@version` と同じ値を付ける。** Tampermonkeyの一覧画面は
 名前が長いと省略され、バージョンも一覧には出ない（個別のスクリプト詳細画面を
@@ -52,6 +53,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-highlight.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/tenbin-ai-biz-terms-expand-all.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/page-to-markdown.user.js
 
 ### 新しいスクリプトを入れるとき
 
@@ -841,3 +843,88 @@ iOS の X は元々表示がシンプルで CfT の利点が薄いうえ、挙�
 ## 注意
 
 公開リポジトリなので、**秘密にすべき情報は置かないこと**。
+
+## ページ本文コピー について（ファイル: `page-to-markdown.user.js`）
+
+表示中のページの本文を **Markdown にしてクリップボードへコピー**する。
+参考になるサイトを AI に共有したいとき、URL では読めないことがあるため、
+ブラウザで見えている文章をそのまま貼れるようにするためのもの。
+
+### 使い方
+
+- 📋 ボタン、または **Alt+Shift+C** でコピーする。
+  コピー後に「○○文字をコピーしました」とトーストが出る（6万文字を超えると注意が付く）
+- **ボタンは指（マウス）でドラッグして、画面のどこへでも動かせる**。動かしたあとの位置は
+  そのサイトで覚えている。初期位置は、画面の上のほうで中央よりやや右
+  （中央上はタイトル、右上はメニューボタンと重なりやすいため）。
+  動かさずに押せば（タップ）コピーになる
+- **文字を選択していれば、その範囲だけ**をコピーする。このとき周辺メニューの除外はせず、
+  選んだものをそのまま渡す。ボタンを押しても選択は解除されない
+- 選択していなければ、**本文を自動判定**してコピーする
+- 出力の先頭に、タイトル・URL・取得日時が付く
+
+### 何が入り、何が入らないか
+
+| 対象 | 扱い |
+|---|---|
+| 本文（見出し・段落・リスト・コード・表・引用・リンクURL・画像のalt） | Markdown にして含める |
+| 画面外（スクロールしないと見えない部分） | **含める** |
+| 閉じた折りたたみ（`details`・タブ・`aria-controls` で開閉される領域・CSS で畳まれた領域） | **開いた状態として含める** |
+| メニュー・サイドバー・フッター・サイトの header・広告・共有ボタン・関連記事・リンクだらけのブロック | 含めない |
+| 広告ブロッカーが `display:none` にした要素、折りたたみと関係のない非表示要素 | 含めない |
+| 折りたたみの中の広告らしいもの | 含めない |
+
+折りたたみの中身と広告ブロッカーの非表示は、どちらも `display:none` で隠れるため、
+隠れているかどうかだけでは区別できない。そこで「隠れている要素は、折りたたみの仕組み
+（`details`・`role=tabpanel`・`aria-controls`・直前が `aria-expanded` のボタン・
+`accordion` などの class）が確認できたものだけ含める」というルールにしてある。
+
+### 作りの要点
+
+- 本文コンテナは、`[itemprop="articleBody"]` → `.entry-content` → `article` → `main` …
+  の順に試し、それでも見つからなければ**文字量スコア**（段落の文字量を親・祖父へ加点）で選ぶ
+- 除外は**構造で判定**する（タグ・role・リンク密度）。class の判定は補助
+- 表は**データ表だけ** Markdown の表にする。入れ子・1列・1行・中にリストや見出しが
+  ある表はレイアウト用とみなし、普通の段落として流す
+- 判定は**コピーする瞬間**に毎回やり直す。SPA の遷移や再描画に追従するため、
+  ページ側の監視は要らない
+- `innerHTML` は使わない（Trusted Types 対策）。UI は Shadow DOM に入れ、サイトの CSS に
+  影響されない。ボタンが消されたら作り直す
+- ドラッグは Pointer Events。6px 以上動いたらドラッグ、未満はタップとみなす。
+  ボタンに `touch-action: none` を付けてあるので、指でドラッグしてもページはスクロールしない。
+  ドラッグ直後の `click` は無視する（動かしただけでコピーが走らない）
+- 位置は**画面に対する割合**で `localStorage`（キー `tm-copy-text-position`）に保存する。
+  画面の回転・サイズ変更のあとも画面内に収まる。保存できない環境では初期位置に戻るだけ
+- トーストはボタンが画面の上半分にあれば下へ、下半分なら上へ、横は余白の広いほうへ出す
+  （初期位置が上端に近いため、上へ出すと画面外になる）
+- クリップボードは `navigator.clipboard.writeText`、使えなければ `execCommand('copy')`。
+  `@grant none` のため、Tampermonkey のメニューからの起動は無い
+
+### 限界
+
+- 折りたたみを開いたときに初めて中身を読み込むサイトでは、その中身は DOM に無いので取れない
+- リンクだけが並ぶ「リンク集」の記事は、メニューと見分けられず自動判定では落ちることがある
+  （そのときは範囲を選択してコピーする）
+- コメント欄が本文のサイト（掲示板など）では、`comments` 系の class が除外される
+
+### 診断
+
+外れたときは DevTools のコンソールで `window.__tmCopyText.dump()` を実行する。
+本文の判定方法・起点の要素・文字数と、含めた／除外した要素の理由が表で出る。
+`window.__tmCopyText.extract()` はコピーせずに結果だけ返す。
+
+### 検証
+
+```
+node --check page-to-markdown.user.js
+NODE_PATH=$(npm root -g) node test/page-to-markdown.test.js
+```
+
+模擬DOMで26項目（本文が Markdown になる／メニュー・広告・関連記事が消える／
+広告ブロッカーの非表示が入らない／画面外が入る／折りたたみが開いた状態で入り、
+その中の広告は入らない／要素の使い回しで状態に追従する／選択範囲が優先される／
+Alt+Shift+C とボタンでコピーできる／初期位置が上部の中央より右／マウスと指でドラッグできコピーは走らない／
+指でドラッグしてもページが動かない／画面外へ出ない／位置を覚える／画面サイズ変更に追従／
+トーストが画面内に収まる／`dump()` が理由を返す）を確認する。
+
+実サイトの DOM とは異なるため、**実機確認の代わりにはならない**。
