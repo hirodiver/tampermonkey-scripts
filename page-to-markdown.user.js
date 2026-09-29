@@ -1,10 +1,15 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.1.0
+// @name         ページ本文コピー v1.2.0
 // @namespace    local.hiro.tools
-// @version      1.1.0
-// @description  表示中のページ本文（または選択範囲）をMarkdownにしてクリップボードへコピーする。AIに貼る用。
+// @version      1.2.0
+// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。
 // @match        *://*/*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      script.google.com
+// @connect      script.googleusercontent.com
 // @run-at       document-idle
 // @noframes
 // @homepageURL  https://github.com/hirodiver/tampermonkey-scripts
@@ -36,6 +41,11 @@
 
     // ショートカット（Alt + Shift + この物理キー）
     const HOTKEY_CODE = 'KeyC';
+
+    // URL・トークンはサイトのlocalStorageではなく、拡張機能の専用領域に保存する
+    const DRIVE_CONFIG_KEY = 'tm-copy-text-drive-config';
+    const DRIVE_TIMEOUT_MS = 30000;
+    const DRIVE_MAX_CHARS = 500000;
 
     // リンクのURLを本文に残す（AIに渡すなら残したほうが情報量が多い）
     const INCLUDE_LINK_URL = true;
@@ -1861,7 +1871,141 @@
     // コピー
     // ------------------------------------------------------------
 
+    // ============================================================
+    // Google Drive 保存（操作したときだけ送信）
+    // ============================================================
+
+    let saving = false;
+    let lastUpload = null;
+
+    function createRequestId() {
+
+        // HTTPページでも利用できるgetRandomValuesでUUIDを生成する
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 15) | 64;
+        bytes[8] = (bytes[8] & 63) | 128;
+        const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+
+        return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) +
+            '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+    }
+
+    function readDriveConfig() {
+
+        if (typeof GM_getValue !== 'function') {
+            return null;
+        }
+
+        const config = GM_getValue(DRIVE_CONFIG_KEY, null);
+
+        return config && typeof config === 'object' ? config : null;
+    }
+
+
+    function isReceiverUrl(url) {
+
+        return /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url);
+    }
+
+
+    function configureDrive() {
+
+        const current = readDriveConfig() || {};
+        const url = prompt(
+            'Drive保存先のGASウェブアプリURL（/exec）を入力。空欄にすると保存を停止します。',
+            current.url || ''
+        );
+
+        if (url === null) {
+            return;
+        }
+
+        if (!url.trim()) {
+            GM_setValue(DRIVE_CONFIG_KEY, null);
+            showToast('Drive保存を停止しました（コピーは使えます）');
+            return;
+        }
+
+        if (!isReceiverUrl(url.trim())) {
+            showToast('GASの /exec URLを入力してください', true);
+            return;
+        }
+
+        const token = prompt('GASのsetupで発行したトークンを入力', '');
+
+        if (token === null) {
+            return;
+        }
+
+        if (!/^[a-f0-9]{64}$/.test(token.trim())) {
+            showToast('トークンは64文字の英数字です。setupのログからコピーしてください', true);
+            return;
+        }
+
+        GM_setValue(DRIVE_CONFIG_KEY, { url: url.trim(), token: token.trim() });
+        showToast('Drive保存を設定しました。次のコピーから保存します');
+    }
+
+
+    function saveToDrive(config, result) {
+
+        if (!isReceiverUrl(config.url) || !/^[a-f0-9]{64}$/.test(config.token || '')) {
+            return Promise.reject(new Error('Drive保存の設定をやり直してください'));
+        }
+
+        if (result.text.length > DRIVE_MAX_CHARS) {
+            return Promise.reject(new Error('本文が保存上限（50万文字）を超えています'));
+        }
+
+        // 同じ内容の再送では同じID・日時を使う。応答が失われても重複しない
+        if (!lastUpload || lastUpload.markdown !== result.text) {
+            lastUpload = {
+                requestId: createRequestId(),
+                capturedAt: new Date().toISOString(),
+                title: getTitle().slice(0, 300),
+                url: location.href,
+                markdown: result.text
+            };
+        }
+
+        return new Promise((resolve, reject) => {
+
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: config.url,
+                anonymous: true,
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify({ ...lastUpload, token: config.token }),
+                timeout: DRIVE_TIMEOUT_MS,
+                onload(response) {
+
+                    try {
+                        const data = JSON.parse(response.responseText);
+
+                        if (response.status < 200 || response.status >= 300 || !data.ok || !data.fileId) {
+                            throw new Error(data.message || 'Drive保存に失敗しました');
+                        }
+
+                        resolve(data);
+
+                    } catch (error) {
+                        reject(new Error('Drive保存を確認できません。URL・公開設定・トークンを確認してください'));
+                    }
+                },
+                onerror: () => reject(new Error('通信に失敗しました')),
+                ontimeout: () => reject(new Error('保存の応答がありません。フォルダを確認してください')),
+                onabort: () => reject(new Error('保存の通信が中断されました'))
+            });
+        });
+    }
+
+
     async function copyPage() {
+
+        if (saving) {
+            showToast('Driveへ保存中です');
+            return;
+        }
 
         let result;
 
@@ -1887,13 +2031,42 @@
             return;
         }
 
-        const ok =
-            await writeClipboard(result.text);
+        // ユーザー操作の直後にコピーを開始する（iOSの権限判定対策）
+        const copying = writeClipboard(result.text);
+        const config = readDriveConfig();
+
+        if (config) {
+
+            saving = true;
+            showToast('Driveへ保存中…');
+
+            try {
+                const [copied, stored] = await Promise.allSettled([
+                    copying,
+                    saveToDrive(config, result)
+                ]);
+                const copyOk = copied.status === 'fulfilled' && copied.value;
+                const driveOk = stored.status === 'fulfilled';
+
+                if (driveOk) {
+                    showToast(copyOk
+                        ? 'Driveに保存し、コピーしました'
+                        : 'Driveに保存しました。コピーは失敗しました', !copyOk);
+                } else {
+                    const reason = stored.reason.message || '保存に失敗しました';
+                    showToast((copyOk ? 'コピー済み。' : 'コピーも失敗。') + reason, true);
+                }
+            } finally {
+                saving = false;
+            }
+
+            return;
+        }
+
+        const ok = await copying;
 
         if (!ok) {
-
             showToast('クリップボードへの書き込みに失敗しました', true);
-
             return;
         }
 
@@ -1951,7 +2124,7 @@
         button.textContent = '📋';
 
         button.title =
-            'ページ本文をMarkdownでコピー（Alt+Shift+C）／ドラッグで移動';
+            '本文をコピー・設定済みならDrive保存（Alt+Shift+C）／ドラッグで移動';
 
         Object.assign(
             button.style,
@@ -2239,6 +2412,11 @@
     // ============================================================
     // 初回
     // ============================================================
+
+    if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('Drive保存を設定／停止', configureDrive);
+        GM_registerMenuCommand('本文抽出を診断', () => window.__tmCopyText.dump());
+    }
 
     buildUi();
 

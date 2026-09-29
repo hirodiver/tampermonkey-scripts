@@ -847,6 +847,9 @@ iOS の X は元々表示がシンプルで CfT の利点が薄いうえ、挙�
 ## ページ本文コピー について（ファイル: `page-to-markdown.user.js`）
 
 表示中のページの本文を **Markdown にしてクリップボードへコピー**する。
+**v1.2.0から、設定済みならGoogle Driveの「参考記事アーカイブ」へも保存する。**
+初回設定は [Drive保存の設定手順](page-markdown-drive-setup.md) を参照。
+受け口は `page-markdown-receiver.gs`。URLとトークンはTampermonkey内だけに登録する。
 参考になるサイトを AI に共有したいとき、URL では読めないことがあるため、
 ブラウザで見えている文章をそのまま貼れるようにするためのもの。
 
@@ -898,7 +901,9 @@ iOS の X は元々表示がシンプルで CfT の利点が薄いうえ、挙�
 - トーストはボタンが画面の上半分にあれば下へ、下半分なら上へ、横は余白の広いほうへ出す
   （初期位置が上端に近いため、上へ出すと画面外になる）
 - クリップボードは `navigator.clipboard.writeText`、使えなければ `execCommand('copy')`。
-  `@grant none` のため、Tampermonkey のメニューからの起動は無い
+  Drive設定と本文診断はTampermonkeyのメニューから使える。
+  `@grant` の追加で診断用 `window.__tmCopyText` はスクリプトの分離領域にあるため、
+  通常のページコンソールからは見えない場合がある。メニューの「本文抽出を診断」を使う
 
 ### 限界
 
@@ -909,7 +914,8 @@ iOS の X は元々表示がシンプルで CfT の利点が薄いうえ、挙�
 
 ### 診断
 
-外れたときは DevTools のコンソールで `window.__tmCopyText.dump()` を実行する。
+外れたときはTampermonkeyメニューの「本文抽出を診断」を実行する。
+スクリプトの実行コンテキストを選べる環境では `window.__tmCopyText.dump()` も使える。
 本文の判定方法・起点の要素・文字数と、含めた／除外した要素の理由が表で出る。
 `window.__tmCopyText.extract()` はコピーせずに結果だけ返す。
 
@@ -918,6 +924,7 @@ iOS の X は元々表示がシンプルで CfT の利点が薄いうえ、挙�
 ```
 node --check page-to-markdown.user.js
 NODE_PATH=$(npm root -g) node test/page-to-markdown.test.js
+NODE_PATH=$(npm root -g) node test/page-to-markdown-drive.test.js
 ```
 
 模擬DOMで26項目（本文が Markdown になる／メニュー・広告・関連記事が消える／
