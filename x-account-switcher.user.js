@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.7.1
+// @name         X アカウント切替 v1.7.2
 // @namespace    local.hiro.tools
-// @version      1.7.1
+// @version      1.7.2
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -72,7 +72,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.7.1';
+    const VERSION = '1.7.2';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -2666,8 +2666,8 @@
     font-weight: 600;
 }
 .av img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.av.current { box-shadow: 0 0 0 2px #0a0a0b, 0 0 0 3.5px #f4f4f5; }
-.av:active { transform: scale(0.92); }
+.av.current { box-shadow: 0 0 0 2px #0a0a0b, 0 0 0 4px #1d9bf0; cursor: default; }
+.av:not(.current):active { transform: scale(0.92); }
 .av[disabled] { opacity: 0.45; }
 .load {
     appearance: none;
@@ -3252,7 +3252,17 @@
             }
 
 
-            button.addEventListener('click', () => switchTo(account));
+            /*
+             * 現在のアカウントは押しても反応させない（切替先だけ反応する）
+             */
+            if (normalizeHandle(account.screenName) === current) {
+
+                button.setAttribute('aria-current', 'true');
+
+            } else {
+
+                button.addEventListener('click', () => switchTo(account));
+            }
 
 
             listEl.appendChild(button);

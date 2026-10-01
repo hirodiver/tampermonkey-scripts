@@ -245,6 +245,16 @@ const toastText = (page) =>
     check('描画: ドックに3件並ぶ', buttons && buttons.length === 3, buttons);
     check('描画: 現在のアカウント（alice）に印が付く', buttons && buttons.find((b) => b.handle === 'alice')?.current && !buttons.find((b) => b.handle === 'bob')?.current, buttons);
 
+    // 現在のアカウントは青い輪が付き、押しても切替が始まらない（v1.7.2）
+    const ring = await page.evaluate(() => {
+      const b = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av.current');
+      return b ? getComputedStyle(b).boxShadow : '';
+    });
+    check('描画: 現在のアカウントの輪が X の青', /29, 155, 240/.test(ring), ring);
+    await clickDock(page, 'alice');
+    await page.waitForTimeout(500);
+    check('現在のアカウントを押しても切替は始まらない', !(await dockButtons(page)).some((b) => b.disabled));
+
     // 重なり層に開く、切替メニュー以外の画面（画像の拡大・いいねしたユーザー一覧）。
     // 中の投稿者やユーザーを「自分」として覚えない（v1.4.0 まで、開くたびに一覧が伸びていた）
     await page.evaluate(() => {
