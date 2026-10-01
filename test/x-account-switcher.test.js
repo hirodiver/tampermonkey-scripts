@@ -1058,6 +1058,54 @@ const toastText = (page) =>
       await page.close();
     }
 
+    // --- スクロールで薄くする（v1.8.0）: 投稿ボタンの濃さに合わせる
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'right-bottom' });
+      const dockOpacity = () => page.evaluate(() => {
+        const sr = document.getElementById('tm-x-switch-root').shadowRoot;
+        return { dock: Number(getComputedStyle(sr.querySelector('.dock')).opacity), tab: Number(getComputedStyle(sr.querySelector('.tab')).opacity) };
+      });
+      // X の真似: 下へ送ると投稿ボタンの外側の入れ物を薄くし、上へ戻すと濃く戻す
+      await page.evaluate(() => {
+        let last = window.scrollY;
+        const wrap = document.getElementById('fab').parentElement;
+        window.addEventListener('scroll', () => {
+          const y = window.scrollY;
+          if (y > last) wrap.style.opacity = String(window.fabDim || 0.5);
+          if (y < last) wrap.style.opacity = '1';
+          last = y;
+        });
+      });
+      check('薄くする: 最初は濃い', (await dockOpacity()).dock === 1, await dockOpacity());
+      await page.evaluate(() => window.scrollBy(0, 300));
+      await page.waitForTimeout(200);
+      check('薄くする: タイムラインを下へ送ると、投稿ボタンと同じ濃さ（0.5）になる', (await dockOpacity()).dock === 0.5, await dockOpacity());
+      check('薄くする: しまったときのつまみも同じ濃さ', (await dockOpacity()).tab === 0.5, await dockOpacity());
+      await page.evaluate(() => window.scrollBy(0, -100));
+      await page.waitForTimeout(200);
+      check('薄くする: 上へ戻すと濃く戻る', (await dockOpacity()).dock === 1, await dockOpacity());
+      // 投稿ボタンが極端に薄くなっても、読める濃さは残す
+      await page.evaluate(() => { window.fabDim = 0.05; window.scrollBy(0, 50); });
+      await page.waitForTimeout(200);
+      check('薄くする: 投稿ボタンが極端に薄くても 0.35 より薄くしない', (await dockOpacity()).dock === 0.35, await dockOpacity());
+      const report = await page.evaluate(() => window.__tmXSwitch.dump());
+      check('薄くする: 診断に写す元と濃さが出る', /スクロールで薄くする: 有効/.test(report) && /写す元: <div[^>]*FloatingActionButtonBase/.test(report), report.split('\n').filter((l) => /薄く|写す元|元の濃さ/.test(l)));
+      await page.close();
+    }
+
+    // --- 投稿ボタンが無いページでは、スクロールの向きで決める
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'right-bottom', fab: false });
+      const op = () => page.evaluate(() => Number(getComputedStyle(document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock')).opacity));
+      await page.evaluate(() => window.scrollBy(0, 300));
+      await page.waitForTimeout(200);
+      check('薄くする: 投稿ボタンが無くても、下へ送ると薄くなる', (await op()) === 0.5, await op());
+      await page.evaluate(() => window.scrollBy(0, -100));
+      await page.waitForTimeout(200);
+      check('薄くする: 投稿ボタンが無くても、上へ戻すと濃く戻る', (await op()) === 1, await op());
+      await page.close();
+    }
+
     // --- 左下: 左下のアイコンを隠さない。タイムラインのポストは避けない
     {
       const page = await bootBottom(lift(390, 664), { position: 'left-bottom' });

@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.7.2
+// @name         X アカウント切替 v1.8.0
 // @namespace    local.hiro.tools
-// @version      1.7.2
+// @version      1.8.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -51,6 +51,11 @@
  *   測れなかったときも、下のタブから投稿ボタン1つ分は上げる。
  *   下のタブが無い画面（デスクトップ・iPad）は従来の位置のまま
  *
+ * ■ スクロールで薄くする（v1.8.0）
+ *   タイムラインを下へ送ると、X の投稿ボタンと同じように薄くなり、戻すと濃く戻る。
+ *   投稿ボタンの実際の濃さを毎フレーム読み取って写すので、タイミングは X と同じ。
+ *   投稿ボタンが無いページでは、自分でスクロールの向きを見て薄くする
+ *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
  *   「アバターと @ハンドルを持つ、押せる要素」「アカウント追加・ログアウトの
@@ -72,7 +77,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.7.2';
+    const VERSION = '1.8.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -170,6 +175,33 @@
 
     // ドックを動かし始めたと見なす指の移動量（px）。これより小さければ普通のタップ
     const DRAG_THRESHOLD_PX = 8;
+
+    /*
+     * スクロールに合わせてドックを薄くする（v1.8.0）。
+     * X の投稿ボタン（右下の青い丸）が、タイムラインを下へ送ると薄くなり、
+     * 戻すと濃く戻る。その投稿ボタンの実際の濃さを読み取って、ドックに同じ濃さを付ける。
+     * X の判定とアニメーションをそのまま写すので、タイミングが X と揃う
+     */
+    const FADE_WITH_X = true;
+
+    // 濃さを写す元（投稿ボタン。上から順に試す）
+    const FADE_SOURCE_SELECTORS = [
+        '[data-testid="FloatingActionButtonBase"]',
+        'a[data-testid="FloatingActionButtons_Tweet_Button"]',
+        'a[href="/compose/post"]'
+    ];
+
+    // 薄くしても、これより薄くはしない（アイコンや文字が読める濃さ）
+    const FADE_MIN_OPACITY = 0.35;
+
+    // 投稿ボタンが無いページ（個別ポスト等）では自分でスクロールの向きを見る。そのときの薄さ
+    const FADE_FALLBACK_OPACITY = 0.5;
+
+    // 上で、向きが変わったとみなすスクロール量（px）
+    const FADE_FALLBACK_DELTA_PX = 8;
+
+    // スクロールが止まってからも濃さを追い続ける時間（ミリ秒。X のアニメーションが終わるまで）
+    const FADE_FOLLOW_MS = 700;
 
     // DOM変化後の再処理までの待ち時間（ミリ秒）
     const CHECK_DELAY = 250;
@@ -1935,6 +1967,8 @@
 
         render(true);
 
+        updateFade();
+
         toast('@' + account.screenName + ' に切替中…');
 
         log('切替開始', '@' + account.screenName);
@@ -2074,6 +2108,8 @@
         busy = false;
 
         render(true);
+
+        updateFade();
 
         toast(message);
     }
@@ -2717,6 +2753,7 @@
 .tool:active { background: rgba(244, 244, 245, 0.14); color: #f4f4f5; }
 .dock { touch-action: none; cursor: grab; -webkit-user-select: none; user-select: none; }
 .dock img { -webkit-user-drag: none; }
+.dock, .tab { opacity: var(--tm-fade, 1); }
 .dock.dragging { cursor: grabbing; opacity: 0.85; }
 .dock.dragging .av:active { transform: none; }
 .toast {
@@ -3271,6 +3308,221 @@
 
 
     // ============================================================
+    // スクロールで薄くする（X の投稿ボタンに合わせる）
+    // ============================================================
+
+    let fadeFrame = 0;
+    let fadeFollowUntil = 0;
+    let fadeLastScrollY = 0;
+    let fadeFallbackDim = false;
+
+    // 診断用
+    let fadeLast = { source: null, sourceOpacity: null, applied: 1, by: '' };
+
+
+    function fadeSource() {
+
+        for (const selector of FADE_SOURCE_SELECTORS) {
+
+            const found =
+                [...document.querySelectorAll(selector)]
+                    .find(element =>
+                        isVisible(element) &&
+                        !element.closest(`#${ROOT_ID}, #${PANEL_ID}`)
+                    );
+
+            if (found) {
+                return found;
+            }
+        }
+
+
+        return null;
+    }
+
+
+    /*
+     * 実際に見えている濃さ。X は投稿ボタン本体ではなく外側の入れ物を
+     * 薄くすることがあるので、祖先の opacity も掛け合わせる
+     */
+    function effectiveOpacity(element) {
+
+        let opacity = 1;
+
+
+        for (let node = element; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
+
+            const value = parseFloat(getComputedStyle(node).opacity);
+
+            if (!Number.isNaN(value)) {
+                opacity *= value;
+            }
+        }
+
+
+        return opacity;
+    }
+
+
+    function updateFade() {
+
+        if (!root) {
+            return;
+        }
+
+
+        let opacity = 1;
+
+        let by = '';
+
+
+        if (busy) {
+
+            by = '切替中は濃いまま';
+
+        } else {
+
+            const source = fadeSource();
+
+            fadeLast.source = source;
+
+
+            if (source) {
+
+                const sourceOpacity = effectiveOpacity(source);
+
+                fadeLast.sourceOpacity = sourceOpacity;
+
+                opacity = Math.max(FADE_MIN_OPACITY, Math.min(1, sourceOpacity));
+
+                by = '投稿ボタンに合わせる';
+
+            } else {
+
+                fadeLast.sourceOpacity = null;
+
+                opacity = fadeFallbackDim ? FADE_FALLBACK_OPACITY : 1;
+
+                by = '投稿ボタンが無いので、スクロールの向きで決める';
+            }
+        }
+
+
+        const value = String(Math.round(opacity * 100) / 100);
+
+        if (root.style.getPropertyValue('--tm-fade') !== value) {
+            root.style.setProperty('--tm-fade', value);
+        }
+
+
+        fadeLast.applied = Number(value);
+
+        fadeLast.by = by;
+    }
+
+
+    /*
+     * スクロール中と、止まってから少しの間だけ、毎フレーム濃さを写す
+     */
+    function followFade() {
+
+        fadeFollowUntil = Date.now() + FADE_FOLLOW_MS;
+
+
+        if (fadeFrame) {
+            return;
+        }
+
+
+        const step = () => {
+
+            updateFade();
+
+
+            if (Date.now() < fadeFollowUntil) {
+
+                fadeFrame = requestAnimationFrame(step);
+
+            } else {
+
+                fadeFrame = 0;
+            }
+        };
+
+
+        fadeFrame = requestAnimationFrame(step);
+    }
+
+
+    function onScrollForFade() {
+
+        const y = window.scrollY;
+
+        const delta = y - fadeLastScrollY;
+
+
+        if (Math.abs(delta) >= FADE_FALLBACK_DELTA_PX) {
+
+            /*
+             * 指を下から上へ（タイムラインを下へ送る）で薄く、逆で戻す。
+             * 一番上に戻ったら必ず戻す
+             */
+            fadeFallbackDim = delta > 0 && y > 0;
+
+            fadeLastScrollY = y;
+        }
+
+
+        if (y <= 0) {
+
+            fadeFallbackDim = false;
+
+            fadeLastScrollY = 0;
+        }
+
+
+        followFade();
+    }
+
+
+    function startFadeSync() {
+
+        if (!FADE_WITH_X) {
+            return;
+        }
+
+
+        fadeLastScrollY = window.scrollY;
+
+
+        /*
+         * タイムラインが内側の要素でスクロールする場合にも拾えるよう、捕捉段階で受ける
+         */
+        document.addEventListener(
+            'scroll',
+            onScrollForFade,
+            {
+                capture: true,
+                passive: true
+            }
+        );
+
+
+        for (const type of ['touchmove', 'touchend', 'wheel']) {
+
+            window.addEventListener(
+                type,
+                followFade,
+                { passive: true }
+            );
+        }
+
+
+        updateFade();
+    }
+
+
+    // ============================================================
     // 監視
     // ============================================================
 
@@ -3605,6 +3857,19 @@
             lines.push('  （なし）');
         }
 
+
+        lines.push('');
+
+        lines.push('■ スクロールで薄くする: ' + (FADE_WITH_X ? '有効' : '無効'));
+
+        lines.push('  写す元: ' + describe(fadeSource()));
+
+        lines.push(
+            '  元の濃さ: ' +
+            (fadeLast.sourceOpacity === null ? '（無し）' : fadeLast.sourceOpacity.toFixed(2)) +
+            ' / ドック: ' + fadeLast.applied +
+            '（' + (fadeLast.by || '未計算') + '）'
+        );
 
         lines.push('');
 
@@ -3946,6 +4211,8 @@
         render(true);
 
         startObserver();
+
+        startFadeSync();
 
         renderPanel();
 
