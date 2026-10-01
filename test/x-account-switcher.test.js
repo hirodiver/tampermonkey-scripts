@@ -1088,6 +1088,23 @@ const toastText = (page) =>
       await page.evaluate(() => { window.fabDim = 0.05; window.scrollBy(0, 50); });
       await page.waitForTimeout(200);
       check('薄くする: 投稿ボタンが極端に薄くても 0.35 より薄くしない', (await dockOpacity()).dock === 0.35, await dockOpacity());
+      // X がアニメーション付きで変えても、終わりまで追って止まる
+      await page.evaluate(() => { window.fabDim = 0.5; document.getElementById('fab').parentElement.style.transition = 'opacity 0.3s linear'; window.scrollBy(0, -50); });
+      await page.waitForTimeout(80);
+      await page.evaluate(() => window.scrollBy(0, 50));
+      await page.waitForTimeout(600);
+      check('薄くする: X がアニメーションで薄くしても、終わりの濃さ（0.5）に揃う', (await dockOpacity()).dock === 0.5, await dockOpacity());
+      // X が濃さを変えないスクロールでは計算しない
+      const calls = await page.evaluate(async () => {
+        const original = window.getComputedStyle;
+        let count = 0;
+        window.getComputedStyle = function (...args) { count += 1; return original.apply(this, args); };
+        for (let i = 0; i < 10; i++) { window.scrollBy(0, 20); await new Promise((r) => requestAnimationFrame(r)); }
+        await new Promise((r) => setTimeout(r, 100));
+        window.getComputedStyle = original;
+        return count;
+      });
+      check('薄くする: X が濃さを変えないスクロールでは何も計算しない', calls === 0, calls);
       const report = await page.evaluate(() => window.__tmXSwitch.dump());
       check('薄くする: 診断に写す元と濃さが出る', /スクロールで薄くする: 有効/.test(report) && /写す元: <div[^>]*FloatingActionButtonBase/.test(report), report.split('\n').filter((l) => /薄く|写す元|元の濃さ/.test(l)));
       await page.close();
