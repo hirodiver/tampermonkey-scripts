@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.8.0
+// @name         X アカウント切替 v1.8.1
 // @namespace    local.hiro.tools
-// @version      1.8.0
+// @version      1.8.1
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -53,7 +53,8 @@
  *
  * ■ スクロールで薄くする（v1.8.0）
  *   タイムラインを下へ送ると、X の投稿ボタンと同じように薄くなり、戻すと濃く戻る。
- *   投稿ボタンの実際の濃さを毎フレーム読み取って写すので、タイミングは X と同じ。
+ *   投稿ボタンの実際の濃さを読み取って写すので、タイミングは X と同じ。
+ *   スクロールのたびには計算せず、X が投稿ボタンの濃さを変えたときだけ追う（v1.8.1）。
  *   投稿ボタンが無いページでは、自分でスクロールの向きを見て薄くする
  *
  * ■ 未確認の点
@@ -77,7 +78,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.8.0';
+    const VERSION = '1.8.1';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -200,8 +201,16 @@
     // 上で、向きが変わったとみなすスクロール量（px）
     const FADE_FALLBACK_DELTA_PX = 8;
 
-    // スクロールが止まってからも濃さを追い続ける時間（ミリ秒。X のアニメーションが終わるまで）
-    const FADE_FOLLOW_MS = 700;
+    /*
+     * X が投稿ボタンの濃さを変えたら、アニメーションが終わるまで毎フレーム追う。
+     * 濃さが FADE_STABLE_FRAMES フレーム続けて変わらず、FADE_FOLLOW_MIN_MS 以上経ったら止める。
+     * FADE_FOLLOW_MAX_MS を過ぎたら必ず止める（ミリ秒）
+     */
+    const FADE_STABLE_FRAMES = 3;
+
+    const FADE_FOLLOW_MIN_MS = 150;
+
+    const FADE_FOLLOW_MAX_MS = 1000;
 
     // DOM変化後の再処理までの待ち時間（ミリ秒）
     const CHECK_DELAY = 250;
@@ -3311,16 +3320,29 @@
     // スクロールで薄くする（X の投稿ボタンに合わせる）
     // ============================================================
 
+    /*
+     * スクロールのたびに計算はしない。
+     * 投稿ボタンとその入れ物の style / class を MutationObserver で見張り、
+     * X が濃さを変えたときだけ、アニメーションが終わるまで毎フレーム追う。
+     * 投稿ボタンを探し直すのは DOM が変わったとき（scheduleCheck）だけ
+     */
+
+    // 写す元の投稿ボタンと、その祖先（濃さを掛け合わせる範囲）
+    let fadeSourceEl = null;
+    let fadeChain = [];
+    let fadeObserver = null;
+
     let fadeFrame = 0;
-    let fadeFollowUntil = 0;
+
+    // 投稿ボタンが無いページで、自分で決めた状態
     let fadeLastScrollY = 0;
     let fadeFallbackDim = false;
 
     // 診断用
-    let fadeLast = { source: null, sourceOpacity: null, applied: 1, by: '' };
+    let fadeLast = { sourceOpacity: null, applied: 1, by: '', frames: 0 };
 
 
-    function fadeSource() {
+    function findFadeSource() {
 
         for (const selector of FADE_SOURCE_SELECTORS) {
 
@@ -3342,15 +3364,60 @@
 
 
     /*
-     * 実際に見えている濃さ。X は投稿ボタン本体ではなく外側の入れ物を
-     * 薄くすることがあるので、祖先の opacity も掛け合わせる
+     * 写す元を探し直す。変わったときだけ見張り直す
      */
-    function effectiveOpacity(element) {
+    function refreshFadeSource() {
+
+        if (!FADE_WITH_X) {
+            return;
+        }
+
+
+        const source = findFadeSource();
+
+        if (source === fadeSourceEl && (!source || source.isConnected)) {
+            return;
+        }
+
+
+        fadeSourceEl = source;
+
+        fadeChain = [];
+
+
+        if (fadeObserver) {
+            fadeObserver.disconnect();
+        }
+
+
+        /*
+         * X は投稿ボタン本体ではなく外側の入れ物を薄くすることがあるので、
+         * 祖先もすべて見張る
+         */
+        for (let node = source; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
+
+            fadeChain.push(node);
+
+            fadeObserver.observe(
+                node,
+                {
+                    attributes: true,
+                    attributeFilter: ['style', 'class']
+                }
+            );
+        }
+
+
+        updateFade();
+    }
+
+
+    function chainOpacity() {
 
         let opacity = 1;
 
 
-        for (let node = element; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
+        for (const node of fadeChain) {
 
             const value = parseFloat(getComputedStyle(node).opacity);
 
@@ -3364,10 +3431,13 @@
     }
 
 
+    /*
+     * いまの濃さをドックに付け、付けた値を返す
+     */
     function updateFade() {
 
         if (!root) {
-            return;
+            return 1;
         }
 
 
@@ -3380,31 +3450,23 @@
 
             by = '切替中は濃いまま';
 
+        } else if (fadeSourceEl && fadeSourceEl.isConnected) {
+
+            const sourceOpacity = chainOpacity();
+
+            fadeLast.sourceOpacity = sourceOpacity;
+
+            opacity = Math.max(FADE_MIN_OPACITY, Math.min(1, sourceOpacity));
+
+            by = '投稿ボタンに合わせる';
+
         } else {
 
-            const source = fadeSource();
+            fadeLast.sourceOpacity = null;
 
-            fadeLast.source = source;
+            opacity = fadeFallbackDim ? FADE_FALLBACK_OPACITY : 1;
 
-
-            if (source) {
-
-                const sourceOpacity = effectiveOpacity(source);
-
-                fadeLast.sourceOpacity = sourceOpacity;
-
-                opacity = Math.max(FADE_MIN_OPACITY, Math.min(1, sourceOpacity));
-
-                by = '投稿ボタンに合わせる';
-
-            } else {
-
-                fadeLast.sourceOpacity = null;
-
-                opacity = fadeFallbackDim ? FADE_FALLBACK_OPACITY : 1;
-
-                by = '投稿ボタンが無いので、スクロールの向きで決める';
-            }
+            by = '投稿ボタンが無いので、スクロールの向きで決める';
         }
 
 
@@ -3418,35 +3480,61 @@
         fadeLast.applied = Number(value);
 
         fadeLast.by = by;
+
+
+        return opacity;
     }
 
 
     /*
-     * スクロール中と、止まってから少しの間だけ、毎フレーム濃さを写す
+     * X が濃さを変えた: アニメーションが終わるまで追う
      */
     function followFade() {
-
-        fadeFollowUntil = Date.now() + FADE_FOLLOW_MS;
-
 
         if (fadeFrame) {
             return;
         }
 
 
+        const startedAt = performance.now();
+
+        let previous = null;
+
+        let stable = 0;
+
+        let frames = 0;
+
+
         const step = () => {
 
-            updateFade();
+            const value = updateFade();
+
+            frames += 1;
 
 
-            if (Date.now() < fadeFollowUntil) {
+            stable = value === previous ? stable + 1 : 0;
 
-                fadeFrame = requestAnimationFrame(step);
+            previous = value;
 
-            } else {
+
+            const elapsed = performance.now() - startedAt;
+
+            const settled =
+                stable >= FADE_STABLE_FRAMES &&
+                elapsed >= FADE_FOLLOW_MIN_MS;
+
+
+            if (settled || elapsed >= FADE_FOLLOW_MAX_MS) {
 
                 fadeFrame = 0;
+
+                fadeLast.frames = frames;
+
+                return;
             }
+
+
+            fadeFrame = requestAnimationFrame(step);
         };
 
 
@@ -3454,34 +3542,50 @@
     }
 
 
+    /*
+     * 投稿ボタンが無いページのときだけ働く。
+     * 向きが変わったときだけドックを書き換える
+     */
     function onScrollForFade() {
+
+        if (fadeSourceEl) {
+            return;
+        }
+
 
         const y = window.scrollY;
 
         const delta = y - fadeLastScrollY;
 
+        let dim = fadeFallbackDim;
 
-        if (Math.abs(delta) >= FADE_FALLBACK_DELTA_PX) {
+
+        if (y <= 0) {
 
             /*
-             * 指を下から上へ（タイムラインを下へ送る）で薄く、逆で戻す。
              * 一番上に戻ったら必ず戻す
              */
-            fadeFallbackDim = delta > 0 && y > 0;
+            dim = false;
+
+            fadeLastScrollY = 0;
+
+        } else if (Math.abs(delta) >= FADE_FALLBACK_DELTA_PX) {
+
+            /*
+             * 指を下から上へ（タイムラインを下へ送る）で薄く、逆で戻す
+             */
+            dim = delta > 0;
 
             fadeLastScrollY = y;
         }
 
 
-        if (y <= 0) {
+        if (dim !== fadeFallbackDim) {
 
-            fadeFallbackDim = false;
+            fadeFallbackDim = dim;
 
-            fadeLastScrollY = 0;
+            updateFade();
         }
-
-
-        followFade();
     }
 
 
@@ -3491,6 +3595,8 @@
             return;
         }
 
+
+        fadeObserver = new MutationObserver(followFade);
 
         fadeLastScrollY = window.scrollY;
 
@@ -3508,15 +3614,7 @@
         );
 
 
-        for (const type of ['touchmove', 'touchend', 'wheel']) {
-
-            window.addEventListener(
-                type,
-                followFade,
-                { passive: true }
-            );
-        }
-
+        refreshFadeSource();
 
         updateFade();
     }
@@ -3536,6 +3634,8 @@
                 () => {
 
                     const changed = harvest();
+
+                    refreshFadeSource();
 
                     takeSnapshot();
 
@@ -3862,13 +3962,14 @@
 
         lines.push('■ スクロールで薄くする: ' + (FADE_WITH_X ? '有効' : '無効'));
 
-        lines.push('  写す元: ' + describe(fadeSource()));
+        lines.push('  写す元: ' + describe(fadeSourceEl) + '（見張っている入れ物: ' + fadeChain.length + '件）');
 
         lines.push(
             '  元の濃さ: ' +
             (fadeLast.sourceOpacity === null ? '（無し）' : fadeLast.sourceOpacity.toFixed(2)) +
             ' / ドック: ' + fadeLast.applied +
-            '（' + (fadeLast.by || '未計算') + '）'
+            '（' + (fadeLast.by || '未計算') + '）' +
+            ' / 直近の追いかけ: ' + fadeLast.frames + 'フレーム'
         );
 
         lines.push('');
