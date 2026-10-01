@@ -1,11 +1,13 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.2.0
+// @name         ページ本文コピー v1.3.0
 // @namespace    local.hiro.tools
-// @version      1.2.0
-// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。
+// @version      1.3.0
+// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_listValues
+// @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
@@ -24,9 +26,16 @@
  *   - 文字を選択していれば、選択範囲だけをコピー（周辺メニューの除外はしない）
  *   - 選択していなければ、本文を自動判定してコピー
  *
+ * Drive保存が届かなかったとき
+ *   - 送る前に控えを取り、届いたと確認できたら消す。押したらすぐ移動してよい
+ *   - 控えが残っていると、ボタン右上に件数が出る。次にページを開いたとき・
+ *     次に保存が成功したときに自動で送り直す
+ *   - 手動で送るときは、Tampermonkey のメニュー「未保存を一覧・再送」
+ *
  * 外したとき
  *   - DevTools コンソールで window.__tmCopyText.dump() を実行すると、
  *     どの要素を含めた・除外したか、その理由が表で出る
+ *   - window.__tmCopyText.pending() で、未保存の控えが表で出る
  */
 
 (function () {
@@ -46,6 +55,19 @@
     const DRIVE_CONFIG_KEY = 'tm-copy-text-drive-config';
     const DRIVE_TIMEOUT_MS = 30000;
     const DRIVE_MAX_CHARS = 500000;
+
+    // 届かなかった保存の控え（拡張機能の専用領域。他のタブと競合しないよう1件ずつ別キー）
+    const PENDING_PREFIX = 'tm-copy-text-pending:';
+
+    // 控えておく最大件数（超えた分は控えず、コピーだけ残る）
+    const PENDING_MAX = 20;
+
+    // 自動で送り直すまでの待ち時間（試した回数ごと。最後の値をくり返す）。
+    // 最初を少し空けるのは、移動直後は元の送信がまだ届く途中かもしれないため
+    const RETRY_DELAYS_MS = [15000, 60000, 300000, 1800000];
+
+    // 一覧の確認ダイアログに出す最大件数
+    const PENDING_LIST_LIMIT = 10;
 
     // リンクのURLを本文に残す（AIに渡すなら残したほうが情報量が多い）
     const INCLUDE_LINK_URL = true;
@@ -1947,17 +1969,12 @@
     }
 
 
-    function saveToDrive(config, result) {
+    /*
+     * 同じ内容の再送では同じID・日時を使う。
+     * GAS はID・日時からファイル名を決めるので、応答が失われて送り直しても重複しない
+     */
+    function prepareUpload(result) {
 
-        if (!isReceiverUrl(config.url) || !/^[a-f0-9]{64}$/.test(config.token || '')) {
-            return Promise.reject(new Error('Drive保存の設定をやり直してください'));
-        }
-
-        if (result.text.length > DRIVE_MAX_CHARS) {
-            return Promise.reject(new Error('本文が保存上限（50万文字）を超えています'));
-        }
-
-        // 同じ内容の再送では同じID・日時を使う。応答が失われても重複しない
         if (!lastUpload || lastUpload.markdown !== result.text) {
             lastUpload = {
                 requestId: createRequestId(),
@@ -1968,6 +1985,30 @@
             };
         }
 
+        return lastUpload;
+    }
+
+
+    function sendToDrive(config, upload) {
+
+        if (!isReceiverUrl(config.url) || !/^[a-f0-9]{64}$/.test(config.token || '')) {
+            return Promise.reject(new Error('Drive保存の設定をやり直してください'));
+        }
+
+        if (upload.markdown.length > DRIVE_MAX_CHARS) {
+            return Promise.reject(new Error('本文が保存上限（50万文字）を超えています'));
+        }
+
+        // 控えの管理用の項目は送らない
+        const payload = {
+            requestId: upload.requestId,
+            capturedAt: upload.capturedAt,
+            title: upload.title,
+            url: upload.url,
+            markdown: upload.markdown,
+            token: config.token
+        };
+
         return new Promise((resolve, reject) => {
 
             GM_xmlhttpRequest({
@@ -1975,7 +2016,7 @@
                 url: config.url,
                 anonymous: true,
                 headers: { 'Content-Type': 'application/json' },
-                data: JSON.stringify({ ...lastUpload, token: config.token }),
+                data: JSON.stringify(payload),
                 timeout: DRIVE_TIMEOUT_MS,
                 onload(response) {
 
@@ -1997,6 +2038,362 @@
                 onabort: () => reject(new Error('保存の通信が中断されました'))
             });
         });
+    }
+
+
+    // ============================================================
+    // 届かなかった保存の控えと再送
+    // ============================================================
+
+    let retrying = false;
+    let retryTimer = null;
+    let badgeEl = null;
+
+
+    function canKeepPending() {
+
+        return (
+            typeof GM_getValue === 'function' &&
+            typeof GM_setValue === 'function' &&
+            typeof GM_listValues === 'function' &&
+            typeof GM_deleteValue === 'function'
+        );
+    }
+
+
+    function readPending(requestId) {
+
+        const record = GM_getValue(PENDING_PREFIX + requestId, null);
+
+        if (
+            !record ||
+            typeof record !== 'object' ||
+            typeof record.requestId !== 'string' ||
+            typeof record.markdown !== 'string'
+        ) {
+            return null;
+        }
+
+        return record;
+    }
+
+
+    function writePending(record) {
+
+        GM_setValue(PENDING_PREFIX + record.requestId, record);
+    }
+
+
+    function removePending(requestId) {
+
+        if (canKeepPending()) {
+            GM_deleteValue(PENDING_PREFIX + requestId);
+        }
+    }
+
+
+    // 古い順
+    function listPending() {
+
+        if (!canKeepPending()) {
+            return [];
+        }
+
+        return GM_listValues()
+            .filter(key => key.startsWith(PENDING_PREFIX))
+            .map(key => readPending(key.slice(PENDING_PREFIX.length)))
+            .filter(Boolean)
+            .sort((a, b) => String(a.capturedAt).localeCompare(String(b.capturedAt)));
+    }
+
+
+    /*
+     * 送る前に控える。届いたと確認できたら消す。
+     * 送信中にページを離れても、控えが残っていれば別のページで送り直せる
+     */
+    function keepPending(upload) {
+
+        if (!canKeepPending()) {
+            return false;
+        }
+
+        const existing = readPending(upload.requestId);
+
+        if (!existing && listPending().length >= PENDING_MAX) {
+            return false;
+        }
+
+        writePending({
+            ...upload,
+            attempts: existing ? existing.attempts + 1 : 1,
+            lastTriedAt: Date.now(),
+            lastError: ''
+        });
+
+        return true;
+    }
+
+
+    function markPendingFailed(requestId, message) {
+
+        const record = canKeepPending() ? readPending(requestId) : null;
+
+        // 送信中に他のタブで保存済み・削除済みになっていたら書き戻さない
+        if (record) {
+            writePending({ ...record, lastError: message });
+        }
+    }
+
+
+    function retryDelay(record) {
+
+        const index =
+            Math.min(
+                Math.max(0, (record.attempts || 1) - 1),
+                RETRY_DELAYS_MS.length - 1
+            );
+
+        return RETRY_DELAYS_MS[index];
+    }
+
+
+    function updateBadge(count = listPending().length) {
+
+        if (!badgeEl) {
+            return;
+        }
+
+        badgeEl.textContent = count > 99 ? '99+' : String(count);
+        badgeEl.style.display = count ? 'block' : 'none';
+    }
+
+
+    /*
+     * 控えを送り直す。all が false なら、待ち時間を過ぎたものだけ。
+     * 1件でも通信に失敗したら、残りもつながらない見込みが高いので止める
+     */
+    async function retryPending(options = {}) {
+
+        const config = readDriveConfig();
+
+        if (retrying || !config) {
+            return null;
+        }
+
+        retrying = true;
+
+        let saved = 0;
+        let lastError = '';
+
+        try {
+
+            for (const item of listPending()) {
+
+                // 他のタブが先に送った・試した場合に備えて読み直す
+                const record = readPending(item.requestId);
+
+                if (!record) {
+                    continue;
+                }
+
+                if (
+                    !options.all &&
+                    Date.now() - (record.lastTriedAt || 0) < retryDelay(record)
+                ) {
+                    continue;
+                }
+
+                // 試したことを先に書き、他のタブが同時に送らないようにする
+                const claimed = {
+                    ...record,
+                    attempts: (record.attempts || 1) + 1,
+                    lastTriedAt: Date.now()
+                };
+
+                writePending(claimed);
+
+                try {
+
+                    await sendToDrive(config, claimed);
+
+                    removePending(claimed.requestId);
+
+                    saved++;
+
+                } catch (error) {
+
+                    lastError = error.message || '保存に失敗しました';
+
+                    markPendingFailed(claimed.requestId, lastError);
+
+                    break;
+                }
+            }
+
+        } finally {
+
+            retrying = false;
+
+            scheduleRetry();
+        }
+
+        return {
+            saved,
+            left: listPending().length,
+            lastError
+        };
+    }
+
+
+    function reportRetry(report, manual) {
+
+        if (!report) {
+            return;
+        }
+
+        if (report.saved && !report.left) {
+            showToast('未保存だった' + report.saved + '件をDriveに保存しました');
+            return;
+        }
+
+        if (report.saved) {
+            showToast(
+                '未保存だった' + report.saved + '件を保存しました。残り' +
+                report.left + '件: ' + report.lastError,
+                true
+            );
+            return;
+        }
+
+        // 自動の再送で何も進まなかったときは黙る（件数はボタンに出ている）
+        if (manual) {
+            showToast(
+                report.lastError
+                    ? '送り直せませんでした: ' + report.lastError
+                    : '送り直す控えはありませんでした',
+                Boolean(report.lastError)
+            );
+        }
+    }
+
+
+    /*
+     * いちばん早く送り直せる時刻にタイマーを置く。
+     * iPhone は裏に回るとタイマーが止まるので、表に戻ったときにも呼ぶ
+     */
+    function scheduleRetry() {
+
+        clearTimeout(retryTimer);
+
+        const records = listPending();
+
+        updateBadge(records.length);
+
+        if (!records.length || !readDriveConfig()) {
+            return;
+        }
+
+        const now = Date.now();
+
+        const wait =
+            Math.min(
+                ...records.map(record =>
+                    Math.max(0, (record.lastTriedAt || 0) + retryDelay(record) - now)
+                )
+            );
+
+        retryTimer =
+            setTimeout(
+                () => {
+                    retryPending().then(report => reportRetry(report, false));
+                },
+                wait + 500
+            );
+    }
+
+
+    function describePending(records) {
+
+        const lines =
+            records
+                .slice(0, PENDING_LIST_LIMIT)
+                .map((record, index) =>
+                    (index + 1) + '. ' + (record.title || 'タイトル不明') +
+                    '\n   ' + record.url +
+                    (record.lastError ? '\n   理由: ' + record.lastError : '')
+                );
+
+        if (records.length > PENDING_LIST_LIMIT) {
+            lines.push('ほか' + (records.length - PENDING_LIST_LIMIT) + '件');
+        }
+
+        return lines.join('\n');
+    }
+
+
+    async function retryFromMenu() {
+
+        const records = listPending();
+
+        if (!records.length) {
+            showToast('未保存はありません');
+            return;
+        }
+
+        if (!readDriveConfig()) {
+            showToast('Drive保存が未設定です。先に「Drive保存を設定／停止」から設定してください', true);
+            return;
+        }
+
+        const ok = confirm(
+            '未保存 ' + records.length + '件\n\n' +
+            describePending(records) +
+            '\n\n今すぐDriveへ送り直しますか？'
+        );
+
+        if (!ok) {
+            return;
+        }
+
+        showToast('未保存を送り直しています…');
+
+        const report = await retryPending({ all: true });
+
+        if (!report) {
+            showToast('送り直しの途中です。少し待ってからもう一度どうぞ');
+            return;
+        }
+
+        reportRetry(report, true);
+    }
+
+
+    function discardFromMenu() {
+
+        const records = listPending();
+
+        if (!records.length) {
+            showToast('未保存はありません');
+            return;
+        }
+
+        const ok = confirm(
+            '未保存 ' + records.length + '件\n\n' +
+            describePending(records) +
+            '\n\nこの控えを削除しますか？ 削除するとDriveには保存されません。'
+        );
+
+        if (!ok) {
+            return;
+        }
+
+        for (const record of records) {
+            removePending(record.requestId);
+        }
+
+        scheduleRetry();
+
+        showToast('未保存の控えを' + records.length + '件削除しました');
     }
 
 
@@ -2038,26 +2435,73 @@
         if (config) {
 
             saving = true;
-            showToast('Driveへ保存中…');
+
+            let settled = false;
+
+            const upload = prepareUpload(result);
+
+            // 上限を超えた本文は控えても送れないので、控えない
+            const kept =
+                upload.markdown.length <= DRIVE_MAX_CHARS &&
+                keepPending(upload);
+
+            updateBadge();
+
+            showToast(kept
+                ? 'Driveへ送信中…（控えたので移動して大丈夫です）'
+                : 'Driveへ送信中…');
+
+            // コピーの結果はDriveの応答を待たずに出す
+            copying.then(ok => {
+
+                if (settled) {
+                    return;
+                }
+
+                showToast(
+                    ok
+                        ? 'コピーしました。Driveへ送信中…' + (kept ? '（移動して大丈夫です）' : '')
+                        : 'コピーに失敗しました。Driveへ送信中…',
+                    !ok
+                );
+            });
 
             try {
                 const [copied, stored] = await Promise.allSettled([
                     copying,
-                    saveToDrive(config, result)
+                    sendToDrive(config, upload)
                 ]);
                 const copyOk = copied.status === 'fulfilled' && copied.value;
                 const driveOk = stored.status === 'fulfilled';
 
+                settled = true;
+
                 if (driveOk) {
+                    removePending(upload.requestId);
                     showToast(copyOk
                         ? 'Driveに保存し、コピーしました'
                         : 'Driveに保存しました。コピーは失敗しました', !copyOk);
                 } else {
                     const reason = stored.reason.message || '保存に失敗しました';
-                    showToast((copyOk ? 'コピー済み。' : 'コピーも失敗。') + reason, true);
+
+                    if (kept) {
+                        markPendingFailed(upload.requestId, reason);
+                    }
+
+                    showToast(
+                        (copyOk ? 'コピー済み。' : 'コピーも失敗。') + reason +
+                        (kept ? '（控えたので、あとで自動で送り直します）' : ''),
+                        true
+                    );
+                }
+
+                // つながっているうちに、前に届かなかった分もまとめて送る
+                if (driveOk && listPending().length) {
+                    retryPending({ all: true }).then(report => reportRetry(report, false));
                 }
             } finally {
                 saving = false;
+                scheduleRetry();
             }
 
             return;
@@ -2321,11 +2765,41 @@
             }
         );
 
-        shadow.append(toastEl, button);
+        // ----------------------------------------------------------
+        // 未保存の件数（ボタン右上）
+        // ----------------------------------------------------------
+
+        badgeEl = document.createElement('div');
+
+        badgeEl.title = '未保存の件数（メニュー「未保存を一覧・再送」で手動送信）';
+
+        Object.assign(
+            badgeEl.style,
+            {
+                position: 'absolute',
+                top: '-4px',
+                right: '-4px',
+                minWidth: '16px',
+                height: '16px',
+                padding: '0 4px',
+                boxSizing: 'border-box',
+                borderRadius: '8px',
+                background: '#b3261e',
+                color: '#fff',
+                font: 'bold 11px/16px sans-serif',
+                textAlign: 'center',
+                pointerEvents: 'none',
+                display: 'none'
+            }
+        );
+
+        shadow.append(toastEl, button, badgeEl);
 
         document.documentElement.appendChild(hostEl);
 
         placeButton();
+
+        updateBadge();
     }
 
 
@@ -2403,6 +2877,28 @@
             return result;
         },
 
+        // 未保存の控えを表で出す（本文は長いので文字数だけ）
+        pending() {
+
+            const rows =
+                listPending().map(record => ({
+                    タイトル: record.title,
+                    URL: record.url,
+                    文字数: record.markdown.length,
+                    試行回数: record.attempts,
+                    最後に試した: new Date(record.lastTriedAt || 0).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }),
+                    理由: record.lastError,
+                    送信ID: record.requestId
+                }));
+
+            console.table(rows);
+
+            return rows;
+        },
+
+        // 待ち時間を無視して、控えをすべて送り直す
+        retry: () => retryPending({ all: true }),
+
         get last() {
             return lastResult;
         }
@@ -2415,9 +2911,32 @@
 
     if (typeof GM_registerMenuCommand === 'function') {
         GM_registerMenuCommand('Drive保存を設定／停止', configureDrive);
+        GM_registerMenuCommand('未保存を一覧・再送', retryFromMenu);
+        GM_registerMenuCommand('未保存の控えを削除', discardFromMenu);
         GM_registerMenuCommand('本文抽出を診断', () => window.__tmCopyText.dump());
     }
 
     buildUi();
+
+    // 前のページで届かなかった保存があれば、待ち時間のあとで送り直す
+    scheduleRetry();
+
+    // アプリに戻った・電波が戻ったときにも確かめる
+    document.addEventListener(
+        'visibilitychange',
+        () => {
+
+            if (document.visibilityState === 'visible') {
+                scheduleRetry();
+            }
+        }
+    );
+
+    window.addEventListener(
+        'online',
+        () => {
+            retryPending({ all: true }).then(report => reportRetry(report, false));
+        }
+    );
 
 })();
