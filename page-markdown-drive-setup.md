@@ -34,46 +34,13 @@
 - GASを修正した場合：「デプロイを管理」から該当デプロイを編集し、新バージョンで更新する。コードを保存するだけでは公開版は変わらない。
 - トークンの変更：GASのプロジェクト設定→スクリプトプロパティから `ARCHIVE_TOKEN` を削除して `setup` を再実行し、各端末に新しいトークンを登録する。
 
-## 3. メモの入力・閲覧ページ
-
-同じ受け口のウェブアプリURLで、メモを書いて保存し、メモと記事をまとめて検索・閲覧できる。iPhoneとPCで同じページを使う。
-
-- 保存先: Driveの「メモ」フォルダ（https://drive.google.com/drive/folders/1yvWkNbkjOaXlLIRok8g17mU740OJKcpc）
-- 開き方: ウェブアプリURL（`/exec` で終わるもの）の末尾に `?k=トークン` を付けたURL。トークンは1.で控えたものと同じ。
-- iPhone: そのURLをSafariで開き、共有ボタンから「ホーム画面に追加」。PC: ブックマークする。
-- URLにトークンが入るので、他人に送らない。トークンを変えたら、ホーム画面とブックマークも作り直す。
-
-### 受け口を更新する（メモページを足したとき・GASを直したとき）
-
-1. https://script.google.com/ で「参考記事アーカイブ受け口」を開き、`コード.gs` の中身を [page-markdown-receiver.gs](page-markdown-receiver.gs) の全文に置き換えて保存する。
-2. 「デプロイ」→「デプロイを管理」→ 鉛筆アイコン →「バージョン」を「新バージョン」にして「デプロイ」。URLは変わらない。
-3. 使う権限はDriveだけで、増えていない。権限の確認画面が出た場合は、作成したプロジェクトであることを確認して許可する。
-
-### 使い方
-
-- 本文とタグ（空白かカンマ区切り）を入れて「保存」。PCは Ctrl+Enter（Macは ⌘+Enter）でも保存できる。
-- 入力欄の下のタグを押すと、タグ欄に入る。書きかけはその端末に残る。
-- 保存に失敗したときは本文を残す。もう一度押すと同じ送信IDで送り直すので、二重に保存されない。
-- 上部の「全部／メモ／記事」で種類を切り替える。検索はタイトルと本文、空白区切りはすべてを含むもの。タグを押すとそのタグだけに絞る。
-- 一覧を押すと本文をMarkdownとして表示する。HTMLは解釈せず文字として出し、画像は読み込まずリンクにする。
-
-### メモのファイル
-
-- ファイル名: `作成日時_本文の1行目_#タグ#タグ_送信ID.md`（タグが無いときは `_#…` を付けない）。一覧はファイル名から作るので、タグを変えるときはファイル名と先頭のメタ情報の両方を直す。
-- 先頭のメタ情報: `種類`・`tags`・`作成日時`・`送信ID`。AIでの整理や別アプリへの移行で使う。
-- 一覧に出るのは、この形式の `.md` だけ。「参考記事アーカイブ」のPDFや索引は出ない。
-
 ## 検証の範囲
 
 本文抽出の既存テストと、保存機能の模擬ブラウザ・GASサービスモックを使う。Googleへの実送信、ユーザーのGoogleアカウントでの認証・デプロイ、iOS Safariの拡張機能動作はこれらのテストとは別に確認が必要。
-
-メモページは `test/memo-page.test.js` で、GASサービスのモックと模擬ブラウザ（PC幅・スマホ幅）を使って確認する。実際のGASの枠内での動作、Driveの本文検索がMarkdownの中身まで拾うか、iPhoneのホーム画面からの起動は、これらのテストとは別に確認が必要。
 
 ## 公式資料（2026年9月30日確認）
 
 - https://developers.google.com/apps-script/guides/web
 - https://developers.google.com/apps-script/guides/content
-- https://developers.google.com/apps-script/guides/html
-- https://developers.google.com/apps-script/reference/drive/folder#searchFiles(String)
 - https://developers.google.com/apps-script/reference/drive/folder
 - https://www.tampermonkey.net/documentation.php?locale=en
