@@ -29,7 +29,10 @@
       "mcp__github__create_or_update_file",
       "mcp__github__delete_file",
       "mcp__Gmail",
-      "mcp__Google_Drive",
+      "mcp__Google_Drive__create_file",
+      "mcp__Google_Drive__update_file",
+      "mcp__Google_Drive__copy_file",
+      "mcp__Google_Drive__trash_file",
       "mcp__Google_Calendar"
     ]
   },
