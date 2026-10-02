@@ -1,6 +1,8 @@
 // ページ本文コピー用の受け口と、メモの入力・閲覧ページ。経費処理とは別のApps Scriptプロジェクトに置く。
-// setupを一度実行して認証し、ウェブアプリとしてデプロイする。
-// 記事はTampermonkeyからdoPostで受け、メモはdoGetのページから保存する。どちらもDriveの権限だけで動く。
+// setupを一度実行して認証し、ウェブアプリとして2つデプロイする。
+// 記事はTampermonkeyからdoPostで受け（アクセス「全員」・トークンで確認）、
+// メモはdoGetのページから保存する（アクセス「自分のみ」・Googleログインで確認）。
+// 権限はDriveと、ログイン中のユーザーのメールアドレスの確認だけ。
 const ARCHIVE_FOLDER_ID = '1WFV1mV24vc2ZwXxBhS2EjhKMhgiRNVRl';
 const ARCHIVE_MAX_CHARS = 500000;
 // メモの保存先（Driveの「メモ」フォルダ）
@@ -16,6 +18,8 @@ const MEMO_PAGE_SIZE = 50;
 function setup() {
 
     const folder = DriveApp.getFolderById(ARCHIVE_FOLDER_ID);
+    // メモページのログイン確認に使う権限を、ここで一緒に許可してもらう
+    console.log('持ち主: ' + Session.getEffectiveUser().getEmail());
     const properties = PropertiesService.getScriptProperties();
     let token = properties.getProperty('ARCHIVE_TOKEN');
 
@@ -126,40 +130,40 @@ function doPost(event) {
 // メモの入力・閲覧ページ
 // ============================================================
 
-// ページを開くURLの末尾に ?k=トークン を付ける。トークンが違えばページを出さない
+// メモページは持ち主のGoogleログインでだけ開く。URLにトークンは付けない。
+// 「アクセスできるユーザー: 自分のみ」のデプロイで使う。「全員」のデプロイ（記事の受け口）では、
+// ログインした持ち主として扱われない限りページを出さない
 function doGet(event) {
 
-    const key = event && event.parameter ? event.parameter.k : '';
-
-    if (!memoTokenValid_(key)) {
+    if (!memoOwnerSignedIn_()) {
         return HtmlService
             .createHtmlOutput(
                 '<p style="font-family:sans-serif;padding:24px;line-height:1.7">' +
-                'URLが正しくありません。末尾に ?k= の付いたURLから開いてください。' +
+                'このページは持ち主のGoogleアカウントでログインしたときだけ開けます。' +
+                '「自分のみ」で公開したメモページのURLから開いてください。' +
                 '</p>'
             )
             .setTitle('メモ');
     }
 
-    // トークンは英数字だけだが、念のためJSONにして < を逃がしてから埋め込む
-    const tokenLiteral = JSON.stringify(key).replace(/</g, '\\u003c');
-
     return HtmlService
-        .createHtmlOutput(
-            MEMO_PAGE_HTML.replace('__MEMO_TOKEN__', () => tokenLiteral)
-        )
+        .createHtmlOutput(MEMO_PAGE_HTML)
         .setTitle('メモ')
         .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 
-function memoTokenValid_(token) {
+// 見ている人がスクリプトの持ち主本人か。ウェブアプリは「自分として実行」なので、
+// 実行ユーザー（持ち主）とログイン中のユーザーが同じときだけ通す。
+// 未ログイン・他人では getActiveUser() のメールが空になる
+function memoOwnerSignedIn_() {
 
-    const expected = PropertiesService.getScriptProperties().getProperty('ARCHIVE_TOKEN');
+    const active = Session.getActiveUser().getEmail();
+    const owner = Session.getEffectiveUser().getEmail();
 
-    return Boolean(expected) &&
-        typeof token === 'string' &&
-        token === expected;
+    return Boolean(active) &&
+        Boolean(owner) &&
+        active.toLowerCase() === owner.toLowerCase();
 }
 
 
@@ -256,11 +260,11 @@ function memoQuote_(value) {
 
 
 // 一覧。kind は all / memo / article。text は空白区切りのすべてを含むもの、tag は完全一致
-function memoList(token, request) {
+function memoList(request) {
 
     try {
-        if (!memoTokenValid_(token)) {
-            return { ok: false, message: 'トークンが一致しません' };
+        if (!memoOwnerSignedIn_()) {
+            return { ok: false, message: 'ログインが確認できません。ページを開き直してください' };
         }
 
         const input = request && typeof request === 'object' ? request : {};
@@ -343,11 +347,11 @@ function memoList(token, request) {
 
 
 // 1件の本文。メモと記事のフォルダにあるファイルだけを返す
-function memoGet(token, fileId) {
+function memoGet(fileId) {
 
     try {
-        if (!memoTokenValid_(token)) {
-            return { ok: false, message: 'トークンが一致しません' };
+        if (!memoOwnerSignedIn_()) {
+            return { ok: false, message: 'ログインが確認できません。ページを開き直してください' };
         }
 
         if (typeof fileId !== 'string' || !/^[A-Za-z0-9_-]{10,200}$/.test(fileId)) {
@@ -398,13 +402,13 @@ function memoGet(token, fileId) {
 
 
 // メモの保存。送信IDと作成日時はページ側で決め、送り直しても同じファイル名になる
-function memoSave(token, request) {
+function memoSave(request) {
 
     let lock = null;
 
     try {
-        if (!memoTokenValid_(token)) {
-            return { ok: false, message: 'トークンが一致しません' };
+        if (!memoOwnerSignedIn_()) {
+            return { ok: false, message: 'ログインが確認できません。ページを開き直してください' };
         }
 
         const input = request && typeof request === 'object' ? request : {};
@@ -950,8 +954,6 @@ textarea.field {
     // 設定
     // ============================================================
 
-    // サーバー（doGet）がページを出すときに埋め込む
-    const memoToken = __MEMO_TOKEN__;
     // 書きかけの本文を残しておく場所（使えない環境では残さない）
     const DRAFT_KEY = 'memo-page-draft';
     // 検索欄の入力が止まってから検索するまでの待ち時間（ミリ秒）
@@ -1122,7 +1124,7 @@ textarea.field {
         button.textContent = '保存中…';
 
         try {
-            const result = await callServer('memoSave', memoToken, {
+            const result = await callServer('memoSave', {
                 requestId: state.pendingSave.requestId,
                 createdAt: state.pendingSave.createdAt,
                 text: text,
@@ -1163,7 +1165,7 @@ textarea.field {
         byId('moreButton').hidden = true;
 
         try {
-            const result = await callServer('memoList', memoToken, {
+            const result = await callServer('memoList', {
                 kind: state.kind,
                 text: state.text,
                 tag: state.tag,
@@ -1539,7 +1541,7 @@ textarea.field {
         byId('detailScrim').hidden = false;
 
         try {
-            const result = await callServer('memoGet', memoToken, item.id);
+            const result = await callServer('memoGet', item.id);
 
             if (seq !== state.detailSeq) {
                 return;

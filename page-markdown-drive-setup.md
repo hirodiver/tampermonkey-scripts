@@ -36,18 +36,25 @@
 
 ## 3. メモの入力・閲覧ページ
 
-同じ受け口のウェブアプリURLで、メモを書いて保存し、メモと記事をまとめて検索・閲覧できる。iPhoneとPCで同じページを使う。
+同じ受け口のプロジェクトで、メモを書いて保存し、メモと記事をまとめて検索・閲覧できる。iPhoneとPCで同じページを使う。
 
 - 保存先: Driveの「メモ」フォルダ（https://drive.google.com/drive/folders/1yvWkNbkjOaXlLIRok8g17mU740OJKcpc）
-- 開き方: ウェブアプリURL（`/exec` で終わるもの）の末尾に `?k=トークン` を付けたURL。トークンは1.で控えたものと同じ。
-- iPhone: そのURLをSafariで開き、共有ボタンから「ホーム画面に追加」。PC: ブックマークする。
-- URLにトークンが入るので、他人に送らない。トークンを変えたら、ホーム画面とブックマークも作り直す。
+- 持ち主のGoogleアカウントでログインしているときだけ開ける。URLにトークンは付けない。URLが漏れても、ほかの人には開けない。Googleの2段階認証がそのまま効く。
+- 記事の受け口（1.のデプロイ、アクセス「全員」）とは別に、アクセス「自分のみ」のデプロイをもう1つ作り、そのURLをメモページとして使う。
 
-### 受け口を更新する（メモページを足したとき・GASを直したとき）
+### 受け口を更新し、メモページを公開する
 
-1. https://script.google.com/ で「参考記事アーカイブ受け口」を開き、`コード.gs` の中身を [page-markdown-receiver.gs](page-markdown-receiver.gs) の全文に置き換えて保存する。
-2. 「デプロイ」→「デプロイを管理」→ 鉛筆アイコン →「バージョン」を「新バージョン」にして「デプロイ」。URLは変わらない。
-3. 使う権限はDriveだけで、増えていない。権限の確認画面が出た場合は、作成したプロジェクトであることを確認して許可する。
+1. https://script.google.com/ で「参考記事アーカイブ受け口」を開き、左の `< >`（エディタ）→「ファイル」の `コード.gs` の中身を [page-markdown-receiver.gs](page-markdown-receiver.gs) の全文に置き換えて保存する。
+2. 関数の一覧で `setup` を選び「実行」。権限の確認画面が出たら許可する（Driveに加えて、ログイン中のユーザーのメールアドレスの確認が増える）。
+3. 記事の受け口を更新する:「デプロイ」→「デプロイを管理」→ 1.で作ったデプロイ（アクセス「全員」）の鉛筆 →「バージョン」を「新バージョン」→「デプロイ」。URLは変わらない。
+4. メモページを公開する:「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」。説明は「メモページ」、実行するユーザーは「自分」、**アクセスできるユーザーは「自分のみ」**にしてデプロイする。表示された `/exec` で終わるURLがメモページ。
+5. iPhone: そのURLをSafariで開き、共有ボタンから「ホーム画面に追加」。PC: ブックマークする。以前の `?k=` 付きのURLは使わない（ホーム画面・ブックマークから消す）。
+
+複数のGoogleアカウントに同時にログインしていると、「自分のみ」のページが開けないことがある。そのときは持ち主のアカウントだけでログインした状態で開く。
+
+### GASを直したとき
+
+3.と同じ手順で、2つのデプロイ（「全員」と「自分のみ」）の両方を新バージョンに更新する。
 
 ### 使い方
 
@@ -67,13 +74,14 @@
 
 本文抽出の既存テストと、保存機能の模擬ブラウザ・GASサービスモックを使う。Googleへの実送信、ユーザーのGoogleアカウントでの認証・デプロイ、iOS Safariの拡張機能動作はこれらのテストとは別に確認が必要。
 
-メモページは `test/memo-page.test.js` で、GASサービスのモックと模擬ブラウザ（PC幅・スマホ幅）を使って確認する。実際のGASの枠内での動作、Driveの本文検索がMarkdownの中身まで拾うか、iPhoneのホーム画面からの起動は、これらのテストとは別に確認が必要。
+メモページは `test/memo-page.test.js` で、GASサービスのモック（持ち主・他人・未ログインの3通り）と模擬ブラウザ（PC幅・スマホ幅）を使って確認する。実際のGASでの「自分のみ」のログイン確認、Driveの本文検索がMarkdownの中身まで拾うか、iPhoneのホーム画面からの起動は、これらのテストとは別に確認が必要。
 
 ## 公式資料（2026年9月30日確認）
 
 - https://developers.google.com/apps-script/guides/web
 - https://developers.google.com/apps-script/guides/content
 - https://developers.google.com/apps-script/guides/html
+- https://developers.google.com/apps-script/reference/base/session
 - https://developers.google.com/apps-script/reference/drive/folder#searchFiles(String)
 - https://developers.google.com/apps-script/reference/drive/folder
 - https://www.tampermonkey.net/documentation.php?locale=en

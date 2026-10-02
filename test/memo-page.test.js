@@ -21,6 +21,7 @@ function createGas() {
     let fileCount = 0;
     let busy = false;
     let failDrive = null;
+    let activeEmail = 'owner@example.com';
 
     function addFile(folderId, name, content, options = {}) {
         fileCount++;
@@ -116,7 +117,12 @@ function createGas() {
                 return output;
             }
         },
-        LockService: { getScriptLock: () => ({ tryLock: () => !busy, hasLock: () => !busy, releaseLock() {} }) }
+        LockService: { getScriptLock: () => ({ tryLock: () => !busy, hasLock: () => !busy, releaseLock() {} }) },
+        // ウェブアプリは「自分として実行」。見ている人のメールは状況で変える
+        Session: {
+            getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }),
+            getActiveUser: () => ({ getEmail: () => activeEmail })
+        }
     };
     vm.createContext(sandbox);
     vm.runInContext(receiver, sandbox);
@@ -135,6 +141,7 @@ function createGas() {
         addFile,
         token: properties.get('ARCHIVE_TOKEN'),
         setBusy: value => { busy = value; },
+        setActiveEmail: value => { activeEmail = value; },
         setFailDrive: value => { failDrive = value; }
     };
 }
@@ -156,29 +163,39 @@ function check(name, fn) {
 function serverTests() {
     const gas = createGas();
     const { sandbox, token } = gas;
-    const save = body => sandbox.memoSave(token, body);
+    const save = body => sandbox.memoSave(body);
     const base = { requestId: uuid(1), createdAt: '2026-10-02T03:04:05.678Z', text: '# 買い物\n- 牛乳\n', tags: ['生活', '#買い物', '生活'] };
 
-    check('doGetはトークン違いでページを出さず、トークンも漏らさない', () => {
-        for (const event of [{ parameter: {} }, { parameter: { k: 'bad' } }, null]) {
-            const output = sandbox.doGet(event);
-            assert.match(output.html, /URLが正しくありません/);
+    check('doGetは未ログイン・他人ではページを出さない', () => {
+        for (const email of ['', 'other@example.com']) {
+            gas.setActiveEmail(email);
+            const output = sandbox.doGet({ parameter: { k: token } });
+            assert.match(output.html, /持ち主のGoogleアカウントでログインしたときだけ/);
+            assert.ok(!output.html.includes('<script>'));
             assert.ok(!output.html.includes(token));
         }
+        gas.setActiveEmail('owner@example.com');
     });
 
-    check('doGetは正しいトークンでページを出し、トークンを埋め込む', () => {
-        const output = sandbox.doGet({ parameter: { k: token } });
+    check('doGetは持ち主のログインでページを出し、トークンを埋め込まない', () => {
+        gas.setActiveEmail('OWNER@example.com');
+        const output = sandbox.doGet({});
         assert.equal(output.title, 'メモ');
         assert.match(output.meta.viewport, /width=device-width/);
-        assert.ok(output.html.includes('const memoToken = "' + token + '";'));
-        assert.ok(!output.html.includes('__MEMO_TOKEN__'));
+        assert.match(output.html, /<script>/);
+        assert.ok(!output.html.includes(token));
+        assert.ok(!output.html.includes('memoToken'));
+        gas.setActiveEmail('owner@example.com');
     });
 
-    check('トークン違いでは保存・一覧・本文のどれも動かない', () => {
-        assert.equal(sandbox.memoSave('bad', base).ok, false);
-        assert.equal(sandbox.memoList('bad', {}).ok, false);
-        assert.equal(sandbox.memoGet('bad', 'file0000000001').ok, false);
+    check('未ログイン・他人では保存・一覧・本文のどれも動かない', () => {
+        for (const email of ['', 'other@example.com']) {
+            gas.setActiveEmail(email);
+            assert.equal(sandbox.memoSave(base).ok, false);
+            assert.equal(sandbox.memoList({}).ok, false);
+            assert.equal(sandbox.memoGet('file0000000001').ok, false);
+        }
+        gas.setActiveEmail('owner@example.com');
         assert.equal(gas.files.size, 0);
     });
 
@@ -211,7 +228,7 @@ function serverTests() {
         assert.equal(result.ok, true);
         assert.equal(result.item.title, '見出し_ a_b_＃c__');
         assert.deepEqual(result.item.tags, ['ab', 'cd', 'ef', 'g']);
-        const listed = sandbox.memoList(token, { kind: 'memo', tag: 'cd' });
+        const listed = sandbox.memoList({ kind: 'memo', tag: 'cd' });
         assert.equal(listed.items.length, 1);
         assert.equal(listed.items[0].title, '見出し_ a_b_＃c__');
     });
@@ -230,7 +247,7 @@ function serverTests() {
         ]) {
             assert.equal(save({ ...base, requestId: uuid(90), ...change }).ok, false, JSON.stringify(change).slice(0, 40));
         }
-        assert.equal(sandbox.memoSave(token, null).ok, false);
+        assert.equal(sandbox.memoSave(null).ok, false);
         assert.equal(gas.files.size, before);
     });
 
@@ -249,7 +266,7 @@ function serverTests() {
     const outside = gas.addFile(OTHER_ID, '20261002_130000000_別フォルダ_' + uuid(13) + '.md', '秘密');
 
     check('一覧は新しい順で、メモと記事を区別し、Markdown以外は出さない', () => {
-        const result = sandbox.memoList(token, { kind: 'all' });
+        const result = sandbox.memoList({ kind: 'all' });
         assert.equal(result.ok, true);
         assert.deepEqual(result.items.map(item => item.title), ['見出し_ a_b_＃c__', '買い物', '税務の記事', 'C#入門_#タグではない']);
         assert.deepEqual(result.items.map(item => item.kind), ['memo', 'memo', 'article', 'article']);
@@ -259,38 +276,38 @@ function serverTests() {
     });
 
     check('種類・タグ・検索語で絞り込める', () => {
-        assert.deepEqual(sandbox.memoList(token, { kind: 'article' }).items.map(item => item.title), ['税務の記事', 'C#入門_#タグではない']);
-        assert.deepEqual(sandbox.memoList(token, { kind: 'memo', tag: '生活' }).items.map(item => item.title), ['買い物']);
-        assert.deepEqual(sandbox.memoList(token, { text: '消費税' }).items.map(item => item.title), ['税務の記事']);
-        assert.deepEqual(sandbox.memoList(token, { text: '牛乳 買い物' }).items.map(item => item.title), ['買い物']);
-        assert.equal(sandbox.memoList(token, { text: "it's \\ odd" }).ok, true);
+        assert.deepEqual(sandbox.memoList({ kind: 'article' }).items.map(item => item.title), ['税務の記事', 'C#入門_#タグではない']);
+        assert.deepEqual(sandbox.memoList({ kind: 'memo', tag: '生活' }).items.map(item => item.title), ['買い物']);
+        assert.deepEqual(sandbox.memoList({ text: '消費税' }).items.map(item => item.title), ['税務の記事']);
+        assert.deepEqual(sandbox.memoList({ text: '牛乳 買い物' }).items.map(item => item.title), ['買い物']);
+        assert.equal(sandbox.memoList({ text: "it's \\ odd" }).ok, true);
     });
 
     check('件数が多いときは50件ずつ返す', () => {
         for (let index = 0; index < 60; index++) {
             gas.addFile(MEMO_ID, '20250101_0000' + String(index).padStart(2, '0') + '000_古いメモ' + index + '_' + uuid(100 + index) + '.md', '古い');
         }
-        const first = sandbox.memoList(token, { kind: 'memo' });
+        const first = sandbox.memoList({ kind: 'memo' });
         assert.equal(first.total, 62);
         assert.equal(first.items.length, 50);
-        const second = sandbox.memoList(token, { kind: 'memo', offset: 50 });
+        const second = sandbox.memoList({ kind: 'memo', offset: 50 });
         assert.equal(second.items.length, 12);
         assert.equal(second.items[11].title, '古いメモ0');
     });
 
     check('本文はメモと記事のフォルダのものだけ返す', () => {
-        const memo = sandbox.memoGet(token, saved.item.id);
+        const memo = sandbox.memoGet(saved.item.id);
         assert.equal(memo.ok, true);
         assert.equal(memo.item.kind, 'memo');
         assert.match(memo.markdown, /牛乳/);
-        assert.equal(sandbox.memoGet(token, outside.id).ok, false);
-        assert.equal(sandbox.memoGet(token, '../../etc').ok, false);
-        assert.equal(sandbox.memoGet(token, 'file9999999999').ok, false);
+        assert.equal(sandbox.memoGet(outside.id).ok, false);
+        assert.equal(sandbox.memoGet('../../etc').ok, false);
+        assert.equal(sandbox.memoGet('file9999999999').ok, false);
     });
 
     check('Driveの例外でもトークンを返さない', () => {
         gas.setFailDrive(token);
-        for (const result of [sandbox.memoList(token, {}), sandbox.memoGet(token, saved.item.id), save({ ...base, requestId: uuid(4) })]) {
+        for (const result of [sandbox.memoList({}), sandbox.memoGet(saved.item.id), save({ ...base, requestId: uuid(4) })]) {
             assert.equal(result.ok, false);
             assert.ok(!JSON.stringify(result).includes(token));
         }
@@ -333,7 +350,7 @@ async function pageTests() {
             '<b>コード</b>',
             '```'
         ].join('\n'));
-        gas.sandbox.memoSave(gas.token, { requestId: uuid(20), createdAt: '2026-10-01T00:00:00.000Z', text: '前のメモ\n本文', tags: ['仕事'] });
+        gas.sandbox.memoSave({ requestId: uuid(20), createdAt: '2026-10-01T00:00:00.000Z', text: '前のメモ\n本文', tags: ['仕事'] });
 
         const context = await browser.newContext({
             viewport: options.viewport || { width: 1200, height: 800 },
@@ -374,7 +391,7 @@ async function pageTests() {
                 }
             });
         });
-        const html = gas.sandbox.doGet({ parameter: { k: gas.token } }).html;
+        const html = gas.sandbox.doGet({}).html;
         await page.route('https://memo.test/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: html }));
         await page.goto('https://memo.test/exec');
         await page.waitForSelector('.result-card');
@@ -405,7 +422,7 @@ async function pageTests() {
         assert.equal(await page.inputValue('#memoText'), '');
         assert.equal(await page.inputValue('#memoTags'), '');
         const saveCall = calls.find(call => call.name === 'memoSave');
-        assert.deepEqual(saveCall.args[1].tags, ['アイデア', '仕事']);
+        assert.deepEqual(saveCall.args[0].tags, ['アイデア', '仕事']);
         assert.match(await page.textContent('#toast'), /保存しました/);
     });
 
@@ -417,7 +434,7 @@ async function pageTests() {
         assert.equal(await page.inputValue('#memoText'), '失敗するメモ');
         await page.click('#saveButton');
         await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('保存しました'));
-        const ids = calls.filter(call => call.name === 'memoSave').map(call => call.args[1].requestId);
+        const ids = calls.filter(call => call.name === 'memoSave').map(call => call.args[0].requestId);
         assert.equal(ids.length, 2);
         assert.equal(ids[0], ids[1]);
         assert.equal([...gas.files.values()].filter(file => file.name.includes('失敗するメモ')).length, 1);
