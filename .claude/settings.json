@@ -4,7 +4,19 @@
       "mcp__github__merge_pull_request",
       "mcp__github__create_pull_request",
       "mcp__github__update_pull_request",
-      "mcp__github__pull_request_read"
+      "mcp__github__pull_request_read",
+      "mcp__Google_Drive__search_files",
+      "mcp__Google_Drive__read_file_content",
+      "mcp__Google_Drive__download_file_content",
+      "mcp__Google_Drive__get_file_metadata",
+      "mcp__Google_Drive__list_recent_files",
+      "mcp__Google_Sheets__get_spreadsheet",
+      "mcp__Google_Sheets__get_values",
+      "mcp__Google_Sheets__update_values",
+      "mcp__Google_Sheets__append_values",
+      "mcp__Google_Sheets__update_formulas",
+      "mcp__Google_Sheets__insert_dimension",
+      "mcp__Google_Sheets__update_spreadsheet"
     ],
     "deny": [
       "mcp__Gmail__send_message",
@@ -17,7 +29,10 @@
       "mcp__github__create_or_update_file",
       "mcp__github__delete_file",
       "mcp__Gmail",
-      "mcp__Google_Drive",
+      "mcp__Google_Drive__create_file",
+      "mcp__Google_Drive__update_file",
+      "mcp__Google_Drive__copy_file",
+      "mcp__Google_Drive__trash_file",
       "mcp__Google_Calendar"
     ]
   },
