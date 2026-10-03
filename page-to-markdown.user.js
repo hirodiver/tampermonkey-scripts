@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.3.0
+// @name         ページ本文コピー v1.4.0
 // @namespace    local.hiro.tools
-// @version      1.3.0
+// @version      1.4.0
 // @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。
 // @match        *://*/*
 // @grant        GM_getValue
@@ -25,6 +25,8 @@
  *   - ボタン（ドラッグで好きな位置へ動かせる）、または Alt+Shift+C でコピー
  *   - 文字を選択していれば、選択範囲だけをコピー（周辺メニューの除外はしない）
  *   - 選択していなければ、本文を自動判定してコピー
+ *   - X のポストページは専用処理（URL の status ID と一致するポストだけを、
+ *     投稿者・投稿日時・本文・反応数に整えてコピー）
  *
  * Drive保存が届かなかったとき
  *   - 送る前に控えを取り、届いたと確認できたら消す。押したらすぐ移動してよい
@@ -77,6 +79,13 @@
 
     // 画像は alt があるものだけ「[画像: alt]」として残す
     const INCLUDE_IMAGE_ALT = true;
+
+    // X（旧Twitter）のポストページでは、URLの status ID と一致するポストだけを取る。
+    // true にすると、同じページに出ている前後のポスト・返信もまとめて取る
+    const INCLUDE_X_REPLIES = false;
+
+    // X のポスト末尾に「反応: 表示 1.3万 / 引用 2 …」の1行を付ける
+    const INCLUDE_X_STATS = true;
 
     // 本文とみなす最小文字数（空白除く）
     const MIN_BODY_CHARS = 200;
@@ -879,6 +888,11 @@
             return null;
         }
 
+        // X のポストでは、投稿者・日時は見出し側へ出すので本文から外す
+        if (S.skip && S.skip.has(el)) {
+            return null;
+        }
+
         if (S.range && !S.range.intersectsNode(el)) {
             return null;
         }
@@ -940,7 +954,7 @@
         // 周辺メニュー・広告（自動判定のときだけ）
         // ------------------------------------------------------------
 
-        if (!S.range && el !== S.root) {
+        if (!S.range && !S.xMode && el !== S.root) {
 
             const why = noiseReason(el, tag);
 
@@ -1022,6 +1036,20 @@
             const alt =
                 (el.getAttribute('alt') || '').trim();
 
+            if (S.xMode && alt) {
+
+                // 絵文字は文字としてそのまま、意味のない alt は [画像] だけにする
+                if (EMOJI_ONLY.test(alt)) {
+                    scope.buf += alt;
+                } else if (GENERIC_ALT.test(alt)) {
+                    scope.buf += '[画像]';
+                } else if (INCLUDE_IMAGE_ALT) {
+                    scope.buf += '[画像: ' + alt + ']';
+                }
+
+                return;
+            }
+
             if (INCLUDE_IMAGE_ALT && alt) {
                 scope.buf += '[画像: ' + alt + ']';
             }
@@ -1044,11 +1072,15 @@
                 return;
             }
 
-            const level = Number(tag[1]);
+            // X のポストでは、文書の見出しが # なので、本文の見出しは1段下げる
+            const level = Math.min(
+                6,
+                Number(tag[1]) + (S.headingShift || 0)
+            );
 
             // タイトルと同じ最初の h1 は、ヘッダに出すので重複させない
             if (
-                level === 1 &&
+                tag === 'h1' &&
                 !S.range &&
                 !S.titleDropped &&
                 isSameAsTitle(text)
@@ -1243,6 +1275,11 @@
         }
 
         if (text === el.href) {
+            return;
+        }
+
+        // X はリンクを t.co で包み、表示文字に本当のURLを出す。表示のほうを残す
+        if (S.xMode && /^https?:\/\//i.test(text)) {
             return;
         }
 
@@ -1482,6 +1519,342 @@
 
 
     // ============================================================
+    // X（旧Twitter）のポスト
+    // ============================================================
+
+    /*
+     * 狙い方は「構造」。data-testid には頼らない。
+     *   ポスト   : 中に <time datetime> を持つ article
+     *   どのポスト: <time> を包むリンクの /status/<ID> が、URL の ID と一致するもの
+     *   投稿者   : 「@ID」だけを文字にもつリンクと、同じ href で名前をもつリンク
+     *   反応数   : /quotes /retweets などへのリンクと「N 件の表示」
+     */
+
+    const X_HOSTS = /(^|\.)(x|twitter)\.com$/i;
+
+    // 絵文字だけの alt（X は絵文字を img にして alt に文字を入れる）
+    const EMOJI_ONLY = /^[\p{Extended_Pictographic}\p{Regional_Indicator}‍️⃣\s]+$/u;
+
+    // 意味のない alt
+    const GENERIC_ALT = /^(画像|写真|image|photo|embedded video|動画)$/i;
+
+    const X_COUNT = '[\\d,.]+(?:万|億|[KkMm])?';
+
+    const X_NUMBER_ONLY = new RegExp('^' + X_COUNT + '$');
+
+    const X_VIEWS_LABEL = /^(件の表示|views?)$/i;
+
+    const X_VIEWS_FULL = new RegExp('^(' + X_COUNT + ')\\s*(?:件の表示|views?)$', 'i');
+
+    const X_STAT_LINK = new RegExp(
+        '\\[(' + X_COUNT + ')\\s*(引用|リポスト|いいね|ブックマーク|件の返信|返信|Quotes?|Reposts?|Likes?|Bookmarks?|Repl(?:y|ies))[^\\]]*\\]\\([^)]*\\)',
+        'gi'
+    );
+
+
+    function isXPage() {
+
+        return X_HOSTS.test(location.hostname);
+    }
+
+
+    function currentStatusId() {
+
+        const match =
+            location.pathname.match(/\/status(?:es)?\/(\d+)/);
+
+        return match ? match[1] : '';
+    }
+
+
+    function compactText(text) {
+
+        return (text || '').replace(/\s+/g, '');
+    }
+
+
+    // 絵文字の img は alt を文字として拾う
+    function plainWithAlt(el) {
+
+        let text = '';
+
+        for (const node of el.childNodes) {
+
+            if (node.nodeType === Node.TEXT_NODE) {
+
+                text += node.nodeValue;
+
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
+
+                text += node.tagName.toLowerCase() === 'img'
+                    ? (node.getAttribute('alt') || '')
+                    : plainWithAlt(node);
+            }
+        }
+
+        return text.replace(/\s+/g, ' ').trim();
+    }
+
+
+    function formatPostTime(iso) {
+
+        const date = new Date(iso);
+
+        if (!iso || Number.isNaN(date.getTime())) {
+            return '';
+        }
+
+        const parts = {};
+
+        for (const part of new Intl.DateTimeFormat(
+            'ja-JP',
+            {
+                timeZone: 'Asia/Tokyo',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hourCycle: 'h23'
+            }
+        ).formatToParts(date)) {
+            parts[part.type] = part.value;
+        }
+
+        return (
+            parts.year + '-' + parts.month + '-' + parts.day +
+            ' ' + parts.hour + ':' + parts.minute
+        );
+    }
+
+
+    // ポスト本体の <time>（引用ポストの時刻は後に出るので、先頭を取る）
+    function postTimeElement(article) {
+
+        return article.querySelector('time[datetime]');
+    }
+
+
+    function postStatusId(article) {
+
+        const time = postTimeElement(article);
+        const link = time && time.closest('a');
+        const match =
+            link &&
+            (link.getAttribute('href') || '').match(/\/status(?:es)?\/(\d+)/);
+
+        return match ? match[1] : '';
+    }
+
+
+    function findXPosts() {
+
+        const id = currentStatusId();
+
+        if (!id) {
+            return null;
+        }
+
+        const posts =
+            Array.from(document.querySelectorAll('article'))
+                .filter(article =>
+                    !article.parentElement.closest('article') &&
+                    postTimeElement(article) &&
+                    isRenderedSafe(article)
+                );
+
+        const focal =
+            posts.find(article => postStatusId(article) === id);
+
+        // 見つからない（読み込み前など）ときは、通常の本文判定に任せる
+        if (!focal) {
+            return null;
+        }
+
+        return {
+            focal,
+            posts: INCLUDE_X_REPLIES ? posts : [focal]
+        };
+    }
+
+
+    // 投稿者の名前・ID・日時と、本文から外す要素を調べる
+    function readPostMeta(article) {
+
+        const skip = new Set();
+        const links = Array.from(article.querySelectorAll('a[href^="/"]'));
+
+        const handleLink =
+            links.find(a => /^@\w{1,15}$/.test(a.textContent.trim()));
+
+        const handle =
+            handleLink ? handleLink.textContent.trim().slice(1) : '';
+
+        const href =
+            handleLink ? handleLink.getAttribute('href') : '';
+
+        const nameLink =
+            handleLink &&
+            links.find(a =>
+                a !== handleLink &&
+                a.getAttribute('href') === href &&
+                a.textContent.trim() &&
+                !a.textContent.trim().startsWith('@')
+            );
+
+        const name = nameLink ? plainWithAlt(nameLink) : '';
+
+        const timeEl = postTimeElement(article);
+        const timeText = timeEl ? timeEl.textContent : '';
+        const timeLink = timeEl && timeEl.closest('a');
+
+        if (timeLink && article.contains(timeLink)) {
+            skip.add(timeLink);
+        } else if (timeEl) {
+            skip.add(timeEl);
+        }
+
+        // 名前・@ID・「·」・日時だけを含む、いちばん外側の塊を外す
+        if (nameLink) {
+
+            const rest = el =>
+                compactText(el.textContent)
+                    .split(compactText(nameLink.textContent)).join('')
+                    .split('@' + handle).join('')
+                    .split('·').join('')
+                    .split(compactText(timeText)).join('');
+
+            let block = nameLink;
+
+            while (
+                block.parentElement &&
+                block.parentElement !== article &&
+                rest(block.parentElement) === ''
+            ) {
+                block = block.parentElement;
+            }
+
+            skip.add(block);
+            skip.add(handleLink);
+        }
+
+        return {
+            name,
+            handle,
+            time: formatPostTime(timeEl && timeEl.getAttribute('datetime')),
+            skip
+        };
+    }
+
+
+    /*
+     * 「·」だけの行・数字だけの行・反応数のリンクを本文から外し、
+     * 反応数は1行にまとめる
+     */
+    function tidyXBlocks(blocks) {
+
+        const stats = [];
+        const out = [];
+
+        for (let i = 0; i < blocks.length; i++) {
+
+            const block = blocks[i];
+            const next = blocks[i + 1];
+
+            if (block === '·') {
+                continue;
+            }
+
+            if (
+                X_NUMBER_ONLY.test(block) &&
+                next &&
+                X_VIEWS_LABEL.test(next)
+            ) {
+
+                stats.push('表示 ' + block);
+                i++;
+
+                continue;
+            }
+
+            const views = block.match(X_VIEWS_FULL);
+
+            if (views) {
+                stats.push('表示 ' + views[1]);
+                continue;
+            }
+
+            const found = [];
+
+            const remainder =
+                block.replace(
+                    X_STAT_LINK,
+                    (all, count, label) => {
+                        found.push(label + ' ' + count);
+                        return '';
+                    }
+                );
+
+            if (found.length && remainder.trim() === '') {
+                stats.push(...found);
+                continue;
+            }
+
+            out.push(block);
+        }
+
+        // 数字だけの行（ラベルの無い反応数）は、ほかに本文があるときだけ外す
+        const body =
+            out.length > 1
+                ? out.filter(block => !X_NUMBER_ONLY.test(block))
+                : out;
+
+        return { body, stats };
+    }
+
+
+    function convertXPost(article) {
+
+        const meta = readPostMeta(article);
+
+        S.root = article;
+        S.skip = meta.skip;
+
+        record('含めた', 'X のポスト（URL の status ID と一致）', article);
+
+        const scope = newScope();
+
+        walk(article, scope, false);
+
+        flush(scope);
+
+        const tidy = tidyXBlocks(scope.blocks);
+
+        if (INCLUDE_X_STATS && tidy.stats.length) {
+            tidy.body.push('反応: ' + tidy.stats.join(' / '));
+        }
+
+        return {
+            meta,
+            text: tidy.body.join('\n\n')
+        };
+    }
+
+
+    function postLabel(meta) {
+
+        if (!meta.name && !meta.handle) {
+            return '';
+        }
+
+        return (
+            (meta.name || meta.handle) +
+            (meta.name && meta.handle ? ' (@' + meta.handle + ')' : '')
+        );
+    }
+
+
+    // ============================================================
     // 抽出（本体）
     // ============================================================
 
@@ -1541,16 +1914,25 @@
             log: [],
             range: null,
             root: null,
-            titleDropped: false
+            titleDropped: false,
+            xMode: false,
+            skip: null,
+            headingShift: 0
         };
 
         let parts = [];
         let method = '';
         let rootDescription = '';
+        let xHeader = null;
+        let xTitle = '';
 
         try {
 
             const ranges = getSelectionRanges();
+            const xFound =
+                !ranges.length && isXPage()
+                    ? findXPosts()
+                    : null;
 
             if (ranges.length) {
 
@@ -1564,6 +1946,51 @@
                     rootDescription = describe(S.root);
 
                     parts.push(convertRoot(S.root));
+                }
+
+            } else if (xFound) {
+
+                method = 'X のポスト';
+
+                S.xMode = true;
+
+                // 複数のポストを並べるときは、各ポストの見出しが ## になる
+                S.headingShift = xFound.posts.length > 1 ? 2 : 1;
+
+                rootDescription = describe(xFound.focal);
+
+                for (const post of xFound.posts) {
+
+                    const converted = convertXPost(post);
+
+                    if (post === xFound.focal) {
+
+                        xHeader = converted.meta;
+
+                        const label = postLabel(converted.meta);
+                        const lead =
+                            converted.text.split('\n')[0].slice(0, 40);
+
+                        xTitle =
+                            (label ? label + ' ' : '') + lead;
+                    }
+
+                    if (xFound.posts.length > 1) {
+
+                        const label = postLabel(converted.meta);
+
+                        parts.push(
+                            '## ' +
+                            (label || 'ポスト') +
+                            (converted.meta.time ? ' · ' + converted.meta.time : '') +
+                            '\n\n' +
+                            converted.text
+                        );
+
+                    } else {
+
+                        parts.push(converted.text);
+                    }
                 }
 
             } else {
@@ -1586,10 +2013,17 @@
                     .replace(/\n{3,}/g, '\n\n')
                     .trim();
 
+            // X では、タイトルが投稿全文になるので見出しに使わない
+            const headline =
+                xHeader && postLabel(xHeader)
+                    ? postLabel(xHeader) + ' のポスト'
+                    : getTitle();
+
             const header = [
-                '# ' + getTitle(),
+                '# ' + headline,
                 '',
                 '- URL: ' + location.href,
+                ...(xHeader && xHeader.time ? ['- 投稿日時: ' + xHeader.time] : []),
                 '- 取得日時: ' + formatNow(),
                 '',
                 '---',
@@ -1606,6 +2040,7 @@
                 chars: body.length,
                 method,
                 rootDescription,
+                title: xTitle,
                 log: S.log
             };
 
@@ -1979,7 +2414,7 @@
             lastUpload = {
                 requestId: createRequestId(),
                 capturedAt: new Date().toISOString(),
-                title: getTitle().slice(0, 300),
+                title: (result.title || getTitle()).slice(0, 300),
                 url: location.href,
                 markdown: result.text
             };

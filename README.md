@@ -870,6 +870,25 @@ iOS の X は元々表示がシンプルで CfT の利点が薄いうえ、挙�
 - 選択していなければ、**本文を自動判定**してコピーする
 - 出力の先頭に、タイトル・URL・取得日時が付く
 
+### X のポスト（v1.4.0）
+
+X（x.com / twitter.com）のポストページでは、専用の整え方でコピーする。
+文字を選択しているときは、これまでどおり選択範囲を優先する。
+
+- **URL の status ID と一致するポストだけ**を取る（以前は文字数が最大の `article` を選んだため、
+  元ポストの代わりに返信の本文が保存されることがあった）。
+  前後のポスト・返信もまとめて取りたいときは、設定の `INCLUDE_X_REPLIES` を `true` にする
+- 先頭は `# 名前 (@ID) のポスト` と、URL・投稿日時（JST）・取得日時。
+  X の `<title>` は投稿全文を含むので、見出しにしない（本文との二重と、大きな太字を避ける）
+- Drive のファイル名も、`名前 (@ID) 本文の冒頭40字` になる
+- 本文の見出しは1段下げる（長文記事の `#` が文書の見出しと同じ大きさにならない）
+- 投稿者名・@ID・時刻・「·」・数字だけの行は本文から外し、反応数は末尾の
+  `反応: 表示 1.3万 / 引用 2 / リポスト 31` の1行にまとめる（`INCLUDE_X_STATS` で外せる）
+- 絵文字は文字のまま、意味のない画像 alt は `[画像]`、表示文字がURLのリンクは表示のほうだけにする
+- ポストを狙う手がかりは構造（`<time datetime>` を持つ `article`、`/status/<ID>` へのリンク）。
+  `data-testid` には頼らない。外れたら `window.__tmCopyText.dump()` で選んだポストを確認できる
+- status ID が URL に無い・一致するポストが見つからないページは、通常の本文判定に戻る
+
 ### Drive保存が届かなかったとき（v1.3.0）
 
 ボタンを押したらすぐ次の操作に移れるようにするための仕組み。
@@ -953,6 +972,7 @@ iOS の X は元々表示がシンプルで CfT の利点が薄いうえ、挙�
 node --check page-to-markdown.user.js
 NODE_PATH=$(npm root -g) node test/page-to-markdown.test.js
 NODE_PATH=$(npm root -g) node test/page-to-markdown-drive.test.js
+NODE_PATH=$(npm root -g) node test/page-to-markdown-x.test.js
 ```
 
 模擬DOMで26項目（本文が Markdown になる／メニュー・広告・関連記事が消える／
