@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.8
+// @name         YouTube チャット非表示 v1.8.1
 // @namespace    https://www.youtube.com/
-// @version      1.8
+// @version      1.8.1
 // @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（基本は名前を残して本文だけ消す。一覧から「まるごと消す」に切り替え可・チャンネルID単位）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -45,6 +45,23 @@
     const MASK_CLASS = 'tm-ychide-mask';
     const MASK_TEXT = '（非表示）';
     const SWEEP_MS = 1000;
+
+    /*
+     * YouTube 標準の三点メニューは発言の右上に出る。
+     * 「けす」ボタンがそこへ重なって押せなくなるので、
+     * メニューの左側へ避ける。
+     *
+     *   MENU_SELECTOR … 三点メニューを指す候補（順に試す）
+     *   BTN_GAP       … メニューとボタンの間のすき間(px)
+     *   BTN_RIGHT_FALLBACK … メニューが測れないときの右端からの距離(px)
+     */
+    const MENU_SELECTOR = [
+        '#menu',
+        '#menu-button',
+        'yt-icon-button#menu-button'
+    ];
+    const BTN_GAP = 4;
+    const BTN_RIGHT_FALLBACK = 44;
 
     /*
      * 「非表示リスト」ボタンを置く位置。
@@ -490,7 +507,7 @@
             }
 
             .tm-ychide-btn-text {
-                right: 2px;
+                right: ${BTN_RIGHT_FALLBACK}px;
             }
 
             #${PANEL_ID} .tm-ychide-mode[aria-pressed="true"] {
@@ -555,6 +572,8 @@
          * 同じ場所のボタンで戻せるよう、状態に合わせて表示を切り替える。
          * 要素は使い回されるので、毎回書き直す。
          */
+        placeButton(el, btn);
+
         const registered = !!modeOf(el);
         const label = registered ? 'もどす' : 'けす';
 
@@ -563,6 +582,38 @@
             btn.title = registered
                 ? 'この人の登録を解除して、発言を元どおり表示する（発言を戻す）'
                 : '名前は残し、本文を消す（発言を消す。まるごと消すには「非表示リスト」から切り替え）';
+        }
+    }
+
+    /*
+     * 三点メニューの左端を測って、ボタンをその左へ置く。
+     * 測れない（未描画・見つからない）ときは CSS の固定値のまま。
+     */
+    function placeButton(el, btn) {
+        let menu = null;
+
+        for (const selector of MENU_SELECTOR) {
+            const found = el.querySelector(selector);
+            if (found && !btn.contains(found)) {
+                menu = found;
+                break;
+            }
+        }
+
+        if (!menu) return;
+
+        const menuRect = menu.getBoundingClientRect();
+        const itemRect = el.getBoundingClientRect();
+        if (menuRect.width <= 0 || itemRect.width <= 0) return;
+
+        const right = Math.round(
+            itemRect.right - menuRect.left + BTN_GAP
+        );
+        if (right < 0) return;
+
+        const value = right + 'px';
+        if (btn.style.right !== value) {
+            btn.style.right = value;
         }
     }
 

@@ -300,6 +300,30 @@ function check(name, cond, extra) {
   check('解除: 発言が表示に戻る', (await shown('m1')) === true && (await shown('m3')) === true);
   check('解除: リストからも消える', (await page.evaluate(() => window.__tmChatHide.list().length)) === 2, await page.evaluate(() => window.__tmChatHide.list()));
 
+  // --- 三点メニューとの重なり ---
+  await page.evaluate(() => {
+    const el = window.mkMessage('mm1', 'UC_MENU', 'メニュー確認', 'ほんぶん');
+    el.style.cssText = 'display:block;position:relative;width:300px;height:40px;';
+    const menu = document.createElement('div');
+    menu.id = 'menu';
+    menu.style.cssText = 'position:absolute;right:0;top:0;width:60px;height:32px;';
+    el.appendChild(menu);
+  });
+  await page.waitForTimeout(1200);
+  await page.hover('#mm1');
+  check('メニュー: 「けす」が三点メニューに重ならない', await page.evaluate(() => {
+    const b = document.querySelector('#mm1 > .tm-ychide-btn').getBoundingClientRect();
+    const m = document.querySelector('#mm1 #menu').getBoundingClientRect();
+    return b.width > 0 && b.right <= m.left;
+  }));
+  await page.evaluate(() => { document.querySelector('#mm1 #menu').style.width = '100px'; });
+  await page.waitForTimeout(1200);
+  check('メニュー: メニュー幅が変わっても追従する', await page.evaluate(() => {
+    const b = document.querySelector('#mm1 > .tm-ychide-btn').getBoundingClientRect();
+    const m = document.querySelector('#mm1 #menu').getBoundingClientRect();
+    return b.right <= m.left;
+  }));
+
   // --- 重複追加 ---
   await page.evaluate(() => {
     window.__tmChatHide.add('UC_DDD', '重複テスト');
