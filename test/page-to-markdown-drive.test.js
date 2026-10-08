@@ -43,6 +43,8 @@ async function main() {
                     if (window.mode === 'hold') { window.pending = request; return; }
                     if (window.mode === 'error') { request.onerror(); return; }
                     if (window.mode === 'timeout') { request.ontimeout(); return; }
+                    // 受け口の答えを送信内容ごとに決める（断る・保存済みのものと比べる など）
+                    if (window.respond) { request.onload({ status: 200, responseText: JSON.stringify(window.respond(JSON.parse(request.data))) }); return; }
                     request.onload({ status: 200, responseText: window.mode === 'html'
                         ? '<html>login</html>'
                         : JSON.stringify({ ok: true, fileId: 'test-file' }) });
@@ -224,6 +226,84 @@ async function main() {
         assert.equal(await page.evaluate(() => window.sent.length), 0);
         assert.equal(await badge(page), '1');
     }, { unconfigured: true, store: mapStore(leftBehind, value => ({ lastTriedAt: value.lastTriedAt - 20000 })) });
+
+    // ---- 受け口に断られた控え ----
+    const stuck = mapStore(leftBehind, value => ({ lastTriedAt: value.lastTriedAt - 3600000, attempts: 3, lastError: 'Drive保存を確認できません。URL・公開設定・トークンを確認してください' }));
+    const dupReceiver = () => {
+        // 1回目の送信IDは保存済み（中身違い）として断り、新しいIDなら保存する
+        window.respond = payload => window.seenIds && window.seenIds.includes(payload.requestId)
+            ? { ok: false, message: '送信IDが重複しています。ページを再読み込みしてください' }
+            : { ok: true, fileId: 'saved-' + payload.requestId };
+    };
+    await test('同じIDで断られた控えは新しいIDで送り直し、バッジを消す', async page => {
+        await page.evaluate(ids => { window.seenIds = ids; }, Object.values(stuck).map(value => value.requestId));
+        await page.evaluate(dupReceiver);
+        await page.waitForFunction(() => Object.keys(window.store).length === 0, null, { timeout: 5000 });
+        const ids = await page.evaluate(() => window.sent.map(x => x.payload.requestId));
+        assert.equal(ids.length, 2);
+        assert.equal(ids[0], Object.values(stuck)[0].requestId);
+        assert.notEqual(ids[1], ids[0]);
+        assert.match(ids[1], /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+        const payloads = await page.evaluate(() => window.sent.map(x => x.payload.markdown));
+        assert.equal(payloads[1], payloads[0]);
+        assert.match(await toast(page), /未保存だった1件をDriveに保存/);
+        assert.equal(await badge(page), '');
+    }, { store: stuck });
+    await test('押した直後に同じIDで断られても、新しいIDで保存する', async page => {
+        await page.evaluate(() => { window.seenIds = []; window.respond = payload => {
+            if (!window.seenIds.length) { window.seenIds.push(payload.requestId); return { ok: false, message: '送信IDが重複しています。ページを再読み込みしてください' }; }
+            return { ok: true, fileId: 'saved' };
+        }; });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        await page.waitForFunction(() => window.sent.length === 2);
+        const ids = await page.evaluate(() => window.sent.map(x => x.payload.requestId));
+        assert.notEqual(ids[1], ids[0]);
+        assert.match(await toast(page), /Driveに保存し、コピーしました/);
+        assert.equal((await pendingKeys(page)).length, 0);
+        assert.equal(await badge(page), '');
+        // もう一度押しても、断られたIDは使わない
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent[2].payload.requestId), ids[1]);
+    });
+    await test('中身を受け付けないと断られたら理由を出し、自動では送り直さず、ほかの控えは送る', async page => {
+        const [first] = Object.values(stuck);
+        await page.evaluate(id => { window.respond = payload => payload.requestId === id
+            ? { ok: false, message: '本文・タイトル・送信IDが不正です' }
+            : { ok: true, fileId: 'saved' }; }, first.requestId);
+        await page.waitForFunction(() => window.sent.length === 2, null, { timeout: 5000 });
+        await page.waitForFunction(() => /保存できない控えが1件あります: 本文・タイトル・送信IDが不正です/.test(
+            document.getElementById('tm-copy-text-host').shadowRoot.querySelector('div').textContent));
+        assert.match(await toast(page), /未保存の控えを削除/);
+        const left = await page.evaluate(() => Object.values(window.store));
+        assert.equal(left.length, 1);
+        assert.equal(left[0].requestId, first.requestId);
+        assert.equal(left[0].rejected, true);
+        assert.equal(await badge(page), '1');
+        // 自動では送り直さない（待ち時間を過ぎても送らない）
+        await page.evaluate(() => { window.store[Object.keys(window.store)[0]].lastTriedAt -= 3600000; });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        await page.waitForTimeout(800);
+        assert.deepEqual(await page.evaluate(() => window.sent.map(x => x.payload.requestId)).then(ids => ids.filter(id => id === first.requestId).length), 1);
+        // メニューの一覧には理由が出る。手動なら送ってみる
+        await page.evaluate(() => { window.confirm = text => { window.confirmText = text; return true; }; });
+        await page.evaluate(() => window.menus['未保存を一覧・再送']());
+        assert.match(await page.evaluate(() => window.confirmText), /理由: 本文・タイトル・送信IDが不正です（自動では送り直しません）/);
+        assert.equal(await page.evaluate(id => window.sent.filter(x => x.payload.requestId === id).length, first.requestId), 2);
+    }, { store: { ...stuck, ['tm-copy-text-pending:00000000-0000-4000-8000-000000000099']: { ...Object.values(stuck)[0], requestId: '00000000-0000-4000-8000-000000000099', capturedAt: '2099-01-01T00:00:00.000Z' } } });
+    await test('受け口の断りの理由を、共通の文言に置き換えずに出す', async page => {
+        await page.evaluate(() => { window.respond = () => ({ ok: false, message: '保存処理が混み合っています。再度押してください' }); });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.match(await toast(page), /混み合っています[\s\S]*あとで自動で送り直します/);
+        assert.equal(await page.evaluate(() => Object.values(window.store)[0].rejected), false);
+    });
+    await test('切れた絵文字は送る前に置き換える', async page => {
+        await page.evaluate(() => { document.title = '切れた絵文字\uD83D'; document.getElementById('text').textContent = '本文\uDE00の途中😀正常'.repeat(30); });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        const payload = await page.evaluate(() => window.sent[0].payload);
+        assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(payload.markdown + payload.title));
+        assert.match(payload.markdown, /本文�の途中😀正常/);
+        assert.match(payload.title, /切れた絵文字�/);
+    });
     await browser.close();
 
     // GASのサービス境界をモック化し、認証・作成・再送・例外時ロック解放を確認する。

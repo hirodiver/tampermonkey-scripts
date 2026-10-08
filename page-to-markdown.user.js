@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.4.0
+// @name         ページ本文コピー v1.5.0
 // @namespace    local.hiro.tools
-// @version      1.4.0
+// @version      1.5.0
 // @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。
 // @match        *://*/*
 // @grant        GM_getValue
@@ -2347,6 +2347,22 @@
             '-' + hex.slice(16, 20) + '-' + hex.slice(20);
     }
 
+    /*
+     * 対になっていないサロゲート（途中で切れた絵文字の片割れ）を U+FFFD にそろえる。
+     * そのまま送ると、Drive に書いた時点で別の文字に置き換わり、
+     * 送り直したときに「同じIDで中身が違う」と受け口に断られる
+     */
+    function toWellFormed(text) {
+
+        // 後ろ読みは古いSafariで構文エラーになるので使わない。
+        // 正しい組は2文字のまま残し、1文字だけで現れた片割れを置き換える
+        return String(text).replace(
+            /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
+            pair => pair.length === 2 ? pair : '\uFFFD'
+        );
+    }
+
+
     function readDriveConfig() {
 
         if (typeof GM_getValue !== 'function') {
@@ -2438,9 +2454,9 @@
         const payload = {
             requestId: upload.requestId,
             capturedAt: upload.capturedAt,
-            title: upload.title,
+            title: toWellFormed(upload.title),
             url: upload.url,
-            markdown: upload.markdown,
+            markdown: toWellFormed(upload.markdown),
             token: config.token
         };
 
@@ -2455,24 +2471,58 @@
                 timeout: DRIVE_TIMEOUT_MS,
                 onload(response) {
 
+                    let data = null;
+
                     try {
-                        const data = JSON.parse(response.responseText);
-
-                        if (response.status < 200 || response.status >= 300 || !data.ok || !data.fileId) {
-                            throw new Error(data.message || 'Drive保存に失敗しました');
-                        }
-
-                        resolve(data);
-
+                        data = JSON.parse(response.responseText);
                     } catch (error) {
-                        reject(new Error('Drive保存を確認できません。URL・公開設定・トークンを確認してください'));
+                        data = null;
                     }
+
+                    const answered =
+                        response.status >= 200 &&
+                        response.status < 300 &&
+                        data &&
+                        typeof data === 'object';
+
+                    if (answered && data.ok && data.fileId) {
+                        resolve(data);
+                        return;
+                    }
+
+                    // 受け口が答えたうえで断った。理由は受け口の文言をそのまま出す
+                    if (answered && data.ok === false && typeof data.message === 'string') {
+                        reject(classifyRejection(data.message));
+                        return;
+                    }
+
+                    reject(new Error('Drive保存を確認できません。URL・公開設定・トークンを確認してください'));
                 },
                 onerror: () => reject(new Error('通信に失敗しました')),
                 ontimeout: () => reject(new Error('保存の応答がありません。フォルダを確認してください')),
                 onabort: () => reject(new Error('保存の通信が中断されました'))
             });
         });
+    }
+
+
+    /*
+     * 受け口（page-markdown-receiver.gs）の断り方を3つに分ける。
+     * - duplicateId: 同じ送信IDで別の中身が保存済み。新しいIDを付ければ保存できる
+     * - rejected:    中身が受け付けられない。何度送っても同じなので、自動では送り直さない
+     * - それ以外:    混雑・一時的な失敗・トークン違い。待って送り直す
+     */
+    function classifyRejection(message) {
+
+        const error = new Error(message.slice(0, 200) || 'Drive保存に失敗しました');
+
+        if (/送信IDが重複/.test(message)) {
+            error.duplicateId = true;
+        } else if (/不正/.test(message)) {
+            error.rejected = true;
+        }
+
+        return error;
     }
 
 
@@ -2569,14 +2619,43 @@
     }
 
 
-    function markPendingFailed(requestId, message) {
+    function markPendingFailed(requestId, message, rejected = false) {
 
         const record = canKeepPending() ? readPending(requestId) : null;
 
         // 送信中に他のタブで保存済み・削除済みになっていたら書き戻さない
         if (record) {
-            writePending({ ...record, lastError: message });
+            writePending({ ...record, lastError: message, rejected: Boolean(rejected) });
         }
+    }
+
+
+    /*
+     * 「同じIDで別の中身」と断られた控えに、新しいIDを付け直す。
+     * 中身は失わず、Drive には別のファイルとして保存される
+     */
+    function reissuePending(record) {
+
+        const fresh = {
+            ...record,
+            requestId: createRequestId(),
+            attempts: 1,
+            lastTriedAt: Date.now(),
+            lastError: '',
+            rejected: false
+        };
+
+        if (canKeepPending()) {
+            writePending(fresh);
+            removePending(record.requestId);
+        }
+
+        // 同じ内容をもう一度押したときも、新しいIDで送る
+        if (lastUpload && lastUpload.requestId === record.requestId) {
+            lastUpload = { ...lastUpload, requestId: fresh.requestId };
+        }
+
+        return fresh;
     }
 
 
@@ -2605,6 +2684,7 @@
 
     /*
      * 控えを送り直す。all が false なら、待ち時間を過ぎたものだけ。
+     * 受け付けられないと断られた控えは、includeRejected（メニューの手動送り直し）のときだけ送る。
      * 1件でも通信に失敗したら、残りもつながらない見込みが高いので止める
      */
     async function retryPending(options = {}) {
@@ -2619,6 +2699,7 @@
 
         let saved = 0;
         let lastError = '';
+        let rejectedNow = 0;
 
         try {
 
@@ -2628,6 +2709,10 @@
                 const record = readPending(item.requestId);
 
                 if (!record) {
+                    continue;
+                }
+
+                if (record.rejected && !options.includeRejected) {
                     continue;
                 }
 
@@ -2659,6 +2744,35 @@
 
                     lastError = error.message || '保存に失敗しました';
 
+                    if (error.duplicateId) {
+
+                        const outcome = await sendReissued(config, claimed);
+
+                        if (outcome.saved) {
+                            saved++;
+                            continue;
+                        }
+
+                        lastError = outcome.error.message || '保存に失敗しました';
+
+                        if (outcome.error.rejected || outcome.error.duplicateId) {
+                            rejectedNow++;
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    if (error.rejected) {
+
+                        markPendingFailed(claimed.requestId, lastError, true);
+
+                        rejectedNow++;
+
+                        // 中身の問題なので、ほかの控えは送ってみる
+                        continue;
+                    }
+
                     markPendingFailed(claimed.requestId, lastError);
 
                     break;
@@ -2675,14 +2789,52 @@
         return {
             saved,
             left: listPending().length,
-            lastError
+            lastError,
+            rejectedNow
         };
+    }
+
+
+    // 新しいIDを付け直して1回だけ送る
+    async function sendReissued(config, record) {
+
+        const fresh = reissuePending(record);
+
+        try {
+
+            await sendToDrive(config, fresh);
+
+            removePending(fresh.requestId);
+
+            return { saved: true };
+
+        } catch (error) {
+
+            markPendingFailed(
+                fresh.requestId,
+                error.message || '保存に失敗しました',
+                Boolean(error.rejected || error.duplicateId)
+            );
+
+            return { saved: false, error };
+        }
     }
 
 
     function reportRetry(report, manual) {
 
         if (!report) {
+            return;
+        }
+
+        // 受け付けられない控えは自動では送らなくなるので、理由と消し方を一度だけ出す
+        if (report.rejectedNow) {
+            showToast(
+                (report.saved ? '未保存だった' + report.saved + '件を保存しました。' : '') +
+                '保存できない控えが' + report.rejectedNow + '件あります: ' + report.lastError +
+                '（メニュー「未保存の控えを削除」で消せます）',
+                true
+            );
             return;
         }
 
@@ -2724,7 +2876,10 @@
 
         updateBadge(records.length);
 
-        if (!records.length || !readDriveConfig()) {
+        // 受け付けられないと断られた控えは、自動では送り直さない
+        const retriable = records.filter(record => !record.rejected);
+
+        if (!retriable.length || !readDriveConfig()) {
             return;
         }
 
@@ -2732,7 +2887,7 @@
 
         const wait =
             Math.min(
-                ...records.map(record =>
+                ...retriable.map(record =>
                     Math.max(0, (record.lastTriedAt || 0) + retryDelay(record) - now)
                 )
             );
@@ -2755,7 +2910,9 @@
                 .map((record, index) =>
                     (index + 1) + '. ' + (record.title || 'タイトル不明') +
                     '\n   ' + record.url +
-                    (record.lastError ? '\n   理由: ' + record.lastError : '')
+                    (record.lastError
+                        ? '\n   理由: ' + record.lastError + (record.rejected ? '（自動では送り直しません）' : '')
+                        : '')
                 );
 
         if (records.length > PENDING_LIST_LIMIT) {
@@ -2792,7 +2949,7 @@
 
         showToast('未保存を送り直しています…');
 
-        const report = await retryPending({ all: true });
+        const report = await retryPending({ all: true, includeRejected: true });
 
         if (!report) {
             showToast('送り直しの途中です。少し待ってからもう一度どうぞ');
@@ -2916,22 +3073,45 @@
                     showToast(copyOk
                         ? 'Driveに保存し、コピーしました'
                         : 'Driveに保存しました。コピーは失敗しました', !copyOk);
+                } else if (stored.reason.duplicateId) {
+
+                    // 同じIDで別の中身が保存済み。新しいIDで送り直す
+                    const outcome =
+                        kept
+                            ? await sendReissued(config, readPending(upload.requestId) || upload)
+                            : { saved: false, error: stored.reason };
+
+                    if (!kept) {
+                        lastUpload = null;
+                    }
+
+                    showToast(
+                        outcome.saved
+                            ? (copyOk ? 'Driveに保存し、コピーしました' : 'Driveに保存しました。コピーは失敗しました')
+                            : (copyOk ? 'コピー済み。' : 'コピーも失敗。') + (outcome.error.message || '保存に失敗しました'),
+                        !outcome.saved || !copyOk
+                    );
                 } else {
                     const reason = stored.reason.message || '保存に失敗しました';
+                    const rejected = Boolean(stored.reason.rejected);
 
                     if (kept) {
-                        markPendingFailed(upload.requestId, reason);
+                        markPendingFailed(upload.requestId, reason, rejected);
                     }
 
                     showToast(
                         (copyOk ? 'コピー済み。' : 'コピーも失敗。') + reason +
-                        (kept ? '（控えたので、あとで自動で送り直します）' : ''),
+                        (kept
+                            ? (rejected
+                                ? '（受け付けられない内容なので、自動では送り直しません）'
+                                : '（控えたので、あとで自動で送り直します）')
+                            : ''),
                         true
                     );
                 }
 
                 // つながっているうちに、前に届かなかった分もまとめて送る
-                if (driveOk && listPending().length) {
+                if (driveOk && listPending().some(record => !record.rejected)) {
                     retryPending({ all: true }).then(report => reportRetry(report, false));
                 }
             } finally {
