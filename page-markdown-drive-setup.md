@@ -32,6 +32,8 @@
 - 50万文字を超える本文はDrive送信を止めるがコピーは実行する。
 - 保存停止：「Drive保存を設定／停止」でURLを空欄にして確定。コードを消さずにコピーだけへ戻せる。
 - GASを修正した場合：「デプロイを管理」から該当デプロイを編集し、新バージョンで更新する。コードを保存するだけでは公開版は変わらない。
+- 本文の画像（v1.6.0〜。ページ本文コピー側も v1.6.0 以上が必要）：受け口が画像を取りに行き、「参考記事アーカイブ」の中の「`<記事のファイル名>_画像`」フォルダへ保存する。記事の `.md` の末尾に「## 画像（Driveに保存）」の一覧が付く。
+- 受け口を画像に対応させる手順（1回だけ）：`コード.gs` を [page-markdown-receiver.gs](page-markdown-receiver.gs) の全文に置き換えて保存 → 関数の一覧で `setup` を選んで「実行」し、権限の確認画面で許可する（「外部サービスへの接続」が増える）→「デプロイを管理」→ 既存のデプロイを新バージョンで更新する。URLとトークンは変わらない。
 - トークンの変更：GASのプロジェクト設定→スクリプトプロパティから `ARCHIVE_TOKEN` を削除して `setup` を再実行し、各端末に新しいトークンを登録する。
 
 ## 検証の範囲
@@ -42,5 +44,6 @@
 
 - https://developers.google.com/apps-script/guides/web
 - https://developers.google.com/apps-script/guides/content
+- https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app
 - https://developers.google.com/apps-script/reference/drive/folder
 - https://www.tampermonkey.net/documentation.php?locale=en
