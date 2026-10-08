@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.5.0
+// @name         ページ本文コピー v1.6.0
 // @namespace    local.hiro.tools
-// @version      1.5.0
+// @version      1.6.0
 // @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。
 // @match        *://*/*
 // @grant        GM_getValue
@@ -79,6 +79,19 @@
 
     // 画像は alt があるものだけ「[画像: alt]」として残す
     const INCLUDE_IMAGE_ALT = true;
+
+    // 本文の画像を Drive にも保存する（受け口 GAS が画像を取りに行く）。
+    // 本文には「![画像1: alt](元のURL)」と書き、保存先は記事の .md の末尾に一覧で付く
+    const SAVE_IMAGES = true;
+
+    // 1記事あたりの画像の上限
+    const IMAGE_MAX = 20;
+
+    // 表示の幅か高さがこれ（px）未満の画像は、アイコンとみなして保存しない
+    const IMAGE_MIN_SIZE = 120;
+
+    // 画像があるときの保存の待ち時間（受け口が画像を取りに行くぶん長くする）
+    const DRIVE_IMAGE_TIMEOUT_MS = 90000;
 
     // X（旧Twitter）のポストページでは、URLの status ID と一致するポストだけを取る。
     // true にすると、同じページに出ている前後のポスト・返信もまとめて取る
@@ -1010,6 +1023,122 @@
     }
 
 
+    // ------------------------------------------------------------
+    // 画像（Drive 保存の対象を集める）
+    // ------------------------------------------------------------
+
+    /*
+     * 画像の本当のURL。後から読み込む作りのサイトでは、src が仮の画像で、
+     * 本物は data-src・srcset などにある。いちばん大きい候補を選ぶ
+     */
+    function imageUrl(el) {
+
+        const fromSrcset = value => {
+
+            let best = '';
+            let bestSize = -1;
+
+            for (const part of String(value || '').split(',')) {
+
+                const [candidate, descriptor] = part.trim().split(/\s+/);
+
+                if (!candidate) {
+                    continue;
+                }
+
+                const size = parseFloat(descriptor) || 1;
+
+                if (size > bestSize) {
+                    best = candidate;
+                    bestSize = size;
+                }
+            }
+
+            return best;
+        };
+
+        const candidates = [
+            fromSrcset(el.getAttribute('srcset')),
+            fromSrcset(el.getAttribute('data-srcset')),
+            el.getAttribute('data-src'),
+            el.getAttribute('data-original'),
+            el.getAttribute('data-lazy-src'),
+            el.currentSrc,
+            el.getAttribute('src')
+        ];
+
+        for (const candidate of candidates) {
+
+            if (!candidate || /^(data|blob):/i.test(candidate.trim())) {
+                continue;
+            }
+
+            try {
+
+                const url = new URL(candidate.trim(), location.href);
+
+                if (/^https?:$/.test(url.protocol) && url.href.length <= 2000) {
+                    return url.href;
+                }
+
+            } catch (error) {
+
+                // 解釈できないURLは次の候補へ
+            }
+        }
+
+        return '';
+    }
+
+
+    function collectImage(el, alt) {
+
+        if (!SAVE_IMAGES || !S || !S.images || S.images.length >= IMAGE_MAX) {
+            return null;
+        }
+
+        // 絵文字の画像（X など）は文字のまま扱う
+        if (alt && EMOJI_ONLY.test(alt)) {
+            return null;
+        }
+
+        const rect = el.getBoundingClientRect();
+
+        const width = Math.max(rect.width, el.naturalWidth || 0, Number(el.getAttribute('width')) || 0);
+        const height = Math.max(rect.height, el.naturalHeight || 0, Number(el.getAttribute('height')) || 0);
+
+        // 大きさが分かっていて小さいものはアイコンとみなす（読み込み前で分からないものは残す）
+        if (
+            (width > 0 && width < IMAGE_MIN_SIZE) ||
+            (height > 0 && height < IMAGE_MIN_SIZE)
+        ) {
+            return null;
+        }
+
+        const url = imageUrl(el);
+
+        if (!url) {
+            return null;
+        }
+
+        const existing = S.images.find(image => image.url === url);
+
+        if (existing) {
+            return existing;
+        }
+
+        const image = {
+            n: S.images.length + 1,
+            url,
+            alt: GENERIC_ALT.test(alt) ? '' : alt.replace(/[\[\]\n]/g, ' ').slice(0, 200)
+        };
+
+        S.images.push(image);
+
+        return image;
+    }
+
+
     function renderElement(el, scope, forced) {
 
         const tag = el.tagName.toLowerCase();
@@ -1035,6 +1164,14 @@
 
             const alt =
                 (el.getAttribute('alt') || '').trim();
+
+            // Drive に保存する画像は、番号と元のURLを本文に残す
+            const image = collectImage(el, alt);
+
+            if (image) {
+                scope.buf += '![画像' + image.n + (image.alt ? ': ' + image.alt : '') + '](' + image.url + ')';
+                return;
+            }
 
             if (S.xMode && alt) {
 
@@ -1910,6 +2047,7 @@
     function extract(options = {}) {
 
         S = {
+            images: [],
             recording: Boolean(options.record),
             log: [],
             range: null,
@@ -2041,6 +2179,8 @@
                 method,
                 rootDescription,
                 title: xTitle,
+                // 本文に残った画像だけを渡す（空の本文なら画像も送らない）
+                images: body ? S.images.slice() : [],
                 log: S.log
             };
 
@@ -2432,7 +2572,8 @@
                 capturedAt: new Date().toISOString(),
                 title: (result.title || getTitle()).slice(0, 300),
                 url: location.href,
-                markdown: result.text
+                markdown: result.text,
+                images: Array.isArray(result.images) ? result.images : []
             };
         }
 
@@ -2460,6 +2601,20 @@
             token: config.token
         };
 
+        // 画像があるときだけ一覧を付ける（v1.5.0 以前の控えには無い）
+        const images =
+            Array.isArray(upload.images)
+                ? upload.images.slice(0, IMAGE_MAX).map(image => ({
+                    n: image.n,
+                    url: image.url,
+                    alt: toWellFormed(image.alt || '')
+                }))
+                : [];
+
+        if (images.length) {
+            payload.images = images;
+        }
+
         return new Promise((resolve, reject) => {
 
             GM_xmlhttpRequest({
@@ -2468,7 +2623,7 @@
                 anonymous: true,
                 headers: { 'Content-Type': 'application/json' },
                 data: JSON.stringify(payload),
-                timeout: DRIVE_TIMEOUT_MS,
+                timeout: images.length ? DRIVE_IMAGE_TIMEOUT_MS : DRIVE_TIMEOUT_MS,
                 onload(response) {
 
                     let data = null;
@@ -2503,6 +2658,26 @@
                 onabort: () => reject(new Error('保存の通信が中断されました'))
             });
         });
+    }
+
+
+    // 受け口が返した画像の保存結果を、トーストに添える一言にする
+    function describeSavedImages(data) {
+
+        const images = data && data.images;
+
+        if (!images || typeof images !== 'object') {
+            return '';
+        }
+
+        const saved = Number(images.saved) || 0;
+        const failed = Number(images.failed) || 0;
+
+        if (!saved && !failed) {
+            return '';
+        }
+
+        return '（画像' + saved + '枚' + (failed ? '、保存できなかった画像' + failed + '枚' : '') + '）';
     }
 
 
@@ -3070,9 +3245,12 @@
 
                 if (driveOk) {
                     removePending(upload.requestId);
-                    showToast(copyOk
+
+                    const imageNote = describeSavedImages(stored.value);
+
+                    showToast((copyOk
                         ? 'Driveに保存し、コピーしました'
-                        : 'Driveに保存しました。コピーは失敗しました', !copyOk);
+                        : 'Driveに保存しました。コピーは失敗しました') + imageNote, !copyOk);
                 } else if (stored.reason.duplicateId) {
 
                     // 同じIDで別の中身が保存済み。新しいIDで送り直す

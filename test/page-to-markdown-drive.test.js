@@ -304,6 +304,60 @@ async function main() {
         assert.match(payload.markdown, /本文�の途中😀正常/);
         assert.match(payload.title, /切れた絵文字�/);
     });
+    // ---- 本文の画像 ----
+    const addImages = page => page.evaluate(() => {
+        const article = document.querySelector('article');
+        article.insertAdjacentHTML('beforeend', [
+            // 後から読み込む作り（src は仮の画像、本物は data-src）
+            '<p><img id="lazy" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-src="/img/chart.png" alt="売上の推移" width="800" height="400"></p>',
+            // srcset のいちばん大きいもの
+            '<p><img src="https://cdn.example.com/a-small.jpg" srcset="https://cdn.example.com/a-small.jpg 400w, https://cdn.example.com/a-large.jpg 1200w" alt="画像" width="600" height="300"></p>',
+            // アイコン（小さい）は保存しない
+            '<p>著者 <img src="/icon.png" alt="アイコン" width="24" height="24"> さん</p>',
+            // 同じ画像の2回目は同じ番号
+            '<p><img src="/img/chart.png" alt="売上の推移" width="800" height="400"></p>'
+        ].join(''));
+    });
+    await test('本文の画像を番号と元のURLで残し、保存対象として送る', async page => {
+        await page.route('https://cdn.example.com/**', route => route.abort());
+        await addImages(page);
+        await page.evaluate(() => { window.respond = () => ({ ok: true, fileId: 'f', images: { saved: 2, failed: 0 } }); });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        const payload = await page.evaluate(() => window.sent[0].payload);
+        assert.deepEqual(payload.images, [
+            { n: 1, url: 'https://example.com/img/chart.png', alt: '売上の推移' },
+            { n: 2, url: 'https://cdn.example.com/a-large.jpg', alt: '' }
+        ]);
+        assert.match(payload.markdown, /!\[画像1: 売上の推移\]\(https:\/\/example\.com\/img\/chart\.png\)/);
+        assert.match(payload.markdown, /!\[画像2\]\(https:\/\/cdn\.example\.com\/a-large\.jpg\)/);
+        assert.match(payload.markdown, /\[画像: アイコン\]/);
+        assert.equal((payload.markdown.match(/!\[画像1: /g) || []).length, 2);
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), payload.markdown);
+        assert.match(await toast(page), /Driveに保存し、コピーしました（画像2枚）/);
+    });
+    await test('保存できなかった画像の枚数も出す', async page => {
+        await page.route('https://cdn.example.com/**', route => route.abort());
+        await addImages(page);
+        await page.evaluate(() => { window.respond = () => ({ ok: true, fileId: 'f', images: { saved: 1, failed: 1 } }); });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.match(await toast(page), /（画像1枚、保存できなかった画像1枚）/);
+    });
+    await test('画像が20枚を超えたら、21枚目以降は送らずaltだけ残す', async page => {
+        await page.evaluate(() => {
+            const html = Array.from({ length: 22 }, (_, i) => '<p><img src="/img/p' + i + '.png" alt="図' + i + '" width="300" height="200"></p>').join('');
+            document.querySelector('article').insertAdjacentHTML('beforeend', html);
+        });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        const payload = await page.evaluate(() => window.sent[0].payload);
+        assert.equal(payload.images.length, 20);
+        assert.match(payload.markdown, /!\[画像20: 図19\]/);
+        assert.match(payload.markdown, /\[画像: 図20\]/);
+    });
+    await test('画像のないページでは画像の一覧を送らない', async page => {
+        await page.evaluate(() => window.__tmCopyText.copy());
+        const payload = await page.evaluate(() => window.sent[0].payload);
+        assert.equal('images' in payload, false);
+    });
     await browser.close();
 
     // GASのサービス境界をモック化し、認証・作成・再送・例外時ロック解放を確認する。
@@ -317,10 +371,36 @@ async function main() {
         getFilesByName: name => ({ hasNext: () => files.has(name), next: () => files.get(name) }),
         createFile: blob => {
             creations++;
-            const file = { getId: () => String(creations), getName: () => blob.name, getUrl: () => 'https://drive.google.com/file/d/test', getBlob: () => ({ getDataAsString: () => blob.content }) };
+            let content = blob.content;
+            const file = { getId: () => String(creations), getName: () => blob.name, getUrl: () => 'https://drive.google.com/file/d/test', getBlob: () => ({ getDataAsString: () => content }), setContent: value => { content = value; } };
             files.set(blob.name, file);
             return file;
+        },
+        // 記事ごとの画像フォルダ
+        getFoldersByName: name => ({ hasNext: () => imageFolders.has(name), next: () => imageFolders.get(name) }),
+        createFolder: name => {
+            const saved = [];
+            const created = { name, saved, createFile: blob => { saved.push(blob.name); return { getUrl: () => 'https://drive.google.com/file/d/img-' + saved.length + '/view' }; } };
+            imageFolders.set(name, created);
+            return created;
         }
+    };
+    const imageFolders = new Map();
+    // 画像の取得。URLごとに応答を決め、取得した回数と送ったヘッダーを記録する
+    const fetched = [];
+    let fetchAllThrows = false;
+    const imageResponse = url => {
+        const route = {
+            'https://img.test/a.png': [200, 'image/png'],
+            'https://img.test/b.html': [200, 'text/html; charset=utf-8'],
+            'https://img.test/d.jpg': [200, 'image/jpeg']
+        }[url] || [404, 'text/html'];
+        return {
+            getResponseCode: () => route[0],
+            getHeaders: () => ({ 'Content-Type': route[1] }),
+            getContent: () => [1, 2, 3],
+            getBlob: () => ({ setName(name) { this.name = name; return this; } })
+        };
     };
     const sandbox = {
         console: { log() {} },
@@ -328,7 +408,18 @@ async function main() {
         PropertiesService: { getScriptProperties: () => ({ getProperty: key => properties.get(key), setProperty: (key, value) => properties.set(key, value) }) },
         Utilities: { getUuid: () => '12345678-1234-4234-8234-123456789abc', formatDate: () => '20260930_050000000', newBlob: (content, type, name) => ({ content, type, name }) },
         ContentService: { MimeType: { JSON: 'json' }, createTextOutput: text => ({ setMimeType: () => JSON.parse(text) }) },
-        LockService: { getScriptLock: () => ({ tryLock: () => !busy, hasLock: () => !busy, releaseLock: () => { released++; } }) }
+        LockService: { getScriptLock: () => ({ tryLock: () => !busy, hasLock: () => !busy, releaseLock: () => { released++; } }) },
+        UrlFetchApp: {
+            fetchAll: requests => {
+                if (fetchAllThrows) throw new Error('DNS error');
+                return requests.map(request => { fetched.push(request); return imageResponse(request.url); });
+            },
+            fetch: (url, request) => {
+                if (url === 'https://img.test/dns-fail.png') throw new Error('DNS error');
+                fetched.push(request);
+                return imageResponse(url);
+            }
+        }
     };
     vm.createContext(sandbox);
     vm.runInContext(receiver, sandbox);
@@ -349,6 +440,67 @@ async function main() {
         assert.equal(creations, 1);
     });
     check('ロック取得失敗時に作成しない', () => { busy = true; assert.equal(send(input).ok, false); busy = false; assert.equal(creations, 1); });
+    const withImages = { ...input, requestId: 'aaaaaaaa-1234-4234-8234-123456789abc', markdown: '# 図表\n\n![画像1: 売上の推移](https://img.test/a.png)\n', images: [
+        { n: 1, url: 'https://img.test/a.png', alt: '売上の推移' },
+        { n: 2, url: 'https://img.test/b.html', alt: '' },
+        { n: 3, url: 'https://img.test/missing.png', alt: '' }
+    ] };
+    let imageFile = null;
+    check('画像を取りに行き、記事ごとのフォルダに保存して.mdの末尾に一覧を付ける', () => {
+        const r = send(withImages);
+        assert.equal(r.ok, true);
+        assert.deepEqual({ ...r.images }, { saved: 1, failed: 2 });
+        imageFile = files.get(r.name);
+        const content = imageFile.getBlob().getDataAsString();
+        assert.ok(content.startsWith(withImages.markdown + '\n\n---\n\n## 画像（Driveに保存）\n'));
+        assert.match(content, /- 画像1: 売上の推移 → https:\/\/drive\.google\.com\/file\/d\/img-1\/view（元: https:\/\/img\.test\/a\.png）/);
+        assert.match(content, /- 画像2 → 保存できませんでした（画像ではありません（text\/html））/);
+        assert.match(content, /- 画像3 → 保存できませんでした（HTTP 404）/);
+        const imageFolder = imageFolders.get(r.name.replace(/\.md$/, '') + '_画像');
+        assert.deepEqual([...imageFolder.saved], ['01_売上の推移.png']);
+        assert.equal(fetched.length, 3);
+        assert.equal(fetched[0].headers.Referer, input.url);
+    });
+    check('送り直しでは画像を取り直さず、一覧つきの.mdを同じ送信として扱う', () => {
+        const r = send(withImages);
+        assert.equal(r.ok, true);
+        assert.equal(r.images, undefined);
+        assert.equal(fetched.length, 3);
+        assert.equal(send({ ...withImages, markdown: '# 別の本文\n' }).ok, false);
+    });
+    check('名前解決の失敗で一括取得が止まっても、1枚ずつ取り直す', () => {
+        fetchAllThrows = true;
+        const r = send({ ...withImages, requestId: 'bbbbbbbb-1234-4234-8234-123456789abc', images: [
+            { n: 1, url: 'https://img.test/dns-fail.png', alt: '' },
+            { n: 2, url: 'https://img.test/d.jpg', alt: '図/2' }
+        ] });
+        fetchAllThrows = false;
+        assert.deepEqual({ ...r.images }, { saved: 1, failed: 1 });
+        const imageFolder = imageFolders.get(r.name.replace(/\.md$/, '') + '_画像');
+        assert.deepEqual([...imageFolder.saved], ['02_図_2.jpg']);
+        assert.match(files.get(r.name).getBlob().getDataAsString(), /- 画像1 → 保存できませんでした（取得できませんでした）/);
+    });
+    check('画像のない送信は今までどおり（一覧もフォルダも作らない）', () => {
+        const before = imageFolders.size;
+        const r = send({ ...input, requestId: 'cccccccc-1234-4234-8234-123456789abc' });
+        assert.equal(r.ok, true);
+        assert.equal(r.images, undefined);
+        assert.equal(files.get(r.name).getBlob().getDataAsString(), input.markdown);
+        assert.equal(imageFolders.size, before);
+    });
+    check('画像の一覧が不正なら保存しない', () => {
+        const before = creations;
+        for (const images of [
+            'x',
+            [{ n: 1, url: 'javascript:alert(1)' }],
+            [{ n: '1', url: 'https://img.test/a.png' }],
+            [{ n: 1, url: 'https://img.test/a.png', alt: 3 }],
+            Array.from({ length: 21 }, (_, i) => ({ n: i + 1, url: 'https://img.test/a.png' }))
+        ]) {
+            assert.equal(send({ ...input, requestId: 'dddddddd-1234-4234-8234-123456789abc', images }).ok, false);
+        }
+        assert.equal(creations, before);
+    });
     check('Drive例外でもロックを解放し秘密を返さない', () => {
         const previous = sandbox.DriveApp.getFolderById;
         sandbox.DriveApp.getFolderById = () => { throw new Error(originalToken); };
