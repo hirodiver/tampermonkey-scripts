@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.6.0
+// @name         ページ本文コピー v1.6.1
 // @namespace    local.hiro.tools
-// @version      1.6.0
+// @version      1.6.1
 // @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1057,7 +1057,16 @@
             return best;
         };
 
+        // 画像を包むリンクの先が画像なら、それがいちばん大きい（note など）。
+        // 読み込み前でまだ src が無い画像も、リンクから拾える
+        const link = el.closest('a[href]');
+        const linkedImage =
+            link && /\.(png|jpe?g|gif|webp|avif)(?:[?#]|$)/i.test(link.getAttribute('href'))
+                ? link.getAttribute('href')
+                : '';
+
         const candidates = [
+            linkedImage,
             fromSrcset(el.getAttribute('srcset')),
             fromSrcset(el.getAttribute('data-srcset')),
             el.getAttribute('data-src'),

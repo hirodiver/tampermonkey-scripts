@@ -353,6 +353,24 @@ async function main() {
         assert.match(payload.markdown, /!\[画像20: 図19\]/);
         assert.match(payload.markdown, /\[画像: 図20\]/);
     });
+    await test('リンクの先が画像なら、その大きい画像を使う（読み込み前で src が無い画像も拾う）', async page => {
+        await page.evaluate(() => {
+            document.querySelector('article').insertAdjacentHTML('beforeend', [
+                '<p><a href="/img/big.png?width=4000&format=jpg"><img src="/img/small.png?width=1200" alt="画像" width="600" height="400"></a></p>',
+                '<p><a href="https://cdn.example.com/full.jpeg"><img alt="画像" width="600" height="400"></a></p>',
+                // 画像でないページへのリンクは使わない
+                '<p><a href="/article/next"><img src="/img/thumb.png" alt="次の記事" width="300" height="200"></a></p>'
+            ].join(''));
+        });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        const payload = await page.evaluate(() => window.sent[0].payload);
+        assert.deepEqual(payload.images.map(image => image.url), [
+            'https://example.com/img/big.png?width=4000&format=jpg',
+            'https://cdn.example.com/full.jpeg',
+            'https://example.com/img/thumb.png'
+        ]);
+        assert.doesNotMatch(payload.markdown, /\[画像: 画像\]/);
+    });
     await test('画像のないページでは画像の一覧を送らない', async page => {
         await page.evaluate(() => window.__tmCopyText.copy());
         const payload = await page.evaluate(() => window.sent[0].payload);
@@ -393,7 +411,11 @@ async function main() {
         const route = {
             'https://img.test/a.png': [200, 'image/png'],
             'https://img.test/b.html': [200, 'text/html; charset=utf-8'],
-            'https://img.test/d.jpg': [200, 'image/jpeg']
+            'https://img.test/d.jpg': [200, 'image/jpeg'],
+            // 正式でない種類名・汎用の種類名
+            'https://img.test/alias.jpg': [200, 'image/jpg'],
+            'https://img.test/raw.png?w=1': [200, 'application/octet-stream'],
+            'https://img.test/raw-noext': [200, 'application/octet-stream']
         }[url] || [404, 'text/html'];
         return {
             getResponseCode: () => route[0],
@@ -479,6 +501,17 @@ async function main() {
         const imageFolder = imageFolders.get(r.name.replace(/\.md$/, '') + '_画像');
         assert.deepEqual([...imageFolder.saved], ['02_図_2.jpg']);
         assert.match(files.get(r.name).getBlob().getDataAsString(), /- 画像1 → 保存できませんでした（取得できませんでした）/);
+    });
+    check('image/jpg などの別名や、汎用の種類名でもURLが画像なら保存する', () => {
+        const r = send({ ...withImages, requestId: 'eeeeeeee-1234-4234-8234-123456789abc', images: [
+            { n: 1, url: 'https://img.test/alias.jpg', alt: '' },
+            { n: 2, url: 'https://img.test/raw.png?w=1', alt: '' },
+            { n: 3, url: 'https://img.test/raw-noext', alt: '' }
+        ] });
+        assert.deepEqual({ ...r.images }, { saved: 2, failed: 1 });
+        const imageFolder = imageFolders.get(r.name.replace(/\.md$/, '') + '_画像');
+        assert.deepEqual([...imageFolder.saved], ['01.jpg', '02.png']);
+        assert.match(files.get(r.name).getBlob().getDataAsString(), /- 画像3 → 保存できませんでした（画像ではありません（application\/octet-stream））/);
     });
     check('画像のない送信は今までどおり（一覧もフォルダも作らない）', () => {
         const before = imageFolders.size;
