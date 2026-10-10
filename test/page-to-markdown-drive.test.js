@@ -371,6 +371,27 @@ async function main() {
         ]);
         assert.doesNotMatch(payload.markdown, /\[画像: 画像\]/);
     });
+    await test('読み込み前の仮の画像（1px）は小さいとみなさず、リンク先の画像を拾う', async page => {
+        await page.evaluate(() => {
+            const gif = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+            document.querySelector('article').insertAdjacentHTML('beforeend', [
+                // note の読み込み前: 仮の1px画像、リンクの先が本物
+                '<p><a href="/img/lazy-figure.png?width=4000"><img src="' + gif + '" alt="画像"></a></p>',
+                // リンクなし・読み込み前で大きさ不明の画像も残す
+                '<p><img src="' + gif + '" data-src="/img/lazy-plain.png" alt="図"></p>',
+                // 本当に小さいアイコン（属性で分かる）は今までどおり除く
+                '<p><img src="/img/icon2.png" alt="アイコン" width="32" height="32"></p>'
+            ].join(''));
+        });
+        await page.waitForFunction(() => [...document.querySelectorAll('article img')].every(img => img.complete));
+        await page.evaluate(() => window.__tmCopyText.copy());
+        const payload = await page.evaluate(() => window.sent[0].payload);
+        assert.deepEqual(payload.images.map(image => image.url), [
+            'https://example.com/img/lazy-figure.png?width=4000',
+            'https://example.com/img/lazy-plain.png'
+        ]);
+        assert.match(payload.markdown, /\[画像: アイコン\]/);
+    });
     await test('画像のないページでは画像の一覧を送らない', async page => {
         await page.evaluate(() => window.__tmCopyText.copy());
         const payload = await page.evaluate(() => window.sent[0].payload);
