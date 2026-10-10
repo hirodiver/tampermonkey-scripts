@@ -8,9 +8,13 @@ const IMAGE_MAX = 20;
 // 画像1枚の上限（バイト）。超えたものは保存しない
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 // 保存する画像の種類と拡張子
+// 正式でない別名（image/jpg など）を返すサイトもあるので、それも受け付ける
 const IMAGE_TYPES = {
     'image/png': 'png',
+    'image/x-png': 'png',
     'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/pjpeg': 'jpg',
     'image/gif': 'gif',
     'image/webp': 'webp',
     'image/avif': 'avif'
@@ -199,21 +203,20 @@ function saveImages(archive, baseName, images, pageUrl) {
     const results = images.map((image, index) => {
 
         const response = responses[index];
-        const reason = imageProblem(response);
+        const reason = imageProblem(response, image.url);
 
         if (reason) {
             failed++;
             return { image: image, error: reason };
         }
 
-        const type = String(response.getHeaders()['Content-Type'] || response.getHeaders()['content-type'] || '')
-            .split(';')[0].trim().toLowerCase();
+        const extension = imageExtension(response, image.url);
         const label = (image.alt || '')
             .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 40);
-        const fileName = String(image.n).padStart(2, '0') + (label ? '_' + label : '') + '.' + IMAGE_TYPES[type];
+        const fileName = String(image.n).padStart(2, '0') + (label ? '_' + label : '') + '.' + extension;
 
         if (!folder) {
             folder = imageFolder(archive, baseName);
@@ -230,7 +233,7 @@ function saveImages(archive, baseName, images, pageUrl) {
 
 
 // 保存できない理由。保存できるなら空文字
-function imageProblem(response) {
+function imageProblem(response, url) {
 
     if (!response) {
         return '取得できませんでした';
@@ -242,12 +245,8 @@ function imageProblem(response) {
         return 'HTTP ' + code;
     }
 
-    const headers = response.getHeaders();
-    const type = String(headers['Content-Type'] || headers['content-type'] || '')
-        .split(';')[0].trim().toLowerCase();
-
-    if (!IMAGE_TYPES[type]) {
-        return '画像ではありません（' + (type || '種類不明') + '）';
+    if (!imageExtension(response, url)) {
+        return '画像ではありません（' + (contentType(response) || '種類不明') + '）';
     }
 
     if (response.getContent().length > IMAGE_MAX_BYTES) {
@@ -255,6 +254,34 @@ function imageProblem(response) {
     }
 
     return '';
+}
+
+
+function contentType(response) {
+
+    const headers = response.getHeaders();
+
+    return String(headers['Content-Type'] || headers['content-type'] || '')
+        .split(';')[0].trim().toLowerCase();
+}
+
+
+// 保存するときの拡張子。種類名で決め、種類名が汎用（octet-stream など）のときだけURLの拡張子を見る
+function imageExtension(response, url) {
+
+    const type = contentType(response);
+
+    if (IMAGE_TYPES[type]) {
+        return IMAGE_TYPES[type];
+    }
+
+    if (type && type !== 'application/octet-stream' && type !== 'binary/octet-stream') {
+        return '';
+    }
+
+    const match = /\.(png|jpe?g|gif|webp|avif)(?:[?#]|$)/i.exec(String(url).split('#')[0]);
+
+    return match ? match[1].toLowerCase().replace('jpeg', 'jpg') : '';
 }
 
 
