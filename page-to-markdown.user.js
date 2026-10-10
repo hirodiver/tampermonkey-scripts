@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.6.1
+// @name         ページ本文コピー v1.6.2
 // @namespace    local.hiro.tools
-// @version      1.6.1
+// @version      1.6.2
 // @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。
 // @match        *://*/*
 // @grant        GM_getValue
@@ -1057,16 +1057,8 @@
             return best;
         };
 
-        // 画像を包むリンクの先が画像なら、それがいちばん大きい（note など）。
-        // 読み込み前でまだ src が無い画像も、リンクから拾える
-        const link = el.closest('a[href]');
-        const linkedImage =
-            link && /\.(png|jpe?g|gif|webp|avif)(?:[?#]|$)/i.test(link.getAttribute('href'))
-                ? link.getAttribute('href')
-                : '';
-
         const candidates = [
-            linkedImage,
+            linkedImageUrl(el),
             fromSrcset(el.getAttribute('srcset')),
             fromSrcset(el.getAttribute('data-srcset')),
             el.getAttribute('data-src'),
@@ -1100,6 +1092,51 @@
     }
 
 
+    // 画像を包むリンクの先が画像なら、そのURL（note など。読み込み前でまだ src が無い画像も拾える）
+    function linkedImageUrl(el) {
+
+        const link = el.closest('a[href]');
+        const href = link ? link.getAttribute('href') : '';
+
+        return /\.(png|jpe?g|gif|webp|avif)(?:[?#]|$)/i.test(href) ? href : '';
+    }
+
+
+    /*
+     * アイコンほど小さい画像か。確かな大きさ（表示の大きさ・読み込み済みの実寸・width/height 属性）
+     * だけで判断する。読み込み前の仮の画像（1px など）の大きさは使わず、分からなければ小さくないとみなす
+     */
+    function isTinyImage(el) {
+
+        const sizes = [];
+        const rect = el.getBoundingClientRect();
+
+        if (rect.width > 1 && rect.height > 1) {
+            sizes.push([rect.width, rect.height]);
+        }
+
+        if (el.complete && el.naturalWidth > 1 && el.naturalHeight > 1) {
+            sizes.push([el.naturalWidth, el.naturalHeight]);
+        }
+
+        const attrWidth = Number(el.getAttribute('width')) || 0;
+        const attrHeight = Number(el.getAttribute('height')) || 0;
+
+        if (attrWidth > 1 && attrHeight > 1) {
+            sizes.push([attrWidth, attrHeight]);
+        }
+
+        if (!sizes.length) {
+            return false;
+        }
+
+        const width = Math.max(...sizes.map(size => size[0]));
+        const height = Math.max(...sizes.map(size => size[1]));
+
+        return width < IMAGE_MIN_SIZE || height < IMAGE_MIN_SIZE;
+    }
+
+
     function collectImage(el, alt) {
 
         if (!SAVE_IMAGES || !S || !S.images || S.images.length >= IMAGE_MAX) {
@@ -1111,16 +1148,8 @@
             return null;
         }
 
-        const rect = el.getBoundingClientRect();
-
-        const width = Math.max(rect.width, el.naturalWidth || 0, Number(el.getAttribute('width')) || 0);
-        const height = Math.max(rect.height, el.naturalHeight || 0, Number(el.getAttribute('height')) || 0);
-
-        // 大きさが分かっていて小さいものはアイコンとみなす（読み込み前で分からないものは残す）
-        if (
-            (width > 0 && width < IMAGE_MIN_SIZE) ||
-            (height > 0 && height < IMAGE_MIN_SIZE)
-        ) {
+        // 小さいものはアイコンとみなす。リンクの先が画像なら本文の図なので、大きさは問わない
+        if (!linkedImageUrl(el) && isTinyImage(el)) {
             return null;
         }
 
