@@ -53,6 +53,7 @@ function check(name, cond, extra) {
 
     // syndication / oEmbed のモック
     window.__api = {}; // id -> {youtube:[...]}
+    window.__oembed = {}; // id -> oEmbed の html
     window.GM_xmlhttpRequest = (opts) => {
       window.__fetched.push(opts.url);
       const m = opts.url.match(/[?&]id=(\d+)/);
@@ -68,6 +69,14 @@ function check(name, cond, extra) {
               entities: { urls: entry.map((u) => ({ expanded_url: u })) },
             }),
           });
+          return;
+        }
+        // oEmbed: window.__oembed[ステータスID] に本文HTMLを入れておく
+        if (opts.url.indexOf('https://publish.x.com/oembed') === 0) {
+          const sm = decodeURIComponent(opts.url).match(/status\/(\d+)/);
+          const html = sm && window.__oembed[sm[1]];
+          if (!html) { opts.onload({ status: 404, responseText: '' }); return; }
+          opts.onload({ status: 200, responseText: JSON.stringify({ html }) });
           return;
         }
         opts.onload({ status: 404, responseText: '' });
@@ -953,6 +962,89 @@ function check(name, cond, extra) {
 
       return !leaked;
     }));
+
+  // ===================================================================
+  // 36. IDの後ろに ?si= が続いてから省略された表示テキスト（実機で報告）
+  // ===================================================================
+  //
+  // 「youtube.com/live/dzGK6e4cxfA?si=Y90…」は全体の末尾が省略記号でも
+  // 動画IDは欠けていない。APIに頼らず、その場で確定URLにする。
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened.length = 0;
+    window.__fetched.length = 0;
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/muzu/status/8000000000000000036">t</a>' +
+      '<div data-testid="tweetText">待機場所はこちら！ ' +
+      '<a href="https://t.co/ytlive36">https://youtube.com/live/dzGK6e4cxfA?si=Y90mAYHOVmbKzZz…</a>' +
+      ' <a href="https://x.com/YouTube">@YouTube</a>より</div>' +
+      '<div data-testid="tweetPhoto"><img src="https://pbs.twimg.com/media/HUXiOuqbUAACuYK?format=jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  check('36: ?si=の後で省略されていても href が確定URLになる',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
+      'https://www.youtube.com/watch?v=dzGK6e4cxfA',
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(250);
+  check('36: クリックでその配信を開き、APIに問い合わせない',
+    await page.evaluate(() =>
+      window.__opened.some((u) => /watch\?v=dzGK6e4cxfA/.test(u)) &&
+      !window.__opened.some((u) => /t\.co|pbs\.twimg|photo/.test(u)) &&
+      window.__fetched.length === 0),
+    await page.evaluate(() => ({ opened: window.__opened, fetched: window.__fetched })));
+
+  // ===================================================================
+  // 37. syndication が外れ oEmbed に回っても、添付画像の t.co を開かない
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened.length = 0;
+    // 本文リンク（YouTube）は oEmbed の本文に入らず、添付画像だけが残る形
+    window.__oembed['8000000000000000037'] =
+      '<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">配信のおしらせ ' +
+      '<a href="https://t.co/pic37">pic.x.com/HUXiOuqbUA</a></p>&mdash; MUZU</blockquote>';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/muzu/status/8000000000000000037">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/ytlive37">youtube.com/live/dzGK6…</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(300);
+  check('37: 添付画像の t.co（pic.x.com）を開かない',
+    await page.evaluate(() => !window.__opened.some((u) => /pic37/.test(u))),
+    { opened: await page.evaluate(() => window.__opened) });
+
+  // ===================================================================
+  // 38. oEmbed に本文リンクと添付画像が並ぶときは本文リンクを採る
+  // ===================================================================
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened.length = 0;
+    window.__oembed['8000000000000000038'] =
+      '<blockquote class="twitter-tweet"><p lang="ja" dir="ltr">' +
+      '<a href="https://t.co/pic38">pic.twitter.com/abcdEFGH</a> 配信 ' +
+      '<a href="https://t.co/yt38">https://t.co/yt38</a></p></blockquote>';
+    const art = document.createElement('article');
+    art.innerHTML =
+      '<a href="https://x.com/muzu/status/8000000000000000038">t</a>' +
+      '<div data-testid="tweetText"><a href="https://t.co/yt38">youtube.com/watch?v=dQw4…</a></div>' +
+      '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+    document.getElementById('timeline').appendChild(art);
+  });
+  await rescan();
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(300);
+  check('38: 添付画像ではなく本文リンクの t.co を採る',
+    await page.evaluate(() =>
+      window.__opened.some((u) => /yt38/.test(u)) &&
+      !window.__opened.some((u) => /pic38/.test(u))),
+    { opened: await page.evaluate(() => window.__opened) });
 
   await browser.close();
 
