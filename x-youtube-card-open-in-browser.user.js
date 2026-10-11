@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X YouTube Card v3.10.3
+// @name         X YouTube Card v3.10.4
 // @namespace    local.hiro.tools
-// @version      3.10.3
+// @version      3.10.4
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -104,8 +104,13 @@
   const YT_DISPLAY_RE =
     /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|live\/|shorts\/)|youtu\.be\/)([\w-]+)/i;
 
-  // 表示テキストの末尾省略記号。「…」（Unicode）と「...」の両方に対応する。
-  const ELLIPSIS_RE = /(?:…|\.\.\.)$/;
+  // 動画IDの直後に省略記号が来ている（＝ID自体が途中で切れている）判定用。
+  // 「…」（Unicode）と「...」の両方に対応する。
+  const ELLIPSIS_HEAD_RE = /^(?:…|\.\.\.)/;
+
+  // 添付画像・動画の短縮リンクの表示テキスト。oEmbed では本文リンクと
+  // 同じ t.co で並ぶので、表示テキストで見分けて除外する。
+  const MEDIA_LINK_TEXT_RE = /^(?:https?:\/\/)?pic\.(?:twitter|x)\.com\//i;
 
   // YouTubeの動画IDは11文字。ちょうど11文字で末尾に省略記号が
   // 続いていなければ、表示テキストだけで完全なURLとみなせる。
@@ -516,6 +521,34 @@
   // oEmbed（第2フォールバック）
   // -----------------------------------------------------------------------
 
+  /**
+   * oEmbed の HTML から、本文リンクの t.co だけを順に取り出す。
+   *
+   * 添付画像の短縮リンク（表示「pic.x.com/…」）も同じ t.co で並ぶ。
+   * 区別せず拾うと、本文のYouTubeリンクが取れなかったときに
+   * 添付画像（配信者がよく付けるサムネイル）を開いてしまう。
+   */
+  function pickTcoFromOembedHtml(html) {
+    const found = [];
+    const anchorRe = /<a\b[^>]*href="(https:\/\/t\.co\/\w+)"[^>]*>([^<]*)<\/a>/g;
+    let match;
+
+    while ((match = anchorRe.exec(html)) !== null) {
+      const url = match[1];
+      const text = match[2].trim();
+
+      if (MEDIA_LINK_TEXT_RE.test(text)) {
+        continue;
+      }
+
+      if (found.indexOf(url) === -1) {
+        found.push(url);
+      }
+    }
+
+    return found;
+  }
+
   function fetchFromOembed(permalink) {
     const url =
       'https://publish.x.com/oembed?omit_script=1&url=' +
@@ -536,9 +569,7 @@
           return direct;
         }
 
-        const tco = html.match(/https:\/\/t\.co\/\w+/g);
-
-        return tco || [];
+        return pickTcoFromOembedHtml(html);
       } catch (e) {
         log('oEmbedのJSON解析に失敗', e);
         return [];
@@ -779,8 +810,17 @@
       }
 
       const rawId = match[1];
-      const truncated = ELLIPSIS_RE.test(text) || ELLIPSIS_RE.test(rawId);
       const id = rawId.replace(/[….]+$/, '');
+
+      // 省略されたかどうかは、表示テキスト全体の末尾ではなく
+      // **動画IDの直後**で見る。
+      //
+      // 「youtube.com/live/dzGK6e4cxfA?si=Y90…」のように、IDの後ろに
+      // ?si= などが続いてから省略されている場合、IDそのものは欠けていない。
+      // 全体の末尾で判定すると、これを不完全とみなしてAPI頼みになり、
+      // API側が外すと無関係なURL（添付画像など）を開いてしまう。
+      const after = text.slice(match.index + match[0].length);
+      const truncated = ELLIPSIS_HEAD_RE.test(after);
       const complete = !truncated && id.length >= YT_VIDEO_ID_LEN;
 
       return { anchor, id, complete };
