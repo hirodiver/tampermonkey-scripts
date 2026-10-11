@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X YouTube Card v3.10.4
+// @name         X YouTube Card v3.11.0
 // @namespace    local.hiro.tools
-// @version      3.10.4
+// @version      3.11.0
 // @description  X(Twitter)のYouTubeカードに「YouTubeで開く」ボタンを追加し、X内プレイヤーではなくブラウザで開けるようにする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -842,7 +842,8 @@
     const found = findYouTubeTextLink(article);
 
     if (!found) {
-      return null;
+      // 本文が折りたたまれていてリンクがDOMに無い場合
+      return resolveFromCollapsedPost(card, article);
     }
 
     if (found.complete) {
@@ -864,6 +865,237 @@
    */
   function textPostTarget(article) {
     return article.querySelector(SELECTOR.tweetText);
+  }
+
+  // -----------------------------------------------------------------------
+  // 折りたたまれた長文投稿（「さらに表示」）のURL検出
+  // -----------------------------------------------------------------------
+  //
+  // 長文投稿は本文が途中で切られ、「さらに表示」の後ろにあるリンクは
+  // DOMに存在しない。syndication / oEmbed にも長文部分のリンクは入らない
+  // （v3.10.4 の調査で確認）。
+  //
+  // ただし X は投稿データ一式（長文部分のリンクを含む）を React の props
+  // として持っている。本文要素から article までの React コンポーネントの
+  // props を探し、YouTube URL があればそれを使う。
+  //
+  // 探す範囲は**この投稿の中だけ**に閉じる。article より外へ遡ると
+  // タイムライン全体の props に届き、隣の投稿のURLを拾う。
+
+  /** 「さらに表示」の表示テキスト */
+  const SHOW_MORE_TEXT_RE = /^(?:さらに表示|Show more|もっと見る)$/i;
+
+  /** 折りたたみ判定。テストIDは補助で、本命は表示テキスト */
+  function findShowMore(article) {
+    const byTestId = article.querySelector(
+      '[data-testid="tweet-text-show-more-link"]'
+    );
+
+    if (byTestId && !insideQuote(byTestId, article)) {
+      return byTestId;
+    }
+
+    const candidates = article.querySelectorAll(
+      'button, a, span[role="button"], div[role="button"]'
+    );
+
+    for (const el of candidates) {
+      if (insideQuote(el, article)) {
+        continue;
+      }
+
+      if (SHOW_MORE_TEXT_RE.test((el.textContent || '').trim())) {
+        return el;
+      }
+    }
+
+    return null;
+  }
+
+  /** 引用ブロック（引用元の投稿）の中の要素か */
+  function insideQuote(el, article) {
+    const quote = el.closest(SELECTOR.quote);
+
+    return !!(quote && quote !== article && article.contains(quote));
+  }
+
+  // 投稿データの探索で潜らないキー。
+  //   引用元・投稿者プロフィール（自己紹介のURL）・React内部・子要素
+  //   （子要素の props には引用元の投稿が入っている）
+  const TWEET_DATA_SKIP_KEYS = new Set([
+    'quoted_status_result',
+    'quoted_status',
+    'quotedTweet',
+    'quoted_tweet',
+    'core',
+    'user',
+    'user_results',
+    'author',
+    'children',
+    'stateNode',
+    '_owner',
+    'return',
+    'child',
+    'sibling',
+  ]);
+
+  /**
+   * 投稿データから YouTube URL を探す。findYtUrlDeep より深く潜る
+   * （note_tweet.note_tweet_results.result.entity_set.urls[].expanded_url
+   * のように深い位置にあるため）代わりに、引用元などを避ける。
+   */
+  function findYtInTweetData(obj, depth, seen) {
+    if (obj == null || depth > 12) {
+      return null;
+    }
+
+    if (typeof obj === 'string') {
+      const match = obj.match(YT_RE);
+      return match ? match[0] : null;
+    }
+
+    if (typeof obj !== 'object' || seen.has(obj)) {
+      return null;
+    }
+
+    // DOM要素には潜らない
+    if (typeof Node === 'function' && obj instanceof Node) {
+      return null;
+    }
+
+    seen.add(obj);
+
+    if (Array.isArray(obj)) {
+      const length = Math.min(obj.length, 60);
+
+      for (let i = 0; i < length; i++) {
+        const url = findYtInTweetData(obj[i], depth + 1, seen);
+
+        if (url) {
+          return url;
+        }
+      }
+
+      return null;
+    }
+
+    const keys = Object.keys(obj);
+
+    if (keys.length > 200) {
+      return null;
+    }
+
+    for (const key of keys) {
+      if (TWEET_DATA_SKIP_KEYS.has(key)) {
+        continue;
+      }
+
+      let value;
+
+      try {
+        value = obj[key];
+      } catch {
+        continue;
+      }
+
+      const url = findYtInTweetData(value, depth + 1, seen);
+
+      if (url) {
+        return url;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 本文要素から article までの各要素について、その要素の props と、
+   * 要素の上に積まれたコンポーネント（次のDOM要素の手前まで）の props を
+   * 内側から順に調べる。
+   *
+   * 戻り値: { url, where } / null（where は診断用の位置）
+   */
+  function urlFromTweetData(textEl, article) {
+    let node = textEl;
+
+    for (let up = 0; node && up < 30; up++) {
+      const propsKey = reactKey(node, '__reactProps$');
+
+      if (propsKey) {
+        const url = findYtInTweetData(node[propsKey], 0, new WeakSet());
+
+        if (url) {
+          return { url, where: `props@${up}` };
+        }
+      }
+
+      const fiberKey = reactKey(node, '__reactFiber$');
+      let fiber = fiberKey ? node[fiberKey] : null;
+
+      // DOM要素自身のfiberの上に、コンポーネントのfiberが並ぶ。
+      // 次のDOM要素（stateNode が Element）に着いたら、そちらの番に回す。
+      fiber = fiber && fiber.return;
+
+      for (let i = 0; fiber && i < 30; i++) {
+        if (
+          typeof Element === 'function' &&
+          fiber.stateNode instanceof Element
+        ) {
+          break;
+        }
+
+        const url = findYtInTweetData(
+          fiber.memoizedProps,
+          0,
+          new WeakSet()
+        );
+
+        if (url) {
+          return { url, where: `fiber@${up}.${i}` };
+        }
+
+        fiber = fiber.return;
+      }
+
+      if (node === article) {
+        break;
+      }
+
+      node = node.parentElement;
+    }
+
+    return null;
+  }
+
+  // React の探索は重いので、本文要素ごと・投稿IDごとに1回だけ試す。
+  // 値は { tweetId, result }。
+  const collapsedLookup = new WeakMap();
+
+  /**
+   * 折りたたまれた長文投稿なら、投稿データから YouTube URL を探す。
+   * 戻り値: { url, weak:false } / null
+   */
+  function resolveFromCollapsedPost(target, article) {
+    if (!findShowMore(article)) {
+      return null;
+    }
+
+    const status = findStatus(target, article);
+    const tweetId = status ? status.id : null;
+    const cached = collapsedLookup.get(target);
+
+    if (cached && cached.tweetId === tweetId) {
+      return cached.result;
+    }
+
+    const found = urlFromTweetData(target, article);
+    const result = found
+      ? { url: normalizeYtUrl(found.url), weak: false, where: found.where }
+      : null;
+
+    collapsedLookup.set(target, { tweetId, result });
+
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -1571,8 +1803,14 @@
       // isYtCard の意味はここでは「本文にYouTubeらしいリンクがある」。
       // 一度trueと判定したら、同じツイートである間は再判定しない
       // （通常のカードと同じ理由：判定が変わってボタンを見失う事故を防ぐ）。
+      //
+      // 長文が折りたたまれていてリンクが本文に無いときは、投稿データ
+      // （React の props）から探す（resolveFromCollapsedPost を参照）。
       if (!state.isYtCard) {
-        if (!findYouTubeTextLink(article)) {
+        if (
+          !findYouTubeTextLink(article) &&
+          !resolveFromCollapsedPost(target, article)
+        ) {
           return;
         }
 
@@ -1664,6 +1902,48 @@
   // -----------------------------------------------------------------------
   // 初期化
   // -----------------------------------------------------------------------
+
+  // -----------------------------------------------------------------------
+  // 診断
+  // -----------------------------------------------------------------------
+  //
+  // ボタンが出ない／違うURLを開くときに、DevTools コンソールで
+  //   __tmYtCard.dump()
+  // を実行し、表の内容を報告してもらう。
+
+  function dump() {
+    const rows = [];
+
+    document.querySelectorAll('article').forEach((article) => {
+      const text = textPostTarget(article);
+      const status = findStatus(text || article, article);
+      const textLink = findYouTubeTextLink(article);
+      const showMore = findShowMore(article);
+
+      // キャッシュを使わず、その場で投稿データを探し直す
+      const fromData = text && showMore ? urlFromTweetData(text, article) : null;
+
+      rows.push({
+        tweetId: status ? status.id : '(不明)',
+        画像: !!article.querySelector(SELECTOR.tweetPhoto),
+        カード: article.querySelectorAll(SELECTOR.card).length,
+        折りたたみ: showMore ? (showMore.textContent || '').trim() : '',
+        本文リンク: textLink ? (textLink.anchor.textContent || '').trim() : '',
+        投稿データ: fromData ? `${fromData.url} (${fromData.where})` : '',
+        React: text ? !!reactKey(text, '__reactFiber$') : false,
+        ボタン: article.querySelectorAll(`.${CLASS.button}`).length,
+        href: Array.from(article.querySelectorAll(`.${CLASS.button}`))
+          .map((b) => b.getAttribute('href') || '(未確定)')
+          .join(' / '),
+      });
+    });
+
+    console.table(rows);
+
+    return rows;
+  }
+
+  window.__tmYtCard = { dump };
 
   injectStyle();
   scan();

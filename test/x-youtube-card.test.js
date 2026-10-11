@@ -1046,6 +1046,154 @@ function check(name, cond, extra) {
       !window.__opened.some((u) => /pic38/.test(u))),
     { opened: await page.evaluate(() => window.__opened) });
 
+  // ===================================================================
+  // 39〜44. 折りたたまれた長文投稿（「さらに表示」の前）
+  // ===================================================================
+  //
+  // 長文部分のリンクはDOMに無い。X が React の props に持つ投稿データ
+  // （note_tweet.…entity_set.urls[].expanded_url）を模した偽の fiber を
+  // 付けて、そこから拾えることを確かめる。
+  await page.evaluate(() => {
+    // 折りたたまれた画像付き長文投稿を作る。
+    //   data:      article の上のコンポーネントに渡る投稿データ
+    //   outerData: article より外（タイムライン側）のコンポーネントの props
+    window.mkCollapsed = (id, data, outerData) => {
+      const cell = document.createElement('div');
+      const art = document.createElement('article');
+      art.innerHTML =
+        '<a href="https://x.com/muzu/status/' + id + '">t</a>' +
+        '<div data-testid="tweetText">【はいしんのおちらせ】▽待機場所はこちら！！！</div>' +
+        '<button data-testid="tweet-text-show-more-link">さらに表示</button>' +
+        '<div data-testid="tweetPhoto"><img src="pic.jpg"></div>';
+      cell.appendChild(art);
+      document.getElementById('timeline').appendChild(cell);
+
+      const text = art.querySelector('[data-testid="tweetText"]');
+      const cellFiber = {
+        stateNode: cell,
+        memoizedProps: {},
+        return: { stateNode: null, memoizedProps: outerData || {}, return: null },
+      };
+      const tweetComp = { stateNode: null, memoizedProps: data, return: cellFiber };
+      const artFiber = { stateNode: art, memoizedProps: {}, return: tweetComp };
+      const textComp = { stateNode: null, memoizedProps: { lang: 'ja' }, return: artFiber };
+      art.__reactFiber$test = artFiber;
+      text.__reactFiber$test = { stateNode: text, memoizedProps: {}, return: textComp };
+      cell.__reactFiber$test = cellFiber;
+      return art;
+    };
+    window.noteTweet = (url) => ({
+      tweet: {
+        rest_id: 'x',
+        legacy: { full_text: '【はいしんのおちらせ】…', entities: { urls: [] } },
+        note_tweet: { note_tweet_results: { result: {
+          text: '…待機場所はこちら！ ' + url,
+          entity_set: { urls: [{ url: 'https://t.co/zzz', expanded_url: url, display_url: 'youtube.com/live/…' }] },
+        } } },
+      },
+    });
+
+    document.getElementById('timeline').innerHTML = '';
+    window.__opened.length = 0;
+    window.__fetched.length = 0;
+    window.mkCollapsed('8000000000000000039',
+      window.noteTweet('https://youtube.com/live/dzGK6e4cxfA?si=Y90mAYHOVmbKzZz'));
+  });
+  await rescan();
+  check('39: 「さらに表示」の前からボタンが出る',
+    await page.locator('.hiroYtOpen-btn').count() === 1,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+  check('39: 投稿データから確定URLが入る',
+    (await page.locator('.hiroYtOpen-btn').first().getAttribute('href')) ===
+      'https://www.youtube.com/watch?v=dzGK6e4cxfA',
+    { href: await page.locator('.hiroYtOpen-btn').first().getAttribute('href') });
+  await page.locator('.hiroYtOpen-btn').first().click();
+  await page.waitForTimeout(250);
+  check('39: クリックでその配信を開き、APIに問い合わせない',
+    await page.evaluate(() =>
+      window.__opened.some((u) => /watch\?v=dzGK6e4cxfA/.test(u)) &&
+      window.__fetched.length === 0),
+    await page.evaluate(() => ({ opened: window.__opened, fetched: window.__fetched })));
+  check('39: 診断 dump() が投稿データの取得元を表に出す',
+    await page.evaluate(() => {
+      const rows = window.__tmYtCard.dump();
+      return rows.length === 1 && /dzGK6e4cxfA/.test(rows[0]['投稿データ']) &&
+        rows[0]['折りたたみ'] === 'さらに表示';
+    }));
+
+  // 40. 展開（「さらに表示」をタップ）して本文が入れ替わってもボタンは1個
+  await page.evaluate(() => {
+    const art = document.querySelector('article');
+    art.querySelector('[data-testid="tweet-text-show-more-link"]').remove();
+    const old = art.querySelector('[data-testid="tweetText"]');
+    const fresh = document.createElement('div');
+    fresh.setAttribute('data-testid', 'tweetText');
+    fresh.innerHTML = '…待機場所はこちら！ <a href="https://t.co/zzz">https://youtube.com/live/dzGK6e4cxfA?si=Y90mAYHOVmbKzZz…</a>';
+    old.replaceWith(fresh);
+  });
+  await rescan();
+  check('40: 展開後もボタンは1個で同じURL',
+    await page.evaluate(() => {
+      const btns = document.querySelectorAll('.hiroYtOpen-btn');
+      return btns.length === 1 &&
+        btns[0].getAttribute('href') === 'https://www.youtube.com/watch?v=dzGK6e4cxfA';
+    }),
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // 41. 引用元の投稿データにだけYouTubeがある → 出さない
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.mkCollapsed('8000000000000000041', {
+      tweet: {
+        legacy: { full_text: '長文…', entities: { urls: [] } },
+        quoted_status_result: { result: { legacy: { entities: { urls: [
+          { expanded_url: 'https://www.youtube.com/watch?v=QUOTEDxxxxx' }] } } } },
+      },
+    });
+  });
+  await rescan();
+  check('41: 引用元のYouTubeリンクでボタンを出さない',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // 42. 投稿者の自己紹介にだけYouTubeがある → 出さない
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.mkCollapsed('8000000000000000042', {
+      tweet: {
+        legacy: { full_text: '長文…', entities: { urls: [] } },
+        core: { user_results: { result: { legacy: { description: 'https://youtu.be/PROFILExxxx' } } } },
+      },
+    });
+  });
+  await rescan();
+  check('42: 投稿者プロフィールのYouTubeリンクでボタンを出さない',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // 43. article より外（タイムライン側）の props にだけある → 出さない
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.mkCollapsed('8000000000000000043',
+      { tweet: { legacy: { full_text: '長文…', entities: { urls: [] } } } },
+      { items: [window.noteTweet('https://www.youtube.com/watch?v=NEIGHBORxxx')] });
+  });
+  await rescan();
+  check('43: 隣の投稿（article の外の props）のURLを拾わない',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
+  // 44. YouTubeと無関係な折りたたみ長文 → 出さない
+  await page.evaluate(() => {
+    document.getElementById('timeline').innerHTML = '';
+    window.mkCollapsed('8000000000000000044',
+      window.noteTweet('https://example.com/watch?v=abc'));
+  });
+  await rescan();
+  check('44: YouTube以外のリンクの折りたたみ長文には出さない',
+    await page.locator('.hiroYtOpen-btn').count() === 0,
+    { count: await page.locator('.hiroYtOpen-btn').count() });
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
