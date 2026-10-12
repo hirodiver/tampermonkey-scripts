@@ -31,7 +31,13 @@
 - コピーも失敗した場合はその旨を表示する。控えは最大20件で、超えた分は控えない。
 - 50万文字を超える本文はDrive送信を止めるがコピーは実行する。
 - 保存停止：「Drive保存を設定／停止」でURLを空欄にして確定。コードを消さずにコピーだけへ戻せる。
-- GASを修正した場合：「デプロイを管理」から該当デプロイを編集し、新バージョンで更新する。コードを保存するだけでは公開版は変わらない。
+- GASを修正した場合：`main` の [page-markdown-receiver.gs](page-markdown-receiver.gs) が変わると、GitHub Actions（[deploy-gas-receiver.yml](.github/workflows/deploy-gas-receiver.yml)）がコードを差し替え、既存のデプロイを新バージョンで更新する。URLとトークンは変わらない。更新後に、公開中の版と成人向けの判定が働くことを確かめる（下の「受け口の自動更新」）。手で更新するときは「デプロイを管理」から該当デプロイを編集し、新バージョンで更新する。コードを保存するだけでは公開版は変わらない。
+- 受け口の自動更新（一度だけ設定する）：
+  1. https://script.google.com/home/usersettings を開き、「Google Apps Script API」をオンにする。
+  2. Node.js の入ったPCで PowerShell を開き、`npx @google/clasp@3.4.1 login` を実行する。開いたブラウザで、受け口と同じGoogleアカウントを選んで許可する。
+  3. PowerShell で `Get-Content $env:USERPROFILE\.clasprc.json -Raw | Set-Clipboard` を実行し、https://github.com/hirodiver/tampermonkey-scripts/settings/secrets/actions/new を開く。Name に `CLASPRC_JSON`、Secret に貼り付けて「Add secret」。
+  - `.clasprc.json` は、Googleアカウントの Apps Script とDriveの一部を操作できる鍵。GitHub・チャットに貼らず、Secret にだけ置く。不要になったら https://myaccount.google.com/permissions で clasp の許可を外す。
+  - コードが新しい種類の権限（別のGoogleサービスなど）を使うようになったときだけは、GASで `setup` を1回実行して許可する必要がある。
 - 本文の画像（v1.6.0〜。ページ本文コピー側も v1.6.0 以上が必要）：受け口が画像を取りに行き、「参考記事アーカイブ」の中の「`<記事のファイル名>_画像`」フォルダへ保存する。記事の `.md` の末尾に「## 画像（Driveに保存）」の一覧が付く。
 - 受け口を画像に対応させる手順（1回だけ）：`コード.gs` を [page-markdown-receiver.gs](page-markdown-receiver.gs) の全文に置き換えて保存 → 関数の一覧で `setup` を選んで「実行」し、権限の確認画面で許可する（「外部サービスへの接続」が増える）→「デプロイを管理」→ 既存のデプロイを新バージョンで更新する。URLとトークンは変わらない。
 - 成人向けのサイトの除外（v1.7.0〜。ページ本文コピー側も v1.7.0 以上が必要）：受け口は Cloudflare の家族向け DNS で記事と画像のサイトを判定し、成人向けまたは判定できないものは保存しない。受け口を更新する手順（1回だけ）：`コード.gs` を [page-markdown-receiver.gs](page-markdown-receiver.gs) の全文に置き換えて保存 →「デプロイを管理」→ 既存のデプロイを新バージョンで更新 → 関数の一覧で `setup` を選んで「実行」し、ログに「nudity.testcategory.com → 成人向け」「example.com → 問題なし」と出ることを確かめる。URLとトークンは変わらない。ページ本文コピーの更新時は、接続先 `family.cloudflare-dns.com` の追加の確認が出るので許可する。
