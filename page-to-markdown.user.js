@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.6.2
+// @name         ページ本文コピー v1.7.0
 // @namespace    local.hiro.tools
-// @version      1.6.2
-// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。
+// @version      1.7.0
+// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのサイトではボタンを出さず、保存もしない。
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -12,6 +12,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
+// @connect      family.cloudflare-dns.com
 // @run-at       document-idle
 // @noframes
 // @homepageURL  https://github.com/hirodiver/tampermonkey-scripts
@@ -38,6 +39,15 @@
  *   - DevTools コンソールで window.__tmCopyText.dump() を実行すると、
  *     どの要素を含めた・除外したか、その理由が表で出る
  *   - window.__tmCopyText.pending() で、未保存の控えが表で出る
+ *
+ * 成人向けのサイト
+ *   - 次のどれかに当たるサイトでは、ボタンを出さず、Drive にも送らない
+ *     ・ドメイン名（.xxx などの末尾、porn などの語）
+ *     ・Cloudflare の家族向け DNS（1.1.1.3 と同じ判定）が成人向けとしたサイト
+ *     ・ページの年齢区分の meta、タイトルの「R-18」「18禁」など（そのページだけ）
+ *   - 判定したサイトは除外の一覧に自動で足す。手で足す・外すのはメニューから
+ *   - 受け口（GAS）も同じ判定をして、成人向けのページと画像は保存しない
+ *   - X（旧Twitter）の画像は、成人向けかを見分けられないので Drive に送らない
  */
 
 (function () {
@@ -92,6 +102,33 @@
 
     // 画像があるときの保存の待ち時間（受け口が画像を取りに行くぶん長くする）
     const DRIVE_IMAGE_TIMEOUT_MS = 90000;
+
+    // 成人向けと判定したサイト（自動・手動）。{ ドメイン: { reason, at } }
+    const SITE_BLOCK_KEY = 'tm-copy-text-blocked-sites';
+
+    // 手で除外を外したサイト。ドメイン名の語による判定だけを外す（DNS と受け口の判定は残る）
+    const SITE_ALLOW_KEY = 'tm-copy-text-allowed-sites';
+
+    // 家族向け DNS の判定結果の控え。{ ホスト名: { adult, at } }
+    const SITE_CHECK_KEY = 'tm-copy-text-site-checks';
+
+    // 判定結果を使い回す期間と件数
+    const SITE_CHECK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+    const SITE_CHECK_MAX = 300;
+
+    // 判定の待ち時間。超えたら「不明」として、受け口の判定に任せる
+    const SITE_CHECK_TIMEOUT_MS = 5000;
+
+    // 成人向けのサイトを 0.0.0.0 で返す、Cloudflare の家族向け DNS（DNS over HTTPS）
+    const FAMILY_DNS_URL = 'https://family.cloudflare-dns.com/dns-query';
+
+    // 成人向けとみなすドメインの末尾と語（受け口の page-markdown-receiver.gs と同じ）
+    const ADULT_TLD = /\.(xxx|adult|porn|sex)$/i;
+    const ADULT_HOST_WORDS = /porn|xxx|hentai|xvideos|xhamster|xnxx|redtube|youporn|nsfw|onlyfans|fanza|(^|\.)dmm\.co\.jp$/i;
+
+    // そのページだけを成人向けとみなす、タイトルの語と年齢区分の meta
+    const ADULT_TITLE_WORDS = /R-?18(?![0-9])|18禁|成人向け|アダルト|エロ|ポルノ|porn|hentai|nsfw/i;
+    const ADULT_RATING = /adult|mature|restricted|RTA-5042-1996-1400-1577-RTA/i;
 
     // X（旧Twitter）のポストページでは、URLの status ID と一致するポストだけを取る。
     // true にすると、同じページに出ている前後のポスト・返信もまとめて取る
@@ -2217,8 +2254,9 @@
                 method,
                 rootDescription,
                 title: xTitle,
-                // 本文に残った画像だけを渡す（空の本文なら画像も送らない）
-                images: body ? S.images.slice() : [],
+                // 本文に残った画像だけを渡す（空の本文なら画像も送らない）。
+                // X の画像は成人向けかを見分けられないので送らない
+                images: body && !isXPage() ? S.images.slice() : [],
                 log: S.log
             };
 
@@ -2507,6 +2545,475 @@
     // ------------------------------------------------------------
 
     // ============================================================
+    // 成人向けのサイトの除外
+    // ============================================================
+
+    // 除外したサイト・ページでは true。ボタンを作らず、ショートカットも受けない
+    let siteBlocked = false;
+
+    // 家族向け DNS への問い合わせ中のもの（同じホストを二重に問い合わせない）
+    const siteChecks = new Map();
+
+
+    function hostOf(url) {
+
+        try {
+            return new URL(url).hostname.toLowerCase();
+        } catch (error) {
+            return '';
+        }
+    }
+
+
+    // 除外の一覧で使う形。www. の有無は同じサイトとみなす
+    function normalizeHost(host) {
+
+        return String(host || '')
+            .toLowerCase()
+            .replace(/\.$/, '')
+            .replace(/^www\./, '');
+    }
+
+
+    function readSiteMap(key) {
+
+        if (typeof GM_getValue !== 'function') {
+            return {};
+        }
+
+        const value = GM_getValue(key, null);
+
+        return value && typeof value === 'object' ? value : {};
+    }
+
+
+    function writeSiteMap(key, value) {
+
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(key, value);
+        }
+    }
+
+
+    // 一覧のドメインそのもの、またはその下のホストなら、一覧の項目を返す
+    function findSiteEntry(map, host) {
+
+        const name = normalizeHost(host);
+
+        const key =
+            Object.keys(map).find(item =>
+                name === item || name.endsWith('.' + item)
+            );
+
+        return key ? { key, value: map[key] } : null;
+    }
+
+
+    // ドメイン名だけで分かる判定（末尾 .xxx など、porn などの語）
+    function hostRuleReason(host) {
+
+        const name = normalizeHost(host);
+
+        if (!name) {
+            return '';
+        }
+
+        if (ADULT_TLD.test(name)) {
+            return 'ドメインの末尾';
+        }
+
+        if (
+            ADULT_HOST_WORDS.test(name) &&
+            !findSiteEntry(readSiteMap(SITE_ALLOW_KEY), name)
+        ) {
+            return 'ドメイン名の語';
+        }
+
+        return '';
+    }
+
+
+    // 問い合わせをせずに分かる、サイト単位の除外の理由。除外しないなら空文字
+    function localBlockReason(host) {
+
+        if (!host) {
+            return '';
+        }
+
+        const entry = findSiteEntry(readSiteMap(SITE_BLOCK_KEY), host);
+
+        if (entry) {
+            return (entry.value && entry.value.reason) || '除外の一覧';
+        }
+
+        const checked = readSiteMap(SITE_CHECK_KEY)[host];
+
+        if (checked && checked.adult) {
+            return '家族向けDNSが成人向けと判定';
+        }
+
+        return hostRuleReason(host);
+    }
+
+
+    // このページだけを除外する理由（年齢区分の meta、タイトルの語）
+    function pageRuleReason() {
+
+        const rated =
+            Array.from(document.querySelectorAll('meta[name], meta[http-equiv]'))
+                .some(meta => {
+
+                    const name =
+                        (meta.getAttribute('name') || meta.getAttribute('http-equiv') || '')
+                            .toLowerCase();
+
+                    return (
+                        (name === 'rating' || name === 'pics-label') &&
+                        ADULT_RATING.test(meta.getAttribute('content') || '')
+                    );
+                });
+
+        if (rated) {
+            return '年齢区分の meta';
+        }
+
+        if (ADULT_TITLE_WORDS.test(document.title || '')) {
+            return 'タイトルの語';
+        }
+
+        return '';
+    }
+
+
+    function pageBlockReason() {
+
+        return localBlockReason(location.hostname) || pageRuleReason();
+    }
+
+
+    function blockSite(host, reason) {
+
+        const name = normalizeHost(host);
+
+        if (!name) {
+            return;
+        }
+
+        const blocked = readSiteMap(SITE_BLOCK_KEY);
+
+        if (!blocked[name]) {
+            blocked[name] = { reason, at: Date.now() };
+            writeSiteMap(SITE_BLOCK_KEY, blocked);
+        }
+
+        const allowed = readSiteMap(SITE_ALLOW_KEY);
+
+        if (allowed[name]) {
+            delete allowed[name];
+            writeSiteMap(SITE_ALLOW_KEY, allowed);
+        }
+    }
+
+
+    function rememberCheck(host, adult) {
+
+        const checks = readSiteMap(SITE_CHECK_KEY);
+
+        checks[host] = { adult, at: Date.now() };
+
+        // 古いものから捨てる
+        const hosts =
+            Object.keys(checks)
+                .sort((a, b) => (checks[b].at || 0) - (checks[a].at || 0));
+
+        for (const old of hosts.slice(SITE_CHECK_MAX)) {
+            delete checks[old];
+        }
+
+        writeSiteMap(SITE_CHECK_KEY, checks);
+    }
+
+
+    function isPrivateHost(host) {
+
+        return (
+            !host.includes('.') ||
+            host.includes(':') ||
+            /^\d+\.\d+\.\d+\.\d+$/.test(host) ||
+            /\.(local|localhost|test|internal)$/.test(host)
+        );
+    }
+
+
+    /*
+     * サイトの判定。'adult'（成人向け）・'ok'・'unknown'（問い合わせられなかった）。
+     * 家族向け DNS は、成人向けのサイトを 0.0.0.0 で返す
+     */
+    function siteVerdict(host) {
+
+        if (!host) {
+            return Promise.resolve('unknown');
+        }
+
+        if (localBlockReason(host)) {
+            return Promise.resolve('adult');
+        }
+
+        if (isPrivateHost(host)) {
+            return Promise.resolve('ok');
+        }
+
+        const cached = readSiteMap(SITE_CHECK_KEY)[host];
+
+        if (cached && Date.now() - (cached.at || 0) < SITE_CHECK_TTL_MS) {
+            return Promise.resolve(cached.adult ? 'adult' : 'ok');
+        }
+
+        if (siteChecks.has(host)) {
+            return siteChecks.get(host);
+        }
+
+        if (typeof GM_xmlhttpRequest !== 'function') {
+            return Promise.resolve('unknown');
+        }
+
+        const checking = new Promise(resolve => {
+
+            try {
+
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: FAMILY_DNS_URL + '?name=' + encodeURIComponent(host) + '&type=A',
+                    anonymous: true,
+                    headers: { accept: 'application/dns-json' },
+                    timeout: SITE_CHECK_TIMEOUT_MS,
+                    onload(response) {
+
+                        let data = null;
+
+                        try {
+                            data = JSON.parse(response.responseText);
+                        } catch (error) {
+                            data = null;
+                        }
+
+                        // 0: 名前が引けた、3: 存在しない名前。それ以外は判定できない
+                        if (!data || (data.Status !== 0 && data.Status !== 3)) {
+                            resolve('unknown');
+                            return;
+                        }
+
+                        const adult =
+                            Array.isArray(data.Answer) &&
+                            data.Answer.some(answer => answer && answer.data === '0.0.0.0');
+
+                        rememberCheck(host, adult);
+
+                        if (adult) {
+                            blockSite(host, '家族向けDNSが成人向けと判定');
+                        }
+
+                        resolve(adult ? 'adult' : 'ok');
+                    },
+                    onerror: () => resolve('unknown'),
+                    ontimeout: () => resolve('unknown'),
+                    onabort: () => resolve('unknown')
+                });
+
+            } catch (error) {
+                resolve('unknown');
+            }
+        });
+
+        siteChecks.set(host, checking);
+
+        checking.then(() => siteChecks.delete(host));
+
+        return checking;
+    }
+
+
+    function adultError() {
+
+        const error = new Error('成人向けのサイトと判定したので、保存しません');
+
+        error.adult = true;
+
+        return error;
+    }
+
+
+    function removeUi() {
+
+        siteBlocked = true;
+
+        const host = document.getElementById(HOST_ID);
+
+        if (host) {
+            host.remove();
+        }
+    }
+
+
+    // トーストを読める間だけ残してから、ボタンを消す
+    function hideUiLater() {
+
+        siteBlocked = true;
+
+        setTimeout(removeUi, TOAST_MS + 400);
+    }
+
+
+    function refuseOnBlockedPage(reason) {
+
+        showToast('成人向けと判定したページなので、コピーも保存もしません（' + reason + '）', true);
+
+        hideUiLater();
+    }
+
+
+    // 受け口に成人向けと断られた控えを消し、サイトを除外の一覧に足す
+    function dropAdultPending(record) {
+
+        removePending(record.requestId);
+
+        blockSite(hostOf(record.url), '受け口が成人向けと判定');
+
+        updateBadge();
+    }
+
+
+    /*
+     * 開いたページのサイトを確かめる。
+     * ドメイン名で分かるものは一覧に足し、初めてのサイトは家族向け DNS に問い合わせる
+     */
+    function checkCurrentSite() {
+
+        const host = location.hostname;
+        const rule = hostRuleReason(host);
+
+        if (rule && !findSiteEntry(readSiteMap(SITE_BLOCK_KEY), host)) {
+            blockSite(host, rule);
+        }
+
+        if (siteBlocked) {
+            return;
+        }
+
+        siteVerdict(host).then(verdict => {
+
+            if (verdict !== 'adult') {
+                return;
+            }
+
+            // 押した直後なら、保存しない理由をトーストで出してから消す（copyPage が消す）
+            if (saving) {
+                siteBlocked = true;
+                return;
+            }
+
+            removeUi();
+        });
+    }
+
+
+    function blockFromMenu() {
+
+        const host = normalizeHost(location.hostname);
+
+        if (!host) {
+            return;
+        }
+
+        const ok = confirm(
+            '「' + host + '」を除外しますか？\n\n' +
+            'このサイトではボタンを出さず、Driveにも保存しません。' +
+            '外すときはメニュー「除外したサイトを一覧・解除」から。'
+        );
+
+        if (!ok) {
+            return;
+        }
+
+        blockSite(host, '手動で除外');
+
+        removeUi();
+
+        alert('「' + host + '」を除外しました');
+    }
+
+
+    function unblockFromMenu() {
+
+        const blocked = readSiteMap(SITE_BLOCK_KEY);
+
+        const hosts =
+            Object.keys(blocked)
+                .sort((a, b) => (blocked[b].at || 0) - (blocked[a].at || 0));
+
+        if (!hosts.length) {
+            alert('除外したサイトはありません');
+            return;
+        }
+
+        const shown = hosts.slice(0, 30);
+
+        const answer = prompt(
+            '除外したサイト ' + hosts.length + '件（新しい順）\n\n' +
+            shown
+                .map((host, index) =>
+                    (index + 1) + '. ' + host + '（' + (blocked[host].reason || '理由不明') + '）'
+                )
+                .join('\n') +
+            (hosts.length > shown.length ? '\nほか' + (hosts.length - shown.length) + '件' : '') +
+            '\n\n外すサイトの番号を入力（外さないならキャンセル）',
+            ''
+        );
+
+        if (answer === null || !answer.trim()) {
+            return;
+        }
+
+        const host = shown[Number(answer.trim()) - 1];
+
+        if (!host) {
+            alert('番号が一覧にありません');
+            return;
+        }
+
+        delete blocked[host];
+
+        writeSiteMap(SITE_BLOCK_KEY, blocked);
+
+        // 判定結果の控えも消し、次に開いたときに問い合わせ直す
+        const checks = readSiteMap(SITE_CHECK_KEY);
+
+        for (const checked of Object.keys(checks)) {
+
+            const name = normalizeHost(checked);
+
+            if (name === host || name.endsWith('.' + host)) {
+                delete checks[checked];
+            }
+        }
+
+        writeSiteMap(SITE_CHECK_KEY, checks);
+
+        // ドメイン名の語による判定だけを外す
+        const allowed = readSiteMap(SITE_ALLOW_KEY);
+
+        allowed[host] = Date.now();
+
+        writeSiteMap(SITE_ALLOW_KEY, allowed);
+
+        alert(
+            '「' + host + '」を除外の一覧から外しました。\n' +
+            'ページを開き直すと、もう一度判定します。家族向けDNSや受け口が成人向けと判定するサイトは、また除外されます。'
+        );
+    }
+
+
+    // ============================================================
     // Google Drive 保存（操作したときだけ送信）
     // ============================================================
 
@@ -2619,14 +3126,19 @@
     }
 
 
-    function sendToDrive(config, upload) {
+    async function sendToDrive(config, upload) {
 
         if (!isReceiverUrl(config.url) || !/^[a-f0-9]{64}$/.test(config.token || '')) {
-            return Promise.reject(new Error('Drive保存の設定をやり直してください'));
+            throw new Error('Drive保存の設定をやり直してください');
         }
 
         if (upload.markdown.length > DRIVE_MAX_CHARS) {
-            return Promise.reject(new Error('本文が保存上限（50万文字）を超えています'));
+            throw new Error('本文が保存上限（50万文字）を超えています');
+        }
+
+        // 送る直前に、記事のサイトを確かめる。判定できなければ受け口の判定に任せる
+        if (await siteVerdict(hostOf(upload.url)) === 'adult') {
+            throw adultError();
         }
 
         // 控えの管理用の項目は送らない
@@ -2640,13 +3152,17 @@
         };
 
         // 画像があるときだけ一覧を付ける（v1.5.0 以前の控えには無い）
+        // 除外したサイトの画像は送らない（ほかの配信元は受け口が確かめる）
         const images =
-            Array.isArray(upload.images)
-                ? upload.images.slice(0, IMAGE_MAX).map(image => ({
-                    n: image.n,
-                    url: image.url,
-                    alt: toWellFormed(image.alt || '')
-                }))
+            Array.isArray(upload.images) && !X_HOSTS.test(hostOf(upload.url))
+                ? upload.images
+                    .filter(image => !localBlockReason(hostOf(image.url)))
+                    .slice(0, IMAGE_MAX)
+                    .map(image => ({
+                        n: image.n,
+                        url: image.url,
+                        alt: toWellFormed(image.alt || '')
+                    }))
                 : [];
 
         if (images.length) {
@@ -2720,7 +3236,8 @@
 
 
     /*
-     * 受け口（page-markdown-receiver.gs）の断り方を3つに分ける。
+     * 受け口（page-markdown-receiver.gs）の断り方を4つに分ける。
+     * - adult:       成人向けのサイト。控えも消し、サイトを除外の一覧に足す
      * - duplicateId: 同じ送信IDで別の中身が保存済み。新しいIDを付ければ保存できる
      * - rejected:    中身が受け付けられない。何度送っても同じなので、自動では送り直さない
      * - それ以外:    混雑・一時的な失敗・トークン違い。待って送り直す
@@ -2729,7 +3246,9 @@
 
         const error = new Error(message.slice(0, 200) || 'Drive保存に失敗しました');
 
-        if (/送信IDが重複/.test(message)) {
+        if (/成人向けのサイトと判定/.test(message)) {
+            error.adult = true;
+        } else if (/送信IDが重複/.test(message)) {
             error.duplicateId = true;
         } else if (/不正/.test(message)) {
             error.rejected = true;
@@ -2913,6 +3432,7 @@
         let saved = 0;
         let lastError = '';
         let rejectedNow = 0;
+        let droppedNow = 0;
 
         try {
 
@@ -2922,6 +3442,13 @@
                 const record = readPending(item.requestId);
 
                 if (!record) {
+                    continue;
+                }
+
+                // 除外したサイトの控えは送らずに消す
+                if (localBlockReason(hostOf(record.url))) {
+                    removePending(record.requestId);
+                    droppedNow++;
                     continue;
                 }
 
@@ -2957,12 +3484,23 @@
 
                     lastError = error.message || '保存に失敗しました';
 
+                    if (error.adult) {
+                        dropAdultPending(claimed);
+                        droppedNow++;
+                        continue;
+                    }
+
                     if (error.duplicateId) {
 
                         const outcome = await sendReissued(config, claimed);
 
                         if (outcome.saved) {
                             saved++;
+                            continue;
+                        }
+
+                        if (outcome.error.adult) {
+                            droppedNow++;
                             continue;
                         }
 
@@ -3003,7 +3541,8 @@
             saved,
             left: listPending().length,
             lastError,
-            rejectedNow
+            rejectedNow,
+            droppedNow
         };
     }
 
@@ -3023,6 +3562,11 @@
 
         } catch (error) {
 
+            if (error.adult) {
+                dropAdultPending(fresh);
+                return { saved: false, error };
+            }
+
             markPendingFailed(
                 fresh.requestId,
                 error.message || '保存に失敗しました',
@@ -3037,6 +3581,15 @@
     function reportRetry(report, manual) {
 
         if (!report) {
+            return;
+        }
+
+        if (report.droppedNow) {
+            showToast(
+                '成人向けと判定したサイトの控えを' + report.droppedNow + '件、保存せずに消しました' +
+                (report.saved ? '。ほかの' + report.saved + '件は保存しました' : ''),
+                true
+            );
             return;
         }
 
@@ -3204,6 +3757,14 @@
 
     async function copyPage() {
 
+        // 成人向けのサイト・ページでは、コピーも保存もしない
+        const blocked = pageBlockReason();
+
+        if (blocked) {
+            refuseOnBlockedPage(blocked);
+            return;
+        }
+
         if (saving) {
             showToast('Driveへ保存中です');
             return;
@@ -3281,7 +3842,21 @@
 
                 settled = true;
 
-                if (driveOk) {
+                if (!driveOk && stored.reason.adult) {
+
+                    dropAdultPending(upload);
+
+                    lastUpload = null;
+
+                    showToast(
+                        (copyOk ? 'コピーはしましたが、' : '') +
+                        '成人向けのサイトと判定したので、Driveには保存しません。このサイトではボタンを出しません',
+                        true
+                    );
+
+                    hideUiLater();
+
+                } else if (driveOk) {
                     removePending(upload.requestId);
 
                     const imageNote = describeSavedImages(stored.value);
@@ -3299,6 +3874,10 @@
 
                     if (!kept) {
                         lastUpload = null;
+                    }
+
+                    if (!outcome.saved && outcome.error.adult) {
+                        hideUiLater();
                     }
 
                     showToast(
@@ -3368,7 +3947,7 @@
 
     function buildUi() {
 
-        if (document.getElementById(HOST_ID)) {
+        if (siteBlocked || document.getElementById(HOST_ID)) {
             return;
         }
 
@@ -3651,6 +4230,11 @@
                 event.code === HOTKEY_CODE
             ) {
 
+                // 除外したサイトでは、キーをページにそのまま渡す
+                if (siteBlocked) {
+                    return;
+                }
+
                 event.preventDefault();
 
                 copyPage();
@@ -3670,7 +4254,7 @@
      */
     new MutationObserver(() => {
 
-        if (!document.getElementById(HOST_ID)) {
+        if (!siteBlocked && !document.getElementById(HOST_ID)) {
             buildUi();
         }
 
@@ -3745,9 +4329,17 @@
         GM_registerMenuCommand('未保存を一覧・再送', retryFromMenu);
         GM_registerMenuCommand('未保存の控えを削除', discardFromMenu);
         GM_registerMenuCommand('本文抽出を診断', () => window.__tmCopyText.dump());
+        GM_registerMenuCommand('このサイトを除外', blockFromMenu);
+        GM_registerMenuCommand('除外したサイトを一覧・解除', unblockFromMenu);
     }
 
+    // 成人向けと分かっているサイト・ページでは、ボタンを作らない
+    siteBlocked = Boolean(pageBlockReason());
+
     buildUi();
+
+    // 初めてのサイトは家族向け DNS に問い合わせ、成人向けならボタンを消す
+    checkCurrentSite();
 
     // 前のページで届かなかった保存があれば、待ち時間のあとで送り直す
     scheduleRetry();

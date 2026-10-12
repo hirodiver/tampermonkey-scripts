@@ -16,29 +16,48 @@ async function main() {
     async function test(name, fn, options = {}) {
         const page = await context.newPage();
         try {
-            await page.route('https://example.com/**', route => route.fulfill({
+            const pageUrl = options.pageUrl || 'https://example.com/article';
+            await page.route(new URL(pageUrl).origin + '/**', route => route.fulfill({
                 contentType: 'text/html; charset=utf-8',
-                body: '<title>保存テスト</title><article><p id="text">' + '本文のテストです。'.repeat(100) + '</p></article>'
+                body: (options.head || '') + '<title>' + (options.title || '保存テスト') + '</title><article><p id="text">' + '本文のテストです。'.repeat(100) + '</p></article>'
             }));
-            await page.goto('https://example.com/article');
+            await page.goto(pageUrl);
             await page.evaluate(({ token, url, options }) => {
                 window.sent = [];
                 window.menus = {};
                 window.settings = options.unconfigured ? null : { token, url };
                 // 拡張機能の保存領域。設定以外（未保存の控え）は store に入る
                 window.store = options.store ? JSON.parse(JSON.stringify(options.store)) : {};
+                // 除外の一覧・判定の控えは sites に入る
+                window.sites = options.sites ? JSON.parse(JSON.stringify(options.sites)) : {};
                 const configKey = 'tm-copy-text-drive-config';
+                const area = key => /^tm-copy-text-(blocked-sites|allowed-sites|site-checks)$/.test(key) ? window.sites : window.store;
                 window.GM_getValue = (key, fallback) => key === configKey
                     ? window.settings
-                    : (key in window.store ? JSON.parse(JSON.stringify(window.store[key])) : fallback);
+                    : (key in area(key) ? JSON.parse(JSON.stringify(area(key)[key])) : fallback);
                 window.GM_setValue = (key, value) => {
                     if (key === configKey) window.settings = value;
-                    else window.store[key] = JSON.parse(JSON.stringify(value));
+                    else area(key)[key] = JSON.parse(JSON.stringify(value));
                 };
-                window.GM_listValues = () => [configKey, ...Object.keys(window.store)];
-                window.GM_deleteValue = key => { delete window.store[key]; };
+                window.GM_listValues = () => [configKey, ...Object.keys(window.store), ...Object.keys(window.sites)];
+                window.GM_deleteValue = key => { delete area(key)[key]; };
                 window.GM_registerMenuCommand = (name, fn) => { window.menus[name] = fn; };
+                // 家族向け DNS。dnsAdult のホストは 0.0.0.0、dnsMode が hold なら答えを保留する
+                window.dnsAsked = [];
+                window.dnsAdult = options.dnsAdult || [];
+                window.dnsMode = options.dnsMode || 'answer';
+                window.answerDns = request => {
+                    const name = new URL(request.url).searchParams.get('name');
+                    if (window.dnsMode === 'error') { request.onerror(); return; }
+                    request.onload({ status: 200, responseText: JSON.stringify({ Status: 0, Answer: [{ type: 1, data: window.dnsAdult.includes(name) ? '0.0.0.0' : '93.184.215.14' }] }) });
+                };
                 window.GM_xmlhttpRequest = request => {
+                    if (request.url.startsWith('https://family.cloudflare-dns.com/dns-query?')) {
+                        window.dnsAsked.push(request);
+                        if (window.dnsMode === 'hold') { window.heldDns = request; return; }
+                        window.answerDns(request);
+                        return;
+                    }
                     window.sent.push({ ...request, payload: JSON.parse(request.data) });
                     if (window.mode === 'hold') { window.pending = request; return; }
                     if (window.mode === 'error') { request.onerror(); return; }
@@ -67,7 +86,7 @@ async function main() {
     await test('初期表示・診断で送信しない', async page => {
         await page.evaluate(() => window.__tmCopyText.extract());
         assert.equal(await page.evaluate(() => window.sent.length), 0);
-        assert.equal(await page.evaluate(() => Object.keys(window.menus).length), 4);
+        assert.equal(await page.evaluate(() => Object.keys(window.menus).length), 6);
     });
     await test('ボタンで保存とコピー・限定URLと匿名送信', async page => {
         await page.locator('#tm-copy-text-host button').click();
@@ -397,6 +416,118 @@ async function main() {
         const payload = await page.evaluate(() => window.sent[0].payload);
         assert.equal('images' in payload, false);
     });
+
+    // ---- 成人向けのサイトの除外 ----
+    const hasButton = page => page.evaluate(() => Boolean(document.getElementById('tm-copy-text-host')));
+    const blockedSites = page => page.evaluate(() => window.sites['tm-copy-text-blocked-sites'] || {});
+    const pressHotkey = page => page.keyboard.press('Alt+Shift+KeyC');
+    await test('ふつうのサイトは家族向けDNSで確かめ、ボタンを出して保存する', async page => {
+        await page.waitForFunction(() => window.dnsAsked.length === 1);
+        assert.equal(await page.evaluate(() => new URL(window.dnsAsked[0].url).searchParams.get('name')), 'example.com');
+        assert.equal(await page.evaluate(() => window.dnsAsked[0].anonymous), true);
+        assert.equal(await hasButton(page), true);
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent.length), 1);
+        // 判定は控えて使い回す
+        assert.equal(await page.evaluate(() => window.dnsAsked.length), 1);
+        assert.equal(await page.evaluate(() => window.sites['tm-copy-text-site-checks']['example.com'].adult), false);
+    });
+    await test('家族向けDNSが成人向けとしたサイトでは、ボタンを消して除外の一覧に足す', async page => {
+        await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'));
+        assert.equal((await blockedSites(page))['example.com'].reason, '家族向けDNSが成人向けと判定');
+        await pressHotkey(page);
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent.length), 0);
+        assert.equal(await page.evaluate(() => document.querySelectorAll('#tm-copy-text-host').length), 0);
+    }, { dnsAdult: ['example.com'] });
+    await test('除外の一覧にあるサイトでは、問い合わせずにボタンを出さない（下のホストも）', async page => {
+        await page.waitForTimeout(300);
+        assert.equal(await hasButton(page), false);
+        assert.equal(await page.evaluate(() => window.dnsAsked.length), 0);
+        await pressHotkey(page);
+        assert.equal(await page.evaluate(() => window.sent.length), 0);
+    }, { pageUrl: 'https://sub.blocked.example/a', sites: { 'tm-copy-text-blocked-sites': { 'blocked.example': { reason: '手動で除外', at: 1 } } } });
+    await test('ドメイン名の語や末尾で分かるサイトは、ボタンを出さずに一覧へ足す', async page => {
+        assert.equal(await hasButton(page), false);
+        assert.equal((await blockedSites(page))['free-porn.example'].reason, 'ドメイン名の語');
+        assert.equal(await page.evaluate(() => window.dnsAsked.length), 0);
+    }, { pageUrl: 'https://www.free-porn.example/a' });
+    await test('.xxx のサイトもボタンを出さない', async page => {
+        assert.equal(await hasButton(page), false);
+        assert.equal((await blockedSites(page))['site.xxx'].reason, 'ドメインの末尾');
+    }, { pageUrl: 'https://site.xxx/a' });
+    await test('タイトルの語や年齢区分の meta があるページは、そのページだけボタンを出さない', async page => {
+        assert.equal(await hasButton(page), false);
+        assert.deepEqual(await blockedSites(page), {});
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent.length), 0);
+    }, { title: '【R-18】作品' });
+    await test('年齢区分の meta があるページもボタンを出さない', async page => {
+        assert.equal(await hasButton(page), false);
+    }, { head: '<meta name="rating" content="RTA-5042-1996-1400-1577-RTA">' });
+    await test('押したあとに成人向けと分かったら、Driveへ送らず控えも消し、ボタンを消す', async page => {
+        await page.evaluate(() => { window.__tmCopyText.copy().then(() => { window.done = true; }); });
+        await page.waitForFunction(() => Object.keys(window.store).some(key => key.startsWith('tm-copy-text-pending:')));
+        await page.evaluate(() => { window.dnsAdult = ['example.com']; window.answerDns(window.dnsAsked[0]); });
+        await page.waitForFunction(() => window.done);
+        assert.equal(await page.evaluate(() => window.sent.length), 0);
+        assert.equal((await pendingKeys(page)).length, 0);
+        assert.match(await toast(page), /成人向けのサイトと判定したので、Driveには保存しません/);
+        assert.ok((await blockedSites(page))['example.com']);
+        await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'), null, { timeout: 5000 });
+    }, { dnsMode: 'hold' });
+    await test('受け口が成人向けと断ったら、控えを消してサイトを除外する', async page => {
+        await page.evaluate(() => { window.respond = () => ({ ok: false, message: '成人向けのサイトと判定したので、保存しません' }); });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent.length), 1);
+        assert.equal((await pendingKeys(page)).length, 0);
+        assert.equal((await blockedSites(page))['example.com'].reason, '受け口が成人向けと判定');
+        assert.match(await toast(page), /成人向け/);
+        await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'), null, { timeout: 5000 });
+    });
+    await test('除外したサイトの控えは送らずに消す', async page => {
+        await page.waitForFunction(() => !Object.keys(window.store).some(key => key.startsWith('tm-copy-text-pending:')), null, { timeout: 5000 });
+        assert.equal(await page.evaluate(() => window.sent.length), 0);
+        assert.match(await toast(page), /成人向けと判定したサイトの控えを1件、保存せずに消しました/);
+    }, {
+        store: mapStore(leftBehind, value => ({ url: 'https://adult.example/x', lastTriedAt: value.lastTriedAt - 20000 })),
+        sites: { 'tm-copy-text-blocked-sites': { 'adult.example': { reason: '手動で除外', at: 1 } } }
+    });
+    await test('X の控えは画像の一覧を送らない', async page => {
+        await page.waitForFunction(() => window.sent.length === 1, null, { timeout: 5000 });
+        assert.equal('images' in await page.evaluate(() => window.sent[0].payload), false);
+    }, { store: mapStore(leftBehind, value => ({ url: 'https://x.com/user/status/1', images: [{ n: 1, url: 'https://pbs.twimg.com/media/a.jpg', alt: '' }], lastTriedAt: value.lastTriedAt - 20000 })) });
+    await test('除外したサイトの画像は送らない', async page => {
+        await page.evaluate(() => {
+            document.querySelector('article').insertAdjacentHTML('beforeend',
+                '<p><img src="https://cdn.porn-host.example/a.png" alt="" width="800" height="400"></p>' +
+                '<p><img src="https://example.com/img/ok.png" alt="" width="800" height="400"></p>');
+        });
+        await page.route('https://cdn.porn-host.example/**', route => route.abort());
+        await page.evaluate(() => window.__tmCopyText.copy());
+        const payload = await page.evaluate(() => window.sent[0].payload);
+        assert.deepEqual(payload.images.map(image => image.url), ['https://example.com/img/ok.png']);
+    });
+    await test('メニューでサイトを除外し、一覧から外せる', async page => {
+        await page.evaluate(() => { window.confirm = () => true; window.alert = text => { window.alerted = text; }; window.menus['このサイトを除外'](); });
+        assert.equal(await hasButton(page), false);
+        assert.equal((await blockedSites(page))['example.com'].reason, '手動で除外');
+        await page.evaluate(() => { window.prompt = text => { window.promptText = text; return '1'; }; window.menus['除外したサイトを一覧・解除'](); });
+        assert.match(await page.evaluate(() => window.promptText), /1\. example\.com（手動で除外）/);
+        assert.deepEqual(await blockedSites(page), {});
+        assert.ok(await page.evaluate(() => window.sites['tm-copy-text-allowed-sites']['example.com']));
+        assert.equal(await page.evaluate(() => 'example.com' in (window.sites['tm-copy-text-site-checks'] || {})), false);
+    });
+    await test('一覧から外したサイトは、ドメイン名の語では除外しない', async page => {
+        assert.equal(await hasButton(page), true);
+        await page.waitForFunction(() => window.dnsAsked.length === 1);
+    }, { pageUrl: 'https://www.free-porn.example/a', sites: { 'tm-copy-text-allowed-sites': { 'free-porn.example': 1 } } });
+    await test('家族向けDNSに問い合わせられなくても、ボタンは出して受け口の判定に任せる', async page => {
+        await page.waitForFunction(() => window.dnsAsked.length === 1);
+        assert.equal(await hasButton(page), true);
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent.length), 1);
+    }, { dnsMode: 'error' });
     await browser.close();
 
     // GASのサービス境界をモック化し、認証・作成・再送・例外時ロック解放を確認する。
@@ -428,7 +559,27 @@ async function main() {
     // 画像の取得。URLごとに応答を決め、取得した回数と送ったヘッダーを記録する
     const fetched = [];
     let fetchAllThrows = false;
+    // 家族向け DNS の模擬。adultHosts は 0.0.0.0、dnsDown なら 503
+    const dnsAsked = [];
+    const adultHosts = new Set(['nudity.testcategory.com', 'adult.test', 'adultcdn.test']);
+    let dnsDown = false;
+    const dnsResponse = url => {
+        const name = new URL(url).searchParams.get('name');
+        dnsAsked.push(name);
+        const body = JSON.stringify({ Status: 0, Answer: [{ type: 1, data: adultHosts.has(name) ? '0.0.0.0' : '93.184.215.14' }] });
+        return { getResponseCode: () => dnsDown ? 503 : 200, getContentText: () => body };
+    };
+    const isDns = url => url.startsWith('https://family.cloudflare-dns.com/dns-query?');
     const imageResponse = url => {
+        // 転送の模擬
+        const redirect = {
+            'https://img.test/redir-ok.png': 'https://img2.test/d.jpg',
+            'https://img.test/redir-bad.png': 'https://adultcdn.test/x.png',
+            'https://img.test/redir-rel.png': '/d.jpg'
+        }[url];
+        if (redirect) {
+            return { getResponseCode: () => 302, getHeaders: () => ({ Location: redirect }), getContent: () => [], getBlob: () => ({}) };
+        }
         const route = {
             'https://img.test/a.png': [200, 'image/png'],
             'https://img.test/b.html': [200, 'text/html; charset=utf-8'],
@@ -436,7 +587,8 @@ async function main() {
             // 正式でない種類名・汎用の種類名
             'https://img.test/alias.jpg': [200, 'image/jpg'],
             'https://img.test/raw.png?w=1': [200, 'application/octet-stream'],
-            'https://img.test/raw-noext': [200, 'application/octet-stream']
+            'https://img.test/raw-noext': [200, 'application/octet-stream'],
+            'https://img2.test/d.jpg': [200, 'image/jpeg']
         }[url] || [404, 'text/html'];
         return {
             getResponseCode: () => route[0],
@@ -445,8 +597,14 @@ async function main() {
             getBlob: () => ({ setName(name) { this.name = name; return this; } })
         };
     };
+    const logs = [];
+    const cacheStore = new Map();
     const sandbox = {
-        console: { log() {} },
+        console: { log: text => logs.push(text) },
+        CacheService: { getScriptCache: () => ({
+            getAll: keys => Object.fromEntries(keys.filter(key => cacheStore.has(key)).map(key => [key, cacheStore.get(key)])),
+            putAll: values => Object.entries(values).forEach(([key, value]) => cacheStore.set(key, value))
+        }) },
         DriveApp: { getFolderById: id => { assert.equal(id, '1WFV1mV24vc2ZwXxBhS2EjhKMhgiRNVRl'); return folder; } },
         PropertiesService: { getScriptProperties: () => ({ getProperty: key => properties.get(key), setProperty: (key, value) => properties.set(key, value) }) },
         Utilities: { getUuid: () => '12345678-1234-4234-8234-123456789abc', formatDate: () => '20260930_050000000', newBlob: (content, type, name) => ({ content, type, name }) },
@@ -455,9 +613,14 @@ async function main() {
         UrlFetchApp: {
             fetchAll: requests => {
                 if (fetchAllThrows) throw new Error('DNS error');
-                return requests.map(request => { fetched.push(request); return imageResponse(request.url); });
+                return requests.map(request => {
+                    if (isDns(request.url)) return dnsResponse(request.url);
+                    fetched.push(request);
+                    return imageResponse(request.url);
+                });
             },
             fetch: (url, request) => {
+                if (isDns(url)) return dnsResponse(url);
                 if (url === 'https://img.test/dns-fail.png') throw new Error('DNS error');
                 fetched.push(request);
                 return imageResponse(url);
@@ -470,6 +633,10 @@ async function main() {
     sandbox.setup();
     const originalToken = properties.get('ARCHIVE_TOKEN');
     check('setup再実行でトークンを変えない', () => { sandbox.setup(); assert.equal(properties.get('ARCHIVE_TOKEN'), originalToken); assert.match(originalToken, /^[a-f0-9]{64}$/); });
+    check('setupで成人向けの判定が働くかをログに出す', () => {
+        assert.ok(logs.includes('成人向けの判定の確認: nudity.testcategory.com → 成人向け（「成人向け」なら正常）'));
+        assert.ok(logs.includes('成人向けの判定の確認: example.com → 問題なし（「問題なし」なら正常）'));
+    });
     const input = { token: originalToken, requestId: '12345678-1234-4234-8234-123456789abc', capturedAt: '2026-09-29T20:00:00.000Z', title: '記事:/タイトル', url: 'https://example.com/article', markdown: '# 記事\n\n本文\n' };
     const send = body => sandbox.doPost({ postData: { contents: JSON.stringify(body) } });
     check('トークン不一致でファイル作成なし', () => { assert.equal(send({ ...input, token: 'bad' }).ok, false); assert.equal(creations, 0); });
@@ -554,6 +721,58 @@ async function main() {
             assert.equal(send({ ...input, requestId: 'dddddddd-1234-4234-8234-123456789abc', images }).ok, false);
         }
         assert.equal(creations, before);
+    });
+    // ---- 成人向けのサイト ----
+    check('家族向けDNSが成人向けとしたサイトのページは保存しない', () => {
+        const before = creations;
+        const r = send({ ...input, requestId: 'f0000000-1234-4234-8234-123456789abc', url: 'https://adult.test/a' });
+        assert.equal(r.ok, false);
+        assert.match(r.message, /成人向け/);
+        assert.equal(creations, before);
+    });
+    check('ドメイン名の語や末尾で分かるサイトは、問い合わせずに保存しない', () => {
+        const before = creations;
+        const asked = dnsAsked.length;
+        for (const url of ['https://www.free-porn.example/a', 'https://site.xxx/a', 'https://user@video.xvideos.com:443/a']) {
+            assert.match(send({ ...input, requestId: 'f1000000-1234-4234-8234-123456789abc', url }).message, /成人向け/);
+        }
+        assert.equal(dnsAsked.length, asked);
+        assert.equal(creations, before);
+    });
+    check('判定できないときは保存せず、送り直してもらう（「不正」とは言わない）', () => {
+        dnsDown = true;
+        const before = creations;
+        const r = send({ ...input, requestId: 'f2000000-1234-4234-8234-123456789abc', url: 'https://unknown-site.test/a' });
+        dnsDown = false;
+        assert.equal(r.ok, false);
+        assert.doesNotMatch(r.message, /不正|成人向け/);
+        assert.equal(creations, before);
+    });
+    check('判定はキャッシュして使い回す', () => {
+        const asked = dnsAsked.length;
+        send({ ...input, requestId: 'f3000000-1234-4234-8234-123456789abc' });
+        assert.equal(dnsAsked.length, asked);
+    });
+    check('成人向けの配信元の画像は取りに行かず、転送先も確かめる', () => {
+        const before = fetched.length;
+        const r = send({ ...withImages, requestId: 'f4000000-1234-4234-8234-123456789abc', images: [
+            { n: 1, url: 'https://adultcdn.test/a.png', alt: '' },
+            { n: 2, url: 'https://img.test/redir-bad.png', alt: '' },
+            { n: 3, url: 'https://img.test/redir-ok.png', alt: '' },
+            { n: 4, url: 'https://img.test/redir-rel.png', alt: '' },
+            { n: 5, url: 'https://img.test/d.jpg', alt: '' }
+        ] });
+        assert.equal(r.ok, true);
+        assert.deepEqual({ ...r.images }, { saved: 3, failed: 2 });
+        const urls = fetched.slice(before).map(request => request.url);
+        assert.ok(!urls.some(url => /adultcdn/.test(url)));
+        assert.ok(fetched.slice(before).every(request => request.followRedirects === false));
+        const content = files.get(r.name).getBlob().getDataAsString();
+        assert.match(content, /- 画像1 → 保存できませんでした（成人向けのサイトの画像なので保存しません）/);
+        assert.match(content, /- 画像2 → 保存できませんでした（成人向けのサイトの画像なので保存しません）/);
+        const imageFolder = imageFolders.get(r.name.replace(/\.md$/, '') + '_画像');
+        // 相対の転送先（/d.jpg）も同じサイトとして解決する
+        assert.deepEqual([...imageFolder.saved], ['03.jpg', '04.jpg', '05.jpg']);
     });
     check('Drive例外でもロックを解放し秘密を返さない', () => {
         const previous = sandbox.DriveApp.getFolderById;

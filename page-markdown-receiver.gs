@@ -1,6 +1,8 @@
 // ページ本文コピー用の受け口。経費処理とは別のApps Scriptプロジェクトに置く。
 // setupを一度実行して認証し、ウェブアプリとしてデプロイする。
 // 本文の画像は、ここから取りに行って Drive に保存する（外部URLへの接続の権限を使う）。
+// 成人向けのサイトのページと画像は保存しない。Cloudflare の家族向け DNS に問い合わせて判定し、
+// 判定できないときも保存しない（スクリプト側は、あとで送り直す）。
 const ARCHIVE_FOLDER_ID = '1WFV1mV24vc2ZwXxBhS2EjhKMhgiRNVRl';
 const ARCHIVE_MAX_CHARS = 500000;
 // 1記事あたりの画像の上限
@@ -21,6 +23,15 @@ const IMAGE_TYPES = {
 };
 // .md の末尾に付ける画像一覧の見出し。送り直しのとき、この手前までを元の本文として比べる
 const IMAGE_SECTION_MARK = '\n\n---\n\n## 画像（Driveに保存）\n';
+// 成人向けのサイトを 0.0.0.0 で返す、Cloudflare の家族向け DNS（DNS over HTTPS）
+const FAMILY_DNS_URL = 'https://family.cloudflare-dns.com/dns-query';
+// 判定結果を使い回す時間（秒）
+const SITE_CACHE_SECONDS = 6 * 60 * 60;
+// 成人向けとみなすドメインの末尾と語（ページ本文コピーの page-to-markdown.user.js と同じ）
+const ADULT_TLD = /\.(xxx|adult|porn|sex)$/i;
+const ADULT_HOST_WORDS = /porn|xxx|hentai|xvideos|xhamster|xnxx|redtube|youporn|nsfw|onlyfans|fanza|(^|\.)dmm\.co\.jp$/i;
+// 画像のリダイレクトをたどる回数の上限（行き先のサイトも1回ずつ確かめる）
+const IMAGE_REDIRECT_MAX = 3;
 
 function setup() {
 
@@ -35,6 +46,13 @@ function setup() {
 
     console.log('保存先: ' + folder.getName());
     console.log('Tampermonkeyに登録するトークン: ' + token);
+
+    // 成人向けの判定が働くかを確かめる。nudity.testcategory.com は Cloudflare の確認用のドメイン
+    const verdicts = siteVerdicts(['nudity.testcategory.com', 'example.com'], true);
+    const label = verdict => ({ adult: '成人向け', ok: '問題なし', unknown: '判定できない' })[verdict];
+
+    console.log('成人向けの判定の確認: nudity.testcategory.com → ' + label(verdicts['nudity.testcategory.com']) + '（「成人向け」なら正常）');
+    console.log('成人向けの判定の確認: example.com → ' + label(verdicts['example.com']) + '（「問題なし」なら正常）');
 }
 
 
@@ -79,6 +97,20 @@ function doPost(event) {
             return archiveResponse({ ok: false, message: '本文・タイトル・送信IDが不正です' });
         }
 
+        // 記事のサイトを確かめる。成人向け、または判定できないときは保存しない
+        const pageHost = hostOf(input.url);
+        const verdicts = siteVerdicts(
+            [pageHost].concat((input.images || []).map(image => hostOf(image.url)))
+        );
+
+        if (verdicts[pageHost] === 'adult') {
+            return archiveResponse({ ok: false, message: '成人向けのサイトと判定したので、保存しません' });
+        }
+
+        if (verdicts[pageHost] !== 'ok') {
+            return archiveResponse({ ok: false, message: 'サイトの判定（家族向けDNS）に失敗しました。時間をおいて送り直してください' });
+        }
+
         const title = input.title
             .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
             .replace(/\s+/g, ' ')
@@ -121,7 +153,7 @@ function doPost(event) {
         const requested = Array.isArray(input.images) ? input.images : [];
 
         if (requested.length && stored === input.markdown) {
-            images = saveImages(folder, name.replace(/\.md$/, ''), requested, input.url);
+            images = saveImages(folder, name.replace(/\.md$/, ''), requested, input.url, verdicts);
             file.setContent(input.markdown + imageSection(images.results));
         }
 
@@ -170,24 +202,22 @@ function validImageList(images) {
 }
 
 
-// 画像を取りに行き、記事ごとのフォルダ「<記事のファイル名>_画像」に保存する
-function saveImages(archive, baseName, images, pageUrl) {
+// 画像を取りに行き、記事ごとのフォルダ「<記事のファイル名>_画像」に保存する。
+// 配信元が成人向け、または判定できない画像は取りに行かない
+function saveImages(archive, baseName, images, pageUrl, verdicts) {
 
-    const requests = images.map(image => ({
-        url: image.url,
-        muteHttpExceptions: true,
-        followRedirects: true,
-        // 直リンクを断るサイトのために、元のページから来たことを伝える
-        headers: { Referer: pageUrl }
-    }));
+    const blocked = images.map(image => siteProblem(verdicts[hostOf(image.url)]));
+    const targets = images.filter((image, index) => !blocked[index]);
 
-    let responses;
+    const requests = targets.map(image => imageRequest(image.url, pageUrl));
+
+    let fetched;
 
     try {
-        responses = UrlFetchApp.fetchAll(requests);
+        fetched = requests.length ? UrlFetchApp.fetchAll(requests) : [];
     } catch (error) {
         // 1件でも名前解決などで失敗すると全体が例外になるので、1件ずつ取り直す
-        responses = requests.map(request => {
+        fetched = requests.map(request => {
             try {
                 return UrlFetchApp.fetch(request.url, request);
             } catch (inner) {
@@ -196,21 +226,31 @@ function saveImages(archive, baseName, images, pageUrl) {
         });
     }
 
+    // リダイレクトは自動でたどらず、行き先のサイトを確かめてから取りに行く
+    const answers = targets.map((image, index) => followImageRedirects(fetched[index], image.url, pageUrl));
+
     let folder = null;
     let saved = 0;
     let failed = 0;
+    let next = 0;
 
     const results = images.map((image, index) => {
 
-        const response = responses[index];
-        const reason = imageProblem(response, image.url);
+        if (blocked[index]) {
+            failed++;
+            return { image: image, error: blocked[index] };
+        }
+
+        const answer = answers[next++];
+        const response = answer.response;
+        const reason = answer.error || imageProblem(response, answer.url);
 
         if (reason) {
             failed++;
             return { image: image, error: reason };
         }
 
-        const extension = imageExtension(response, image.url);
+        const extension = imageExtension(response, answer.url);
         const label = (image.alt || '')
             .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
             .replace(/\s+/g, ' ')
@@ -229,6 +269,223 @@ function saveImages(archive, baseName, images, pageUrl) {
     });
 
     return { results: results, saved: saved, failed: failed };
+}
+
+
+function imageRequest(url, pageUrl) {
+
+    return {
+        url: url,
+        muteHttpExceptions: true,
+        followRedirects: false,
+        // 直リンクを断るサイトのために、元のページから来たことを伝える
+        headers: { Referer: pageUrl }
+    };
+}
+
+
+// 3xx なら行き先のサイトを確かめてから取りに行く。{ response, url, error }
+function followImageRedirects(response, url, pageUrl) {
+
+    let current = response;
+    let currentUrl = url;
+
+    for (let hop = 0; current && hop <= IMAGE_REDIRECT_MAX; hop++) {
+
+        const code = current.getResponseCode();
+
+        if (code < 300 || code >= 400) {
+            return { response: current, url: currentUrl, error: '' };
+        }
+
+        if (hop === IMAGE_REDIRECT_MAX) {
+            break;
+        }
+
+        const headers = current.getHeaders();
+        const location = String(headers.Location || headers.location || '');
+        const nextUrl = resolveUrl(currentUrl, location);
+
+        if (!nextUrl) {
+            return { response: null, url: currentUrl, error: '転送先が不正です' };
+        }
+
+        const problem = siteProblem(siteVerdicts([hostOf(nextUrl)])[hostOf(nextUrl)]);
+
+        if (problem) {
+            return { response: null, url: nextUrl, error: problem };
+        }
+
+        try {
+            current = UrlFetchApp.fetch(nextUrl, imageRequest(nextUrl, pageUrl));
+        } catch (error) {
+            current = null;
+        }
+
+        currentUrl = nextUrl;
+    }
+
+    return { response: null, url: currentUrl, error: current ? '転送が多すぎます' : '取得できませんでした' };
+}
+
+
+// 相対の転送先を絶対URLにする。http(s) 以外は空文字
+function resolveUrl(base, location) {
+
+    if (/^https?:\/\//i.test(location)) {
+        return location;
+    }
+
+    const origin = /^(https?:\/\/[^\/?#]+)/i.exec(base);
+
+    if (!origin || !location) {
+        return '';
+    }
+
+    if (location.startsWith('//')) {
+        return base.split(':')[0] + ':' + location;
+    }
+
+    if (location.startsWith('/')) {
+        return origin[1] + location;
+    }
+
+    return base.replace(/[?#].*$/, '').replace(/[^\/]*$/, '') + location;
+}
+
+
+// ============================================================
+// 成人向けのサイトの判定
+// ============================================================
+
+function hostOf(url) {
+
+    const match = /^https?:\/\/([^\/?#]+)/i.exec(String(url));
+
+    if (!match) {
+        return '';
+    }
+
+    // ユーザー名・ポート・末尾の点を除く
+    return match[1]
+        .replace(/^.*@/, '')
+        .replace(/:\d+$/, '')
+        .replace(/\.$/, '')
+        .toLowerCase();
+}
+
+
+// 画像を保存しない理由。保存してよいなら空文字
+function siteProblem(verdict) {
+
+    if (verdict === 'ok') {
+        return '';
+    }
+
+    return verdict === 'adult'
+        ? '成人向けのサイトの画像なので保存しません'
+        : '配信元を判定できませんでした';
+}
+
+
+/*
+ * ホスト名ごとの判定。{ ホスト名: 'adult' | 'ok' | 'unknown' }。
+ * ドメイン名で分かるものはそこで決め、残りを家族向け DNS にまとめて問い合わせる。
+ * 家族向け DNS は、成人向けのサイトを 0.0.0.0 で返す
+ */
+function siteVerdicts(hosts, skipCache) {
+
+    const result = {};
+    const unique = hosts.filter((host, index) => host && hosts.indexOf(host) === index);
+    const cache = CacheService.getScriptCache();
+    const cached = skipCache ? {} : cache.getAll(unique.map(host => 'site:' + host));
+    const asking = [];
+
+    unique.forEach(host => {
+
+        const name = host.replace(/^www\./, '');
+
+        if (ADULT_TLD.test(name) || ADULT_HOST_WORDS.test(name)) {
+            result[host] = 'adult';
+        } else if (!name.includes('.') || name.includes(':') || /^\d+\.\d+\.\d+\.\d+$/.test(name)) {
+            // IPアドレスや名前のないホストは、記事のサイトとしては扱わない
+            result[host] = 'unknown';
+        } else if (cached['site:' + host]) {
+            result[host] = cached['site:' + host];
+        } else {
+            asking.push(host);
+        }
+    });
+
+    if (!asking.length) {
+        return result;
+    }
+
+    const requests = asking.map(host => ({
+        url: FAMILY_DNS_URL + '?name=' + encodeURIComponent(host) + '&type=A',
+        muteHttpExceptions: true,
+        headers: { accept: 'application/dns-json' }
+    }));
+
+    let responses;
+
+    try {
+        responses = UrlFetchApp.fetchAll(requests);
+    } catch (error) {
+        responses = requests.map(request => {
+            try {
+                return UrlFetchApp.fetch(request.url, request);
+            } catch (inner) {
+                return null;
+            }
+        });
+    }
+
+    const store = {};
+
+    asking.forEach((host, index) => {
+
+        const verdict = dnsVerdict(responses[index]);
+
+        result[host] = verdict;
+
+        if (verdict !== 'unknown') {
+            store['site:' + host] = verdict;
+        }
+    });
+
+    if (Object.keys(store).length) {
+        cache.putAll(store, SITE_CACHE_SECONDS);
+    }
+
+    return result;
+}
+
+
+function dnsVerdict(response) {
+
+    if (!response || response.getResponseCode() !== 200) {
+        return 'unknown';
+    }
+
+    let data;
+
+    try {
+        data = JSON.parse(response.getContentText());
+    } catch (error) {
+        return 'unknown';
+    }
+
+    // 0: 名前が引けた、3: 存在しない名前。それ以外は判定できない
+    if (!data || (data.Status !== 0 && data.Status !== 3)) {
+        return 'unknown';
+    }
+
+    const adult =
+        Array.isArray(data.Answer) &&
+        data.Answer.some(answer => answer && answer.data === '0.0.0.0');
+
+    return adult ? 'adult' : 'ok';
 }
 
 
