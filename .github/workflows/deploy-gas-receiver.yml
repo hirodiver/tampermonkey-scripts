@@ -1,0 +1,123 @@
+# 受け口（page-markdown-receiver.gs）を、Apps Script のプロジェクトへ反映して公開する。
+# main の page-markdown-receiver.gs が変わったとき、または手動で動かしたときに走る。
+#
+# 必要なもの（一度だけ）
+#   - Apps Script API をオンにする: https://script.google.com/home/usersettings
+#   - clasp login で作った .clasprc.json の中身を、Secret「CLASPRC_JSON」に登録する
+#
+# 公開中のウェブアプリの URL は変えない（既存のデプロイを新しい版で更新する）。
+name: 受け口（GAS）を更新
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - page-markdown-receiver.gs
+      - .github/workflows/deploy-gas-receiver.yml
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-gas-receiver
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # 「参考記事アーカイブ受け口」のスクリプト ID
+      SCRIPT_ID: 1EmUFkEGZLQtM_uUut191dEiDbdQyaWfPOKPq6tFUEiLZzLfDHiSPqXpF
+      CLASP_VERSION: 3.4.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: clasp を入れ、認証情報を置く
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ]; then
+            echo "::error::Secret「CLASPRC_JSON」がありません。clasp login で作った .clasprc.json の中身を登録してください"
+            exit 1
+          fi
+          npm install --global "@google/clasp@${CLASP_VERSION}"
+          printf '%s' "$CLASPRC_JSON" > ~/.clasprc.json
+          chmod 600 ~/.clasprc.json
+
+      - name: 今のプロジェクトを取得し、コードだけを差し替える
+        run: |
+          mkdir work
+          cd work
+          clasp clone "$SCRIPT_ID"
+          echo "取得したファイル:"
+          ls -la
+          # マニフェスト（appsscript.json）は今のものを残し、コードのファイルだけを入れ替える
+          find . -maxdepth 1 -type f \( -name '*.js' -o -name '*.gs' \) -delete
+          sed "s/^const RECEIVER_VERSION = 'dev';/const RECEIVER_VERSION = '${GITHUB_SHA::7}';/" \
+            ../page-markdown-receiver.gs > コード.js
+          grep -q "^const RECEIVER_VERSION = '${GITHUB_SHA::7}';" コード.js
+          # ウェブアプリの設定は「自分として実行」「全員（ログイン不要）」に固定する
+          node -e '
+            const fs = require("fs");
+            const manifest = JSON.parse(fs.readFileSync("appsscript.json", "utf8"));
+            manifest.webapp = { executeAs: "USER_DEPLOYING", access: "ANYONE_ANONYMOUS" };
+            fs.writeFileSync("appsscript.json", JSON.stringify(manifest, null, 2));
+            console.log(JSON.stringify(manifest, null, 2));
+          '
+          clasp push --force
+
+      - name: 公開中のデプロイを新しい版で更新する
+        id: deploy
+        env:
+          FIXED_DEPLOYMENT_ID: ${{ vars.GAS_DEPLOYMENT_ID }}
+        run: |
+          cd work
+          clasp deployments --json > deployments.json
+          cat deployments.json
+          # 版の番号が付いたもの（@HEAD 以外）が公開中のウェブアプリ
+          ids=$(node -e '
+            const list = JSON.parse(require("fs").readFileSync("deployments.json", "utf8"));
+            for (const item of list) if (item.versionNumber) console.log(item.deploymentId);
+          ')
+          if [ -n "$FIXED_DEPLOYMENT_ID" ]; then
+            ids="$FIXED_DEPLOYMENT_ID"
+          fi
+          count=$(printf '%s\n' "$ids" | grep -c . || true)
+          if [ "$count" != "1" ]; then
+            echo "::error::更新するデプロイを1つに決められません（${count}件）。リポジトリの変数 GAS_DEPLOYMENT_ID に、ウェブアプリURLの /s/ と /exec の間の文字列を登録してください"
+            exit 1
+          fi
+          clasp deploy --deploymentId "$ids" --description "GitHub ${GITHUB_SHA::7}"
+          echo "id=$ids" >> "$GITHUB_OUTPUT"
+
+      - name: 公開された版と、成人向けの判定を確かめる
+        env:
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.id }}
+        run: |
+          url="https://script.google.com/macros/s/${DEPLOYMENT_ID}/exec?check=site"
+          for attempt in 1 2 3 4 5 6; do
+            body=$(curl -sSL --max-time 60 "$url" || true)
+            echo "応答: $body"
+            if node -e '
+              const data = JSON.parse(process.argv[1]);
+              const want = process.argv[2];
+              if (data.version !== want) process.exit(2);
+              if (!data.siteCheck || data.siteCheck.adultTest !== "adult" || data.siteCheck.normalTest !== "ok") process.exit(3);
+            ' "$body" "${GITHUB_SHA::7}" 2>/dev/null; then
+              echo "公開中の版 ${GITHUB_SHA::7}、成人向けの判定も正常"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::公開中の版が ${GITHUB_SHA::7} にならないか、成人向けの判定が働いていません（応答は上のとおり）"
+          exit 1
+
+      - name: 認証情報を消す
+        if: always()
+        run: rm -f ~/.clasprc.json

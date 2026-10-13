@@ -774,6 +774,12 @@ async function main() {
         // 相対の転送先（/d.jpg）も同じサイトとして解決する
         assert.deepEqual([...imageFolder.saved], ['03.jpg', '04.jpg', '05.jpg']);
     });
+    check('doGet は版だけを返し、check=site で成人向けの判定の確認も返す', () => {
+        assert.deepEqual(JSON.parse(JSON.stringify(sandbox.doGet({ parameter: {} }))), { ok: true, version: 'dev' });
+        const checked = JSON.parse(JSON.stringify(sandbox.doGet({ parameter: { check: 'site' } })));
+        assert.deepEqual(checked.siteCheck, { adultTest: 'adult', normalTest: 'ok' });
+        assert.ok(!JSON.stringify(checked).includes(originalToken));
+    });
     check('Drive例外でもロックを解放し秘密を返さない', () => {
         const previous = sandbox.DriveApp.getFolderById;
         sandbox.DriveApp.getFolderById = () => { throw new Error(originalToken); };

@@ -4,6 +4,8 @@
 // 成人向けのサイトのページと画像は保存しない。Cloudflare の家族向け DNS に問い合わせて判定し、
 // 判定できないときも保存しない（スクリプト側は、あとで送り直す）。
 const ARCHIVE_FOLDER_ID = '1WFV1mV24vc2ZwXxBhS2EjhKMhgiRNVRl';
+// 公開中の版。GitHub Actions（deploy-gas-receiver.yml）が、更新のたびにコミットの番号へ書き換える
+const RECEIVER_VERSION = 'dev';
 const ARCHIVE_MAX_CHARS = 500000;
 // 1記事あたりの画像の上限
 const IMAGE_MAX = 20;
@@ -61,6 +63,26 @@ function archiveResponse(value) {
     return ContentService
         .createTextOutput(JSON.stringify(value))
         .setMimeType(ContentService.MimeType.JSON);
+}
+
+
+// 公開中の版を返す。?check=site を付けると、成人向けの判定が働くかも返す（更新後の確認用）。
+// トークンなしで呼べるので、本文や設定は返さない
+function doGet(event) {
+
+    const result = { ok: true, version: RECEIVER_VERSION };
+
+    if (event && event.parameter && event.parameter.check === 'site') {
+
+        const verdicts = siteVerdicts(['nudity.testcategory.com', 'example.com'], true);
+
+        result.siteCheck = {
+            adultTest: verdicts['nudity.testcategory.com'],
+            normalTest: verdicts['example.com']
+        };
+    }
+
+    return archiveResponse(result);
 }
 
 
