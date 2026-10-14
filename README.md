@@ -18,6 +18,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
 | `youtube-chat-highlight.user.js` | YouTube チャット強調 | www.youtube.com/live_chat |
+| `youtube-volume-boost.user.js` | YouTube 音量ブースト | www.youtube.com |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 | `tenbin-ai-biz-terms-expand-all.user.js` | 天秤AI 約款一括展開 | biz.tenbin.ai/trust |
 | `page-to-markdown.user.js` | ページ本文コピー | 全サイト |
@@ -51,6 +52,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-highlight.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-volume-boost.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/tenbin-ai-biz-terms-expand-all.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/page-to-markdown.user.js
@@ -617,6 +619,85 @@ NODE_PATH=$(npm root -g) node test/youtube-chat-highlight.test.js
 空にしたら全部外れる／再読み込み後の保持／「非表示リスト」ボタンと重ならない）を確認する。
 
 実際のチャットの描画とは異なるため、**実機確認の代わりにはならない**。
+
+## YouTube 音量ブースト について（ファイル: `youtube-volume-boost.user.js`）
+
+YouTube の音量を **100% より上（最大 600%）** まで上げる。Chrome 拡張「Volume Master」と同じく
+Web Audio で音を増幅する。見た目は**プレーヤーの音量バーが右へ伸びた**形にした。
+
+```
+[🔊][YouTube の音量 0〜100%][延長部分 100〜600%] 250%
+```
+
+### 使い方
+
+1. 動画のスピーカーアイコンにマウスを乗せると、YouTube の音量バーの右に
+   **オレンジの延長部分**が開く。ここをクリック・ドラッグすると 100〜600% で上がる
+2. 延長部分の上で**ホイール**を回すと 10% ずつ、フォーカスして **←→** でも 10% ずつ動く
+   （Home で 100%、End で 600%）。**ダブルクリックで 100% に戻る**
+3. **動画をクリックしてから ↑ キー**を押すと、YouTube の音量が 100% に達したあとも
+   そのままブーストが 10% ずつ上がる。↓ はブースト分から下がり、100% まで戻ると
+   YouTube の音量が下がり始める（1本の長いバーとして続く）
+4. ブースト中は、マウスを離しても音量バーの右に「250%」がオレンジで出たままになる。
+   ↑↓ で変えたときは画面上部に「音量 250%」が出る
+5. 値は次に開いたときも引き継ぐ（`localStorage`、キー `tm-yt-volume-boost`）
+
+### 1本のバーとしての連動
+
+- 延長部分を上げると、手前の YouTube 側の音量は **100% にそろえ、ミュートも解く**
+- YouTube 側の音量バーで **100% 未満に下げると、ブーストは 100% に戻る**
+  （ミュートでは戻さない。動画の切り替わりで一瞬だけ値が揺れても外さないよう、0.3 秒待って確かめる）
+- 実際の音は「YouTube 側の音量 × ブースト」。YouTube の音量の自動調整（ラウドネス）も残る
+
+### 作りの要点
+
+- **100% のままなら音声に一切触らない。** 100% を超えたときに初めて `AudioContext` を作り、
+  動画を `createMediaElementSource` → `GainNode` → スピーカーへつなぐ。
+  一度つないだ動画は外せない（ページを開き直すまで Web Audio 経由で鳴る）ため
+- **Chrome の自動再生の制限**: ページを一度もクリックしていないと Web Audio は止まっている。
+  止まったまま動画をつなぐと**無音になる**ので、そのときはつながずに待ち、
+  最初のクリックかキー入力で動き出してからつなぐ。待っている間は延長部分の数字が薄くなる
+  （前回のブーストを引き継いだまま開いたときに起こりうる）
+- **音割れ対策**: 100% を超えている間だけリミッター（`DynamicsCompressor`、しきい値 0dB）を通す。
+  しきい値を 0dB より下げると Chrome が音を自動で持ち上げ、表示より大きく鳴る（-2dB で約 +12%）ため 0dB にした
+- 増幅率はなめらかに追従させる（`setTargetAtTime`、プツッという音を防ぐ）
+- 別オリジンの動画（CORS 無し）はつながない（つなぐと Chrome が無音にする）。
+  YouTube の通常の再生は `blob:`（MediaSource）なので対象になる
+- ショートやホームのプレビューなど、**後から出てくる `<video>` も再生時につないで同じ倍率で増幅**する
+  （延長部分のつまみは通常の再生ページのプレーヤーにだけ付く）
+- ↑↓ の横取りは、**プレーヤーにフォーカスがあるとき**（動画をクリックしたあと）だけ。
+  ショートでは ↑↓ が前後の動画への移動なので触らない。キーは YouTube より先に受け取るため
+  `document-start` で登録する
+- 置き場所はセレクタを順に試す: `.ytp-volume-area .ytp-volume-panel` の直後 →
+  `.ytp-volume-panel` の直後 → 左の操作列にある 0〜100 のスライダー（`role="slider"`）の直後 →
+  `.ytp-volume-area` の末尾 → `.ytp-mute-button` の直後 → `.ytp-left-controls` の末尾。
+  操作バーが作り直されたら `MutationObserver` で付け直す
+- **効かないときは**、コンソールで `__tmYtVolumeBoost.dump()` を実行すると、ブースト・増幅率・
+  `AudioContext` の状態・YouTube 側の音量・延長部分の設置先と、動画ごとのつないだかどうかが出る。
+  `__tmYtVolumeBoost.set(300)` で直接変えることもできる
+
+### 注意
+
+- Volume Master など、**ほかの音量拡張と同時に使わない**（倍率が重なる。動画を先につながれていると
+  こちらは増幅できず、延長部分の数字が赤くなる）
+- 増幅しすぎると、リミッターがあっても音質は落ちる。スピーカーや耳を傷めないよう、上げすぎに注意
+
+### 検証
+
+```
+node --check youtube-volume-boost.user.js
+NODE_PATH=$(npm root -g) node test/youtube-volume-boost.test.js
+```
+
+プレーヤーの操作バー・音量欄・プレーヤーAPI（`getVolume` など）を模したDOMに、正弦波を鳴らす `<video>` を置き、
+**スピーカーへ出ていく音の大きさを `AnalyserNode` で実測**する。63項目（音量バーの直後に付く／
+100% のままなら音声に触らない／300% で実際に 3 倍・100% で元どおり／YouTube 側の音量とミュートが掛かる／
+リミッターで 3.0 → 1 前後／YouTube 側との連動／↑↓・←→・ホイール・ダブルクリック／ショートでは横取りしない／
+操作バーの作り直しとクラス名変更への追従／後から来た `<video>`／別オリジンはつながない／
+再読み込み後の引き継ぎ／ほかの拡張が先につないでいると赤字で知らせる／
+自動再生の制限中はつながず、クリック後に効く）を確認する。
+
+YouTube の実DOMとは異なるため、**実機確認の代わりにはならない**。
 
 ## YouTube Full Dates (JST) について
 
