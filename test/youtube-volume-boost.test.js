@@ -6,7 +6,7 @@ const path = require('path');
 //
 // YouTube の再生ページ（プレーヤーの操作バー・音量欄・プレーヤーAPI）を模したDOMに
 // 正弦波の音を流す <video> を置き、スクリプトを流し込んで
-// 「実際に出ていく音の大きさ」を AnalyserNode で測る。
+// 「バーの長さ・つまみの位置」と「実際に出ていく音の大きさ」（AnalyserNode）を測る。
 //
 //   NODE_PATH=$(npm root -g) node test/youtube-volume-boost.test.js
 //
@@ -19,9 +19,14 @@ const SCRIPT = fs.readFileSync(
   'utf8'
 );
 
-const PLAYER_HTML = `
+// YouTube の音量バーと同じく、ふだんは幅 0 で、音量欄にマウスを乗せると 52px に開く
+const PLAYER_HTML = (width) => `
+<style>
+  .ytp-volume-panel { width: 0; height: 100%; transition: width .1s; }
+  .ytp-volume-area:hover .ytp-volume-panel { width: 52px; }
+</style>
 <div id="movie_player" class="html5-video-player" tabindex="-1"
-     style="position:relative;width:640px;height:360px;background:#000;">
+     style="position:relative;width:${width}px;height:360px;background:#000;">
   <div class="html5-video-container"><video class="html5-main-video" loop></video></div>
   <div class="ytp-chrome-bottom" style="position:absolute;left:0;right:0;bottom:0;height:48px;">
     <div class="ytp-chrome-controls" style="display:flex;height:48px;font-size:12px;">
@@ -30,7 +35,7 @@ const PLAYER_HTML = `
         <span class="ytp-volume-area" style="display:inline-flex;height:48px;align-items:center;">
           <button class="ytp-mute-button ytp-button" style="width:48px;">音</button>
           <div class="ytp-volume-panel" role="slider" aria-valuemin="0" aria-valuemax="100"
-               aria-valuenow="100" tabindex="0" style="width:52px;height:100%;">
+               aria-valuenow="100" tabindex="0">
             <div class="ytp-volume-slider"><div class="ytp-volume-slider-handle"></div></div>
           </div>
         </span>
@@ -40,11 +45,11 @@ const PLAYER_HTML = `
   </div>
 </div>`;
 
-function pageHtml(inlineScript) {
+function pageHtml(options) {
   return `<!doctype html><html><meta charset="utf-8"><title>yt-mock</title>
 <body style="margin:0;">
-${PLAYER_HTML}
-${inlineScript ? '<script>' + inlineScript + '</script>' : ''}
+${PLAYER_HTML(options.width || 1000)}
+${options.inline ? '<script>' + SCRIPT + '</script>' : ''}
 </body></html>`;
 }
 
@@ -126,7 +131,7 @@ const TAP = () => {
   };
 
   // YouTube のプレーヤーAPI（#movie_player に生えている getVolume など）と、
-  // YouTube 自身の ↑↓←→ キー操作を模す
+  // YouTube 自身の ↑↓←→ キー操作を模す。window.__noApi なら API を生やさない
   window.__ytKeys = [];
   document.addEventListener('DOMContentLoaded', () => {
     const player = document.getElementById('movie_player');
@@ -140,12 +145,14 @@ const TAP = () => {
       const panel = document.querySelector('.ytp-volume-panel');
       if (panel) panel.setAttribute('aria-valuenow', String(muted ? 0 : volume));
     };
+    window.__ytSync = sync;
+    if (window.__noApi) return;
+
     player.getVolume = () => volume;
     player.setVolume = (v) => { volume = Math.max(0, Math.min(100, v)); sync(); };
     player.isMuted = () => muted;
     player.mute = () => { muted = true; sync(); };
     player.unMute = () => { muted = false; sync(); };
-    window.__ytSync = sync;
 
     document.addEventListener('keydown', (e) => {
       if (!player.contains(document.activeElement)) return;
@@ -164,13 +171,16 @@ function check(name, cond, extra) {
 }
 
 const near = (value, expected, tolerance) =>
-  typeof value === 'number' && Math.abs(value - expected) <= expected * (tolerance || 0.1);
+  typeof value === 'number' && Math.abs(value - expected) <= Math.abs(expected) * (tolerance || 0.1);
 
 async function openPage(browser, opts) {
   const options = opts || {};
   const context = await browser.newContext();
   const page = await context.newPage();
   page.on('pageerror', (e) => console.log('pageerror:', e.message));
+  if (options.noApi) {
+    await page.addInitScript(() => { window.__noApi = true; });
+  }
   await page.addInitScript(TAP);
   if (options.storage) {
     await page.addInitScript((value) => localStorage.setItem('tm-yt-volume-boost', value), options.storage);
@@ -179,7 +189,7 @@ async function openPage(browser, opts) {
     route.fulfill({
       contentType: 'text/html; charset=utf-8',
       headers: { 'content-security-policy': "require-trusted-types-for 'script'" },
-      body: pageHtml(options.inline ? SCRIPT : '')
+      body: pageHtml(options)
     })
   );
   await page.goto('https://www.youtube.com/watch?v=abc');
@@ -194,8 +204,31 @@ const startVideo = (page, amp) =>
     await v.play();
   }, amp);
 
-const boostOf = (page) => page.evaluate(() => parseInt(window.__tmYtVolumeBoost.state()['ブースト'], 10));
+const state = (page) => page.evaluate(() => window.__tmYtVolumeBoost.state());
+const boostOf = async (page) => parseInt((await state(page))['ブースト'], 10);
+const valueOf = (page) => page.evaluate(() => Number(document.querySelector('.tm-ytvb').getAttribute('aria-valuenow')));
+const ytOf = (page) => page.evaluate(() => {
+  const p = document.getElementById('movie_player');
+  return { volume: p.getVolume(), muted: p.isMuted() };
+});
 const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
+
+// つまみの中心の x 座標
+const knobX = (page) => page.evaluate(() => {
+  const r = document.querySelector('.tm-ytvb-knob').getBoundingClientRect();
+  return r.left + r.width / 2;
+});
+
+// バーの上で、値 value に当たる x 座標（0〜600）
+const xForValue = (page, value) => page.evaluate((v) => {
+  const r = document.querySelector('.tm-ytvb-track').getBoundingClientRect();
+  return { x: r.left + 6 + (r.width - 12) * (v / 600), y: r.top + r.height / 2 };
+}, value);
+
+const openBar = async (page) => {
+  await page.hover('.ytp-mute-button');
+  await page.waitForTimeout(350);
+};
 
 (async () => {
   const browser = await chromium.launch({
@@ -203,7 +236,7 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
   });
 
   // ============================================================
-  // 1. 置き場所と、100% のままなら音声に触らないこと
+  // 1. 1本のバー（0〜600%）
   // ============================================================
   {
     const { context, page } = await openPage(browser);
@@ -211,73 +244,130 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
     await page.evaluate(SCRIPT);
     await page.waitForTimeout(100);
 
-    check('設置: 延長部分が YouTube の音量バーの直後に付く', await page.evaluate(() => {
+    check('設置: バーが YouTube の音量バーの直後（音量欄の中）に付く', await page.evaluate(() => {
       const w = document.querySelector('.tm-ytvb');
       return !!w && w.previousElementSibling === document.querySelector('.ytp-volume-panel') &&
         w.parentElement === document.querySelector('.ytp-volume-area');
     }));
-    check('設置: 時間表示より前（音量欄の中）に収まる', await page.evaluate(() =>
-      !!document.querySelector('.ytp-volume-area .tm-ytvb')));
-    check('無害: 100% のままなら AudioContext を作らない', (await page.evaluate(() => window.__ctxCount)) === 0);
-    check('無害: 100% のままなら動画を Web Audio につながない', (await page.evaluate(() => window.__mesCount)) === 0);
+    check('1本化: YouTube 本来の音量バーは見えなくなる', await page.evaluate(() =>
+      getComputedStyle(document.querySelector('.ytp-volume-panel')).visibility === 'hidden'));
+    check('1本化: バーの範囲は 0〜600', await page.evaluate(() => {
+      const w = document.querySelector('.tm-ytvb');
+      return w.getAttribute('aria-valuemin') === '0' && w.getAttribute('aria-valuemax') === '600';
+    }));
+    check('無害: 100% 以下なら AudioContext を作らない', (await page.evaluate(() => window.__ctxCount)) === 0);
 
     const collapsed = await page.evaluate(() => ({
       track: document.querySelector('.tm-ytvb-track').getBoundingClientRect().width,
       label: getComputedStyle(document.querySelector('.tm-ytvb-label')).display
     }));
-    check('見た目: マウスを乗せていなければ閉じている（100% のとき）', collapsed.track === 0 && collapsed.label === 'none', collapsed);
+    check('見た目: マウスを乗せていなければ閉じている（100% 以下のとき）', collapsed.track === 0 && collapsed.label === 'none', collapsed);
 
-    await page.hover('.ytp-mute-button');
-    await page.waitForTimeout(350);
+    await openBar(page);
     const opened = await page.evaluate(() => ({
       track: document.querySelector('.tm-ytvb-track').getBoundingClientRect().width,
-      label: document.querySelector('.tm-ytvb-label').textContent,
-      labelShown: getComputedStyle(document.querySelector('.tm-ytvb-label')).display !== 'none'
+      label: document.querySelector('.tm-ytvb-label').textContent
     }));
-    check('見た目: 音量欄にマウスを乗せると延長部分が開く', opened.track === 64 && opened.labelShown && opened.label === '100%', opened);
+    check('見た目: 音量欄にマウスを乗せるとバーが開く', opened.track > 0 && opened.label === '100%', opened);
+    check('長さ: バー全体は 252px（つまみが 0〜100% で 40px × 6 倍 + つまみ）', opened.track === 252, opened.track);
 
-    // --- つまみのクリック・ドラッグ ---
-    const box = await page.evaluate(() => document.querySelector('.tm-ytvb-track').getBoundingClientRect().toJSON());
-    await page.mouse.click(box.x + box.width - 1, box.y + box.height / 2);
+    // --- 0〜100% は YouTube の音量そのもの ---
+    let pt = await xForValue(page, 50);
+    await page.mouse.click(pt.x, pt.y);
     await page.waitForTimeout(50);
-    check('操作: 延長部分の右端をクリックすると 600%', (await boostOf(page)) === 600);
+    let yt = await ytOf(page);
+    check('操作: 0〜100% の部分を押すと YouTube の音量が変わる（50%）', Math.abs(yt.volume - 50) <= 1 && (await boostOf(page)) === 100, yt);
+    check('操作: つまみもその位置に来る', Math.abs((await valueOf(page)) - 50) <= 1);
+    check('無害: 0〜100% の操作では音声に触らない', (await page.evaluate(() => window.__mesCount)) === 0);
 
-    await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2);
+    // つまみの位置で長さを確かめる
+    await page.evaluate(() => window.__tmYtVolumeBoost.set(0));
+    const x0 = await knobX(page);
+    await page.evaluate(() => window.__tmYtVolumeBoost.set(100));
+    const x100 = await knobX(page);
+    await page.evaluate(() => window.__tmYtVolumeBoost.set(600));
+    const x600 = await knobX(page);
+    check('長さ: 0〜100% の部分は YouTube の音量バーと同じ 40px', Math.abs((x100 - x0) - 40) < 0.6, x100 - x0);
+    check('長さ: 0〜600% 全体はその 6 倍（240px）', Math.abs((x600 - x0) - 240) < 0.6, x600 - x0);
+    check('つまみ: 1つだけ', await page.evaluate(() => document.querySelectorAll('.tm-ytvb-knob').length === 1));
+    await page.evaluate(() => window.__tmYtVolumeBoost.set(100));
+
+    // --- 右端まで ---
+    pt = await xForValue(page, 600);
+    await page.mouse.click(pt.x + 5, pt.y);
+    await page.waitForTimeout(50);
+    yt = await ytOf(page);
+    check('操作: 右端を押すと 600%（YouTube 側は 100%）', (await boostOf(page)) === 600 && yt.volume === 100, { yt, boost: await boostOf(page) });
+    check('増幅: 100% を超えたら動画を Web Audio につなぐ', (await page.evaluate(() => window.__mesCount)) === 1);
+
+    // --- 1つのつまみで 600 → 300 → 60 とドラッグ ---
+    const p600 = await xForValue(page, 600);
+    const p300 = await xForValue(page, 300);
+    const p60 = await xForValue(page, 60);
+    await page.mouse.move(p600.x, p600.y);
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+    await page.mouse.move(p300.x, p300.y, { steps: 5 });
+    const mid = await boostOf(page);
+    check('ドラッグ: そのまま 300% まで動かせる', mid >= 295 && mid <= 305, mid);
+    await page.mouse.move(p60.x, p60.y, { steps: 5 });
     await page.mouse.up();
     await page.waitForTimeout(50);
-    const mid = await boostOf(page);
-    check('操作: 真ん中までドラッグすると 350% 前後', mid >= 330 && mid <= 370, mid);
+    yt = await ytOf(page);
+    check('ドラッグ: 同じつまみで 100% を割ると YouTube の音量が下がる（60%）', (await boostOf(page)) === 100 && Math.abs(yt.volume - 60) <= 1, { yt, boost: await boostOf(page) });
 
-    check('増幅: 100% を超えたら動画を Web Audio につなぐ', (await page.evaluate(() => window.__mesCount)) === 1);
+    // --- 100% に吸い付く ---
+    const p101 = await xForValue(page, 101.5);
+    await page.mouse.click(p101.x, p101.y);
+    await page.waitForTimeout(50);
+    check('ドラッグ: 100% の近くでは 100% ちょうどに吸い付く', (await valueOf(page)) === 100 && (await boostOf(page)) === 100);
 
     // --- 実際の音の大きさ ---
     await page.evaluate(() => window.__tmYtVolumeBoost.set(300));
-    const p300 = await peak(page);
-    check('増幅: 300% で音が 3 倍になる（0.1 → 0.3）', near(p300, 0.3), p300);
-    check('増幅: 100% を超えている間はリミッターを通す', await page.evaluate(() =>
-      window.__tmYtVolumeBoost.state()['リミッター'] === '通している'));
+    const a300 = await peak(page);
+    check('増幅: 300% で音が 3 倍になる（0.1 → 0.3）', near(a300, 0.3), a300);
+    check('増幅: 100% を超えている間はリミッターを通す', (await state(page))['リミッター'] === '通している');
 
     await page.evaluate(() => window.__tmYtVolumeBoost.set(100));
-    const p100 = await peak(page, 600);
-    check('増幅: 100% に戻すと元の大きさ（0.1）', near(p100, 0.1), p100);
-    check('増幅: 100% ではリミッターを外す（音を変えない）', await page.evaluate(() =>
-      window.__tmYtVolumeBoost.state()['リミッター'] === '通していない'));
+    const a100 = await peak(page, 600);
+    check('増幅: 100% に戻すと元の大きさ（0.1）', near(a100, 0.1), a100);
+    check('増幅: 100% ではリミッターを外す（音を変えない）', (await state(page))['リミッター'] === '通していない');
 
-    // --- YouTube 側の音量が掛け合わされる ---
+    await page.evaluate(() => window.__tmYtVolumeBoost.set(40));
+    const a40 = await peak(page);
+    check('音量: 40% なら 0.04（YouTube の音量がそのまま効く）', near(a40, 0.04), a40);
+
+    // --- YouTube 側の音量の自動調整が掛け合わされる ---
     await page.evaluate(() => window.__tmYtVolumeBoost.set(200));
     await page.evaluate(() => { window.__norm = 0.5; window.__ytSync(); });
-    const pNorm = await peak(page);
-    check('増幅: YouTube 側の音量（自動調整で 0.5）にブーストが掛かる（0.1×0.5×2）', near(pNorm, 0.1), pNorm);
+    const aNorm = await peak(page);
+    check('増幅: YouTube の音量の自動調整（0.5）にも掛かる（0.1×0.5×2）', near(aNorm, 0.1), aNorm);
     await page.evaluate(() => { window.__norm = 1; window.__ytSync(); });
+
+    // --- 色と目盛り ---
+    const look = await page.evaluate(() => ({
+      fill: document.querySelector('.tm-ytvb-fill').style.background,
+      tick: document.querySelector('.tm-ytvb-tick').style.left,
+      tickShown: getComputedStyle(document.querySelector('.tm-ytvb-tick')).display !== 'none'
+    }));
+    check('見た目: 100% までは白、その先はオレンジで塗る', look.fill.includes('rgb(255, 255, 255)') && look.fill.includes('rgb(255, 176, 0)'), look.fill);
+    check('見た目: 100% の位置（1/6）に目盛りがある', look.tickShown && look.tick.startsWith('16.66'), look);
 
     // --- ミュート ---
     await page.evaluate(() => document.getElementById('movie_player').mute());
-    const pMute = await peak(page);
-    check('増幅: ミュートすれば無音（ブースト中でも）', pMute === 0, pMute);
-    check('連動: ミュートしてもブーストは外れない', (await page.waitForTimeout(400), await boostOf(page)) === 200);
-    await page.evaluate(() => document.getElementById('movie_player').unMute());
+    await page.waitForTimeout(50);
+    const muteLook = await page.evaluate(() => ({
+      value: document.querySelector('.tm-ytvb').getAttribute('aria-valuenow'),
+      label: document.querySelector('.tm-ytvb-label').textContent
+    }));
+    check('ミュート: つまみは 0 の位置・「ミュート」と出る', muteLook.value === '0' && muteLook.label === 'ミュート', muteLook);
+    const aMute = await peak(page);
+    check('ミュート: 無音になる（増幅中でも）', aMute === 0, aMute);
+    await page.waitForTimeout(400);
+    check('ミュート: 解けば増幅（200%）に戻る', await (async () => {
+      await page.evaluate(() => document.getElementById('movie_player').unMute());
+      await page.waitForTimeout(50);
+      return (await valueOf(page)) === 200;
+    })());
 
     // --- リミッター ---
     await page.evaluate(() => window.__tmYtVolumeBoost.set(600));
@@ -287,19 +377,34 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
       await new Promise((r) => v.addEventListener('loadeddata', r, { once: true }));
       await v.play();
     });
-    const pLoud = await peak(page, 800);
-    check('リミッター: 0.5 × 600%（本来 3.0）でも 1 前後に抑える', pLoud > 0.6 && pLoud <= 1.1, pLoud);
-    check('使い回し: 同じ <video> で次の動画に替わってもブーストが効いたまま', pLoud > 0.6);
+    const aLoud = await peak(page, 800);
+    check('リミッター: 0.5 × 600%（本来 3.0）でも 1 前後に抑える', aLoud > 0.6 && aLoud <= 1.1, aLoud);
+    check('使い回し: 同じ <video> で次の動画に替わっても増幅が効いたまま', aLoud > 0.6);
 
-    // --- 表示 ---
-    await page.mouse.move(600, 20);
+    // --- 閉じていても増幅中は数字が出る ---
+    await page.mouse.move(900, 20);
     await page.waitForTimeout(350);
     const boostedLabel = await page.evaluate(() => {
       const label = document.querySelector('.tm-ytvb-label');
-      return { text: label.textContent, shown: getComputedStyle(label).display !== 'none', color: getComputedStyle(label).color };
+      return {
+        text: label.textContent,
+        shown: getComputedStyle(label).display !== 'none',
+        color: getComputedStyle(label).color,
+        track: document.querySelector('.tm-ytvb-track').getBoundingClientRect().width
+      };
     });
-    check('見た目: ブースト中はマウスを離しても「600%」が出たまま', boostedLabel.shown && boostedLabel.text === '600%', boostedLabel);
-    check('見た目: ブースト中の数字は色付き', boostedLabel.color === 'rgb(255, 176, 0)', boostedLabel.color);
+    check('見た目: 増幅中はマウスを離しても「600%」がオレンジで出たまま', boostedLabel.shown && boostedLabel.text === '600%' && boostedLabel.color === 'rgb(255, 176, 0)', boostedLabel);
+    check('見た目: バー自体は閉じる', boostedLabel.track === 0, boostedLabel);
+
+    // --- YouTube の音量バーが開いたままの見た目なら、こちらも開いたまま ---
+    await page.evaluate(() => { document.querySelector('.ytp-volume-panel').style.width = '52px'; });
+    await page.waitForTimeout(350);
+    check('連動: YouTube の音量バーが開いているときはこちらも開く', await page.evaluate(() =>
+      document.querySelector('.tm-ytvb-track').getBoundingClientRect().width === 252));
+    await page.evaluate(() => { document.querySelector('.ytp-volume-panel').style.width = ''; });
+    await page.waitForTimeout(350);
+    check('連動: YouTube の音量バーが閉じたらこちらも閉じる', await page.evaluate(() =>
+      document.querySelector('.tm-ytvb-track').getBoundingClientRect().width === 0));
 
     await context.close();
   }
@@ -313,28 +418,24 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
     await page.evaluate(SCRIPT);
     await page.waitForTimeout(100);
 
-    // 延長部分を上げたら YouTube 側を 100% にそろえる
+    // 100% より上げたら YouTube 側を 100% にそろえる
     await page.evaluate(() => {
       const p = document.getElementById('movie_player');
       p.setVolume(40);
       p.mute();
     });
     await page.evaluate(() => window.__tmYtVolumeBoost.set(250));
-    const yt = await page.evaluate(() => {
-      const p = document.getElementById('movie_player');
-      return { volume: p.getVolume(), muted: p.isMuted() };
-    });
-    check('連動: 延長部分を上げると YouTube 側は 100%・ミュート解除になる', yt.volume === 100 && yt.muted === false, yt);
-    const p250 = await peak(page);
-    check('連動: そのとき実際に 2.5 倍（0.1 → 0.25）', near(p250, 0.25), p250);
+    let yt = await ytOf(page);
+    check('連動: 100% より上げると YouTube 側は 100%・ミュート解除になる', yt.volume === 100 && yt.muted === false, yt);
+    const a250 = await peak(page);
+    check('連動: そのとき実際に 2.5 倍（0.1 → 0.25）', near(a250, 0.25), a250);
 
-    // YouTube 側の音量を下げたらブーストを戻す
+    // YouTube 側の音量を下げたら増幅を外す
     await page.evaluate(() => document.getElementById('movie_player').setVolume(60));
     await page.waitForTimeout(500);
-    check('連動: YouTube 側の音量を 100% 未満に下げるとブーストは 100% に戻る', (await boostOf(page)) === 100);
+    check('連動: YouTube 側の音量が 100% 未満に下がると増幅は外れ、つまみは 60%', (await boostOf(page)) === 100 && (await valueOf(page)) === 60);
 
     // 一瞬だけ下がってすぐ戻った場合は外さない
-    await page.evaluate(() => document.getElementById('movie_player').setVolume(100));
     await page.evaluate(() => window.__tmYtVolumeBoost.set(300));
     await page.evaluate(() => {
       const p = document.getElementById('movie_player');
@@ -342,31 +443,32 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
       setTimeout(() => p.setVolume(100), 50);
     });
     await page.waitForTimeout(600);
-    check('連動: 一瞬だけ下がってすぐ戻った場合はブーストを外さない', (await boostOf(page)) === 300);
+    check('連動: 一瞬だけ下がってすぐ戻った場合は増幅を外さない', (await boostOf(page)) === 300);
     await page.evaluate(() => window.__tmYtVolumeBoost.set(100));
 
     // --- ↑↓ キー（プレーヤーにフォーカス） ---
     await page.evaluate(() => { window.__ytKeys = []; document.getElementById('movie_player').focus(); });
     await page.keyboard.press('ArrowUp');
-    check('キー: 音量 100% で ↑ を押すとブーストが 110% に上がる', (await boostOf(page)) === 110);
+    check('キー: 音量 100% で ↑ を押すと 110% に上がる', (await valueOf(page)) === 110 && (await boostOf(page)) === 110);
     check('キー: そのとき YouTube 側には ↑ を渡さない', (await page.evaluate(() => window.__ytKeys.length)) === 0);
     check('キー: 画面に「音量 110%」を出す', await page.evaluate(() => {
       const t = document.querySelector('#movie_player .tm-ytvb-toast');
       return !!t && t.textContent === '音量 110%' && t.classList.contains('tm-ytvb-show');
     }));
     await page.keyboard.press('ArrowUp');
-    check('キー: もう一度 ↑ で 120%', (await boostOf(page)) === 120);
+    check('キー: もう一度 ↑ で 120%', (await valueOf(page)) === 120);
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('ArrowDown');
-    check('キー: ↓ はブースト分から下がる（120 → 100）', (await boostOf(page)) === 100);
-    check('キー: ブースト中の ↓ は YouTube 側に渡さない', (await page.evaluate(() => window.__ytKeys.length)) === 0);
+    check('キー: ↓ は増幅分から下がる（120 → 100）', (await boostOf(page)) === 100);
+    check('キー: 増幅中の ↓ は YouTube 側に渡さない', (await page.evaluate(() => window.__ytKeys.length)) === 0);
     await page.keyboard.press('ArrowDown');
-    const afterDown = await page.evaluate(() => ({ keys: window.__ytKeys.slice(), volume: document.getElementById('movie_player').getVolume() }));
-    check('キー: ブーストが 100% なら ↓ は YouTube 側がふつうに下げる', afterDown.keys.join() === 'down' && afterDown.volume === 95, afterDown);
+    await page.waitForTimeout(50);   // volumechange は少し遅れて届く
+    yt = await ytOf(page);
+    check('キー: 100% からの ↓ は YouTube 側がふつうに下げる（95%）', yt.volume === 95 && (await page.evaluate(() => window.__ytKeys.join())) === 'down', yt);
+    check('キー: YouTube 側で下げた音量につまみが追いつく', (await valueOf(page)) === 95);
     await page.keyboard.press('ArrowUp');
-    const afterUp = await page.evaluate(() => ({ keys: window.__ytKeys.slice(), volume: document.getElementById('movie_player').getVolume() }));
-    check('キー: YouTube 側が 100% 未満なら ↑ も YouTube に任せる', afterUp.keys.join() === 'down,up' && afterUp.volume === 100, afterUp);
-    check('キー: そのときブーストは 100% のまま', (await boostOf(page)) === 100);
+    yt = await ytOf(page);
+    check('キー: YouTube 側が 100% 未満なら ↑ も YouTube に任せる', yt.volume === 100 && (await boostOf(page)) === 100, yt);
 
     // フォーカスがプレーヤーの外なら触らない（ページのスクロールなど）
     await page.evaluate(() => { document.activeElement.blur(); window.__ytKeys = []; });
@@ -379,65 +481,91 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
     check('キー: ショートでは ↑ を横取りしない', (await boostOf(page)) === 100);
     await page.evaluate(() => history.pushState({}, '', '/watch?v=abc'));
 
-    // --- 延長部分そのものを操作 ---
+    // --- バーそのものをキーで操作 ---
     await page.evaluate(() => { window.__ytKeys = []; document.querySelector('.tm-ytvb').focus(); });
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
-    check('延長部分: → で 10% ずつ上がる', (await boostOf(page)) === 120);
-    await page.keyboard.press('ArrowLeft');
-    check('延長部分: ← で下がる', (await boostOf(page)) === 110);
+    check('バー: → で 100% から 10% ずつ上がる', (await valueOf(page)) === 120);
     await page.keyboard.press('End');
-    check('延長部分: End で上限 600%', (await boostOf(page)) === 600);
+    check('バー: End で上限 600%', (await valueOf(page)) === 600);
     await page.keyboard.press('Home');
-    check('延長部分: Home で 100%', (await boostOf(page)) === 100);
-    check('延長部分: ←→ は YouTube のシークに渡さない', (await page.evaluate(() => window.__ytKeys.length)) === 0,
+    yt = await ytOf(page);
+    check('バー: Home で 0%（YouTube の音量 0）', (await valueOf(page)) === 0 && yt.volume === 0, yt);
+    await page.keyboard.press('ArrowRight');
+    check('バー: 100% 以下では 5% ずつ（YouTube と同じ）', (await valueOf(page)) === 5);
+    await page.keyboard.press('ArrowLeft');
+    check('バー: ← で下がる', (await valueOf(page)) === 0);
+    check('バー: ←→ は YouTube のシークに渡さない', (await page.evaluate(() => window.__ytKeys.length)) === 0,
       await page.evaluate(() => window.__ytKeys));
 
-    await page.hover('.ytp-mute-button');
-    await page.waitForTimeout(300);
+    // --- ホイール ---
+    await page.evaluate(() => window.__tmYtVolumeBoost.set(100));
+    await openBar(page);
     await page.hover('.tm-ytvb-track');
     await page.mouse.wheel(0, -100);
     await page.mouse.wheel(0, -100);
     await page.waitForTimeout(50);
-    check('延長部分: ホイールを上に回すと上がる', (await boostOf(page)) === 120);
+    check('ホイール: 上に回すと上がる（100 → 120）', (await valueOf(page)) === 120);
+    await page.mouse.wheel(0, 100);
+    await page.mouse.wheel(0, 100);
     await page.mouse.wheel(0, 100);
     await page.waitForTimeout(50);
-    check('延長部分: ホイールを下に回すと下がる', (await boostOf(page)) === 110);
-    check('延長部分: ホイールでページがスクロールしない', (await page.evaluate(() => window.scrollY)) === 0);
+    yt = await ytOf(page);
+    check('ホイール: 100% を割ると YouTube の音量が 5% ずつ下がる（95%）', (await valueOf(page)) === 95 && yt.volume === 95, yt);
+    check('ホイール: ページはスクロールしない', (await page.evaluate(() => window.scrollY)) === 0);
 
     await page.dblclick('.tm-ytvb-label');
-    check('延長部分: ダブルクリックで 100% に戻る', (await boostOf(page)) === 100);
+    check('ダブルクリック: 100% に戻る', (await valueOf(page)) === 100 && (await ytOf(page)).volume === 100);
 
-    check('保存: 設定が localStorage に残る', await page.evaluate(() => {
+    check('保存: 増幅は localStorage に残る', await page.evaluate(() => {
       window.__tmYtVolumeBoost.set(270);
       return localStorage.getItem('tm-yt-volume-boost') === '270';
     }));
 
     // --- 安定（書き換えが止まる） ---
+    await page.mouse.move(900, 20);
+    await page.waitForTimeout(400);
     const loops = await page.evaluate(async () => {
       let n = 0;
       const obs = new MutationObserver(() => n++);
-      obs.observe(document.querySelector('.tm-ytvb'), { childList: true, subtree: true, attributes: true, characterData: true });
+      obs.observe(document.querySelector('.ytp-volume-area'), { childList: true, subtree: true, attributes: true, characterData: true });
       await new Promise((r) => setTimeout(r, 400));
       obs.disconnect();
       return n;
     });
-    check('安定: 何も起きていないとき延長部分が書き換わり続けない', loops === 0, loops);
+    check('安定: 何も起きていないときバーが書き換わり続けない', loops === 0, loops);
 
     // --- 操作バーの作り直し（YouTube 側の再描画） ---
     await page.evaluate(() => {
       const area = document.querySelector('.ytp-volume-area');
       const fresh = area.cloneNode(true);
       fresh.querySelectorAll('.tm-ytvb').forEach((el) => el.remove());
+      fresh.querySelectorAll('[data-tm-ytvb-replaced]').forEach((el) => el.removeAttribute('data-tm-ytvb-replaced'));
       area.replaceWith(fresh);
     });
     await page.waitForTimeout(500);
-    check('再描画: 音量欄が作り直されたら延長部分を付け直す', await page.evaluate(() => {
+    check('再描画: 音量欄が作り直されたらバーを付け直し、新しい音量バーを隠す', await page.evaluate(() => {
       const w = document.querySelector('.tm-ytvb');
-      return !!w && w.previousElementSibling === document.querySelector('.ytp-volume-panel');
+      const panel = document.querySelector('.ytp-volume-panel');
+      return !!w && w.previousElementSibling === panel && getComputedStyle(panel).visibility === 'hidden';
     }));
     check('再描画: 付け直しても表示は 270% のまま', await page.evaluate(() =>
       document.querySelector('.tm-ytvb-label').textContent === '270%'));
+
+    // --- YouTube の音量バーだけが作り直されたとき ---
+    await page.evaluate(() => {
+      const panel = document.querySelector('.ytp-volume-panel');
+      const fresh = panel.cloneNode(true);
+      fresh.removeAttribute('data-tm-ytvb-replaced');
+      panel.replaceWith(fresh);
+    });
+    await page.waitForTimeout(500);
+    check('再描画: YouTube の音量バーだけが作り直されても、新しい方を隠す（2本並ばない）', await page.evaluate(() => {
+      const panels = document.querySelectorAll('.ytp-volume-panel');
+      const w = document.querySelector('.tm-ytvb');
+      return panels.length === 1 && getComputedStyle(panels[0]).visibility === 'hidden' &&
+        w.previousElementSibling === panels[0];
+    }));
 
     // --- クラス名が変わっても、0〜100 のスライダーを目印に付く ---
     await page.evaluate(() => {
@@ -455,9 +583,10 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
       area.replaceWith(fresh);
     });
     await page.waitForTimeout(500);
-    check('保険: クラス名が変わっても 0〜100 のスライダーの直後に付く', await page.evaluate(() => {
+    check('保険: クラス名が変わっても 0〜100 のスライダーの直後に付き、それを隠す', await page.evaluate(() => {
       const w = document.querySelector('.tm-ytvb');
-      return !!w && w.previousElementSibling === document.querySelector('.ytp-volume-slider-v2');
+      const slider = document.querySelector('.ytp-volume-slider-v2');
+      return !!w && w.previousElementSibling === slider && getComputedStyle(slider).visibility === 'hidden';
     }));
 
     // --- 新しい <video>（ショートなど別のプレーヤー）も増幅する ---
@@ -474,8 +603,8 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
       await new Promise((r) => v.addEventListener('loadeddata', r, { once: true }));
       await v.play();
     });
-    const pShorts = await peak(page);
-    check('新しい動画: 後から来た <video> も再生時につないで増幅する（0.1 × 2.7）', near(pShorts, 0.27), pShorts);
+    const aShorts = await peak(page);
+    check('新しい動画: 後から来た <video> も再生時につないで増幅する（0.1 × 2.7）', near(aShorts, 0.27), aShorts);
 
     // --- 別オリジンの動画はつながない（つなぐと無音になるため） ---
     const foreign = await page.evaluate(() => {
@@ -493,27 +622,74 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
       const d = window.__tmYtVolumeBoost.dump();
       return { ok: !!d && !!d.state && Array.isArray(d.videos), state: d.state };
     });
-    check('診断: __tmYtVolumeBoost.dump() が動く', dumped.ok && dumped.state['状態'] === 'OK', dumped.state);
+    check('診断: __tmYtVolumeBoost.dump() が動く', dumped.ok && dumped.state['状態'] === 'OK' && dumped.state['形'].startsWith('1本のバー'), dumped.state);
 
     await context.close();
   }
 
   // ============================================================
-  // 3. 前回のブーストを引き継ぐ（再読み込み）
+  // 3. 長さの調整（YouTube の音量バーの幅・小さいプレーヤー）
+  // ============================================================
+  {
+    // 幅の上限（プレーヤーの 30%）に掛からないよう、広いプレーヤーで見る
+    const { context, page } = await openPage(browser, { width: 1300 });
+    await page.addStyleTag({ content: '#movie_player .ytp-volume-area:hover .ytp-volume-panel { width: 72px; }' });
+    await page.evaluate(SCRIPT);
+    await openBar(page);
+    await page.mouse.move(900, 20);
+    await page.waitForTimeout(200);
+    await openBar(page);
+    const width = await page.evaluate(() => document.querySelector('.tm-ytvb-track').getBoundingClientRect().width);
+    check('長さ: YouTube の音量バーが広ければ（72px）それに合わせる（60px × 6 + 12 = 372px）', width === 372, width);
+    await context.close();
+  }
+  {
+    const { context, page } = await openPage(browser, { width: 500 });
+    await page.evaluate(SCRIPT);
+    await openBar(page);
+    const width = await page.evaluate(() => document.querySelector('.tm-ytvb-track').getBoundingClientRect().width);
+    check('長さ: 小さいプレーヤー（幅 500px）では右のボタンにかぶらないよう縮める（150 + 12 = 162px）', width === 162, width);
+    await context.close();
+  }
+
+  // ============================================================
+  // 4. プレーヤーAPI が無いとき（延長部分だけ）
+  // ============================================================
+  {
+    const { context, page } = await openPage(browser, { noApi: true });
+    await startVideo(page, 0.1);
+    await page.evaluate(SCRIPT);
+    await openBar(page);
+    const look = await page.evaluate(() => ({
+      panel: getComputedStyle(document.querySelector('.ytp-volume-panel')).visibility,
+      min: document.querySelector('.tm-ytvb').getAttribute('aria-valuemin'),
+      track: document.querySelector('.tm-ytvb-track').getBoundingClientRect().width,
+      shape: window.__tmYtVolumeBoost.state()['形']
+    }));
+    check('API 無し: YouTube の音量バーは残す', look.panel === 'visible', look);
+    check('API 無し: 右に 100〜600% の延長部分（64px）だけを付ける', look.min === '100' && look.track === 64 && look.shape.startsWith('延長部分だけ'), look);
+    await page.evaluate(() => window.__tmYtVolumeBoost.set(300));
+    const a = await peak(page);
+    check('API 無し: 増幅はそのまま効く（0.1 → 0.3）', near(a, 0.3), a);
+    await context.close();
+  }
+
+  // ============================================================
+  // 5. 前回の増幅を引き継ぐ（再読み込み）
   // ============================================================
   {
     const { context, page } = await openPage(browser, { storage: '300' });
     await page.evaluate(SCRIPT);
     await startVideo(page, 0.1);
-    const p = await peak(page);
-    check('引き継ぎ: 再読み込み後も前回の 300% で鳴る', near(p, 0.3), p);
-    check('引き継ぎ: 延長部分にも 300% と出る', await page.evaluate(() =>
+    const a = await peak(page);
+    check('引き継ぎ: 再読み込み後も前回の 300% で鳴る', near(a, 0.3), a);
+    check('引き継ぎ: バーにも 300% と出る', await page.evaluate(() =>
       document.querySelector('.tm-ytvb-label').textContent === '300%'));
     await context.close();
   }
 
   // ============================================================
-  // 4. ほかの拡張機能などが先に動画をつないでいるとき
+  // 6. ほかの拡張機能などが先に動画をつないでいるとき
   // ============================================================
   {
     const { context, page } = await openPage(browser);
@@ -526,21 +702,21 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
     await page.evaluate(SCRIPT);
     await page.evaluate(() => window.__tmYtVolumeBoost.set(200));
     await page.waitForTimeout(100);
-    const state = await page.evaluate(() => ({
+    const st = await page.evaluate(() => ({
       error: document.querySelector('.tm-ytvb').classList.contains('tm-ytvb-error'),
       color: getComputedStyle(document.querySelector('.tm-ytvb-label')).color,
       status: window.__tmYtVolumeBoost.state()['状態'],
       title: document.querySelector('.tm-ytvb').title
     }));
-    check('先客: 増幅できないときは延長部分の数字が赤くなる', state.error && state.color === 'rgb(255, 110, 110)', state);
-    check('先客: 診断と説明に「増幅できない」理由が出る', state.status.startsWith('増幅できない') && state.title.includes('増幅できません'), state);
+    check('先客: 増幅できないときは数字が赤くなる', st.error && st.color === 'rgb(255, 110, 110)', st);
+    check('先客: 診断と説明に「増幅できない」理由が出る', st.status.startsWith('増幅できない') && st.title.includes('増幅できません'), st);
     await context.close();
   }
 
   await browser.close();
 
   // ============================================================
-  // 5. 自動再生の制限で Web Audio が止まっているとき
+  // 7. 自動再生の制限で Web Audio が止まっているとき
   // ============================================================
   {
     const strict = await chromium.launch({
@@ -563,9 +739,9 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
     }));
     check('制限: クリック前は Web Audio が止まっている（前提の確認）', before.ctx === 'suspended', before);
     check('制限: 止まっている間は動画をつながない（つなぐと無音になる）', before.mes === 0, before);
-    check('制限: 延長部分に「クリック待ち」が出る', before.waiting && before.status.includes('クリック待ち'), before);
+    check('制限: バーに「クリック待ち」が出る', before.waiting && before.status.includes('クリック待ち'), before);
 
-    await page.mouse.click(600, 20);
+    await page.mouse.click(900, 20);
     await page.waitForTimeout(200);
     await page.evaluate(() => document.querySelector('#movie_player video').play());
     const after = await page.evaluate(() => ({
@@ -576,8 +752,8 @@ const peak = (page, wait) => page.evaluate((w) => window.__peak(w), wait);
     check('制限: ページをクリックしたら Web Audio が動き出す', after.ctx === 'running', after);
     check('制限: そのあと動画をつなぐ', after.mes === 1, after);
     check('制限: 「クリック待ち」が消える', !after.waiting, after);
-    const p = await peak(page);
-    check('制限: クリック後は 300% で鳴る', near(p, 0.3), p);
+    const a = await peak(page);
+    check('制限: クリック後は 300% で鳴る', near(a, 0.3), a);
 
     await context.close();
     await strict.close();
