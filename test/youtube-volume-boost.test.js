@@ -413,6 +413,32 @@ const openBar = async (page) => {
       (await page.evaluate(() => localStorage.getItem('tm-yt-volume-boost-limiter'))) === 'on', aBack);
     check('きれい: 数字をクリックしても音量は変わらない', (await valueOf(page)) === 600);
 
+    // --- 横幅が狭くて数字が見えないとき用: バーの右クリックでも切り替わる ---
+    await openBar(page);
+    const ctxMenuOpened = await page.evaluate(() => {
+      let reached = false;
+      const onCtx = () => { reached = true; };
+      document.getElementById('movie_player').addEventListener('contextmenu', onCtx);
+      window.__ctxReached = () => { document.getElementById('movie_player').removeEventListener('contextmenu', onCtx); return reached; };
+      return true;
+    });
+    await page.click('.tm-ytvb-track', { button: 'right' });
+    await page.waitForTimeout(50);
+    const rc = await page.evaluate(() => ({
+      mode: window.__tmYtVolumeBoost.state()['モード'],
+      fill: document.querySelector('.tm-ytvb-fill').style.background,
+      reached: window.__ctxReached()
+    }));
+    check('右クリック: バーの右クリックで「大きく」に切り替わる', ctxMenuOpened && rc.mode.startsWith('大きく'), rc);
+    check('右クリック: 「大きく」のときは 100% より右の塗りが赤みがかる', rc.fill.includes('rgb(255, 122, 61)') && !rc.fill.includes('rgb(255, 176, 0)'), rc.fill);
+    check('右クリック: YouTube の右クリックメニューには渡さない', rc.reached === false, rc);
+    check('右クリック: 音量は変わらない', (await valueOf(page)) === 600);
+    await page.click('.tm-ytvb-track', { button: 'right' });
+    await page.waitForTimeout(50);
+    check('右クリック: もう一度で「きれい」に戻り、塗りもオレンジに戻る', await page.evaluate(() =>
+      window.__tmYtVolumeBoost.state()['モード'].startsWith('きれい') &&
+      document.querySelector('.tm-ytvb-fill').style.background.includes('rgb(255, 176, 0)')));
+
     // --- 閉じていても増幅中は数字が出る ---
     await page.mouse.move(900, 20);
     await page.waitForTimeout(350);
