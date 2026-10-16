@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube 音量ブースト v1.3.0
+// @name         YouTube 音量ブースト v1.4.0
 // @namespace    local.hiro.tools
-// @version      1.3.0
+// @version      1.4.0
 // @description  YouTube の音量を 100% より上（最大 600%）まで上げる。プレーヤーの音量バーを 0〜600% の1本の長いバーに置き換え、つまみ1つで動かせる（目盛りは対数で、0〜100% がバーの約2/3）。音量 100% で ↑ キーを押したときも、その先へ上がる
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -945,6 +945,10 @@
         track.addEventListener('dblclick', onWidgetDblClick);
         label.addEventListener('click', onLabelClick);
 
+        // 横幅が狭いと数字が隠れるので、バーの右クリックでも切り替えられるようにする。
+        // YouTube の右クリックメニューやブラウザのメニューは出さない
+        widget.addEventListener('contextmenu', onLabelClick);
+
         // YouTube 側の操作（再生・停止など）に伝わらないようにする
         ['mousedown', 'click'].forEach((type) => {
             widget.addEventListener(type, (event) => {
@@ -1039,7 +1043,7 @@
         });
     }
 
-    // 数字のクリックで「きれい（リミッターあり）」と「大きく（なし）」を切り替える
+    // 数字のクリック・バーの右クリックで「きれい（リミッターあり）」と「大きく（なし）」を切り替える
     function onLabelClick(event) {
         event.preventDefault();
         event.stopPropagation();
@@ -1195,7 +1199,7 @@
                 ? '音量: ' + value + '%（0〜' + MAX_BOOST + '%。100% より右は増幅）'
                 : '音量ブースト: ' + value + '%',
             'ドラッグ・ホイール・←→キーで調整、バーのダブルクリックで 100% に戻す',
-            '数字をクリック: ' + (limiterOn
+            'バーを右クリック（または数字をクリック）: ' + (limiterOn
                 ? 'いまは「きれい」（リミッターあり）→「大きく」に切り替え'
                 : 'いまは「大きく」（リミッターなし）→「きれい」に切り替え')
         ];
@@ -1287,14 +1291,17 @@
 
         fill.style.width = percent(ratio);
 
+        // 「大きく」のときは 100% より右の塗りを赤みがかった色にする（数字が隠れていても分かるように）
+        const boostColor = limiterOn ? COLOR_BOOST : COLOR_LOUD;
+
         if (!unified) {
-            fill.style.background = COLOR_BOOST;
+            fill.style.background = boostColor;
         } else if (ratio <= mark) {
             fill.style.background = COLOR_BASE;
         } else {
             const baseEnd = percent(mark / ratio);
 
-            fill.style.background = 'linear-gradient(to right, ' + COLOR_BASE + ' 0 ' + baseEnd + ', ' + COLOR_BOOST + ' ' + baseEnd + ' 100%)';
+            fill.style.background = 'linear-gradient(to right, ' + COLOR_BASE + ' 0 ' + baseEnd + ', ' + boostColor + ' ' + baseEnd + ' 100%)';
         }
 
         tick.style.left = percent(mark);
