@@ -219,11 +219,14 @@ const knobX = (page) => page.evaluate(() => {
   return r.left + r.width / 2;
 });
 
+// 対数目盛りでの位置（0〜1）。本体と同じ式（下端 3% より下は左端 3% の区間に均等）
+const posOf = (v) => (v <= 3 ? (v / 3) * 0.03 : 0.03 + 0.97 * Math.log(v / 3) / Math.log(600 / 3));
+
 // バーの上で、値 value に当たる x 座標（0〜600）
-const xForValue = (page, value) => page.evaluate((v) => {
+const xForValue = (page, value) => page.evaluate(({ v, pos }) => {
   const r = document.querySelector('.tm-ytvb-track').getBoundingClientRect();
-  return { x: r.left + 6 + (r.width - 12) * (v / 600), y: r.top + r.height / 2 };
-}, value);
+  return { x: r.left + 6 + (r.width - 12) * pos, y: r.top + r.height / 2 };
+}, { v: value, pos: posOf(value) });
 
 const openBar = async (page) => {
   await page.hover('.ytp-mute-button');
@@ -269,7 +272,7 @@ const openBar = async (page) => {
       label: document.querySelector('.tm-ytvb-label').textContent
     }));
     check('見た目: 音量欄にマウスを乗せるとバーが開く', opened.track > 0 && opened.label === '100%', opened);
-    check('長さ: バー全体は 252px（つまみが 0〜100% で 40px × 6 倍 + つまみ）', opened.track === 252, opened.track);
+    check('長さ: バー全体は 252px（40px × 6 + つまみ）', opened.track === 252, opened.track);
 
     // --- 0〜100% は YouTube の音量そのもの ---
     let pt = await xForValue(page, 50);
@@ -281,14 +284,20 @@ const openBar = async (page) => {
     check('無害: 0〜100% の操作では音声に触らない', (await page.evaluate(() => window.__mesCount)) === 0);
 
     // つまみの位置で長さを確かめる
-    await page.evaluate(() => window.__tmYtVolumeBoost.set(0));
-    const x0 = await knobX(page);
-    await page.evaluate(() => window.__tmYtVolumeBoost.set(100));
-    const x100 = await knobX(page);
-    await page.evaluate(() => window.__tmYtVolumeBoost.set(600));
-    const x600 = await knobX(page);
-    check('長さ: 0〜100% の部分は YouTube の音量バーと同じ 40px', Math.abs((x100 - x0) - 40) < 0.6, x100 - x0);
-    check('長さ: 0〜600% 全体はその 6 倍（240px）', Math.abs((x600 - x0) - 240) < 0.6, x600 - x0);
+    const xs = {};
+    for (const v of [0, 25, 50, 100, 200, 400, 600]) {
+      await page.evaluate((x) => window.__tmYtVolumeBoost.set(x), v);
+      xs[v] = await knobX(page);
+    }
+    const share = (xs[100] - xs[0]) / (xs[600] - xs[0]);
+    check('対数: 0〜100% がバーの約 2/3 を占める（v1.1 の 1/6 より広い）', share > 0.64 && share < 0.70, share);
+    check('対数: 0〜100% は 160px 前後（v1.1 は 40px）', Math.abs((xs[100] - xs[0]) - 161) < 2, xs[100] - xs[0]);
+    const d1 = xs[50] - xs[25];
+    const d2 = xs[100] - xs[50];
+    const d3 = xs[200] - xs[100];
+    const d4 = xs[400] - xs[200];
+    check('対数: 25→50・50→100・100→200・200→400% がどれも同じ長さ', [d2, d3, d4].every((d) => Math.abs(d - d1) < 0.8), [d1, d2, d3, d4]);
+    check('長さ: バー全体（つまみの動く範囲）は 240px のまま', Math.abs((xs[600] - xs[0]) - 240) < 0.6, xs[600] - xs[0]);
     check('つまみ: 1つだけ', await page.evaluate(() => document.querySelectorAll('.tm-ytvb-knob').length === 1));
     await page.evaluate(() => window.__tmYtVolumeBoost.set(100));
 
@@ -350,7 +359,7 @@ const openBar = async (page) => {
       tickShown: getComputedStyle(document.querySelector('.tm-ytvb-tick')).display !== 'none'
     }));
     check('見た目: 100% までは白、その先はオレンジで塗る', look.fill.includes('rgb(255, 255, 255)') && look.fill.includes('rgb(255, 176, 0)'), look.fill);
-    check('見た目: 100% の位置（1/6）に目盛りがある', look.tickShown && look.tick.startsWith('16.66'), look);
+    check('見た目: 100% の位置（約 67%）に目盛りがある', look.tickShown && Math.abs(parseFloat(look.tick) - 67.2) < 0.1, look);
 
     // --- ミュート ---
     await page.evaluate(() => document.getElementById('movie_player').mute());

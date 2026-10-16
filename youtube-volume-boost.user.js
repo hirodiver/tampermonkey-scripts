@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube 音量ブースト v1.1.0
+// @name         YouTube 音量ブースト v1.2.0
 // @namespace    local.hiro.tools
-// @version      1.1.0
-// @description  YouTube の音量を 100% より上（最大 600%）まで上げる。プレーヤーの音量バーを 0〜600% の1本のバーに置き換え（0〜100% の長さはそのままで全体が6倍）、つまみ1つで動かせる。音量 100% で ↑ キーを押したときも、その先へ上がる
+// @version      1.2.0
+// @description  YouTube の音量を 100% より上（最大 600%）まで上げる。プレーヤーの音量バーを 0〜600% の1本の長いバーに置き換え、つまみ1つで動かせる（目盛りは対数で、0〜100% がバーの約2/3）。音量 100% で ↑ キーを押したときも、その先へ上がる
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-start
@@ -21,14 +21,15 @@
      *
      *   <video> → MediaElementSource → GainNode（×1〜×6） → リミッター → スピーカー
      *
-     * 見た目は「YouTube の音量バーが右へ6倍に伸びた」形にする。
+     * 見た目は「YouTube の音量バーが右へ長く伸びた」形にする。
      * YouTube 本来の音量バーは隠し、つまみ1つの 0〜600% のバーを置く。
      *
-     *   [ミュート][0 ─ 100 │ 100 ─────────────── 600] 250%
-     *              ↑ YouTube の音量   ↑ 増幅（ブースト）
+     *   [ミュート][0 ── 25 ── 50 ── 100 │ 200 ── 400 ─ 600] 250%
+     *              ↑ YouTube の音量         ↑ 増幅（ブースト）
      *
-     *   - 0〜100% の部分は YouTube の音量そのもの（プレーヤーAPI の setVolume で動かす）。
-     *     長さは YouTube の音量バーと同じにする
+     *   - 目盛りは対数（音量が 2 倍になるごとに同じ長さ）。耳の感じ方に近く、
+     *     よく使う 0〜100% がバーの約 2/3 を占める
+     *   - 0〜100% の部分は YouTube の音量そのもの（プレーヤーAPI の setVolume で動かす）
      *   - 100% より右は、YouTube の音量を 100% にしたうえで Web Audio で増幅する
      *   - YouTube の ↑↓ キー・ミュートで変えた音量も、つまみの位置に反映する
      *   - 音量 100% で ↑ キーを押すとその先へ上がり、↓ キーは増幅分から下がる
@@ -57,7 +58,17 @@
     const SLIDER_STEP = 5;
 
     // ドラッグで 100% の前後このくらい（%）に来たら、100% ちょうどに吸い付ける
-    const SNAP_TO_100 = 3;
+    const SNAP_TO_100 = 6;
+
+    // 目盛りを対数にするか（音量が 2 倍になるごとに同じ長さ進む）。
+    // 50→100%、100→200%、200→400% がどれも同じ長さになり、0〜100% がバーの約 2/3 を占める。
+    // false にすると 0〜600% を均等に割る
+    const LOG_SCALE = true;
+
+    // 対数目盛りの下端（%）。これより小さい音量は、左端のわずかな区間（LOG_FLOOR_POS）に
+    // 0 まで均等に詰める（対数では 0 を表せないため）
+    const LOG_FLOOR = 3;
+    const LOG_FLOOR_POS = 0.03;
 
     // ↑↓←→キー・ホイール1回で動く量（%）。100% 以下は YouTube と同じ 5%
     const KEY_STEP = 10;
@@ -659,6 +670,47 @@
         return value > 100 ? Math.max(100, value - KEY_STEP) : value - SMALL_STEP;
     }
 
+    // 値（%）→ バーの上の位置（0〜1）
+    function valueToPos(value, unified) {
+        const min = unified ? 0 : 100;
+        const v = Math.min(MAX_BOOST, Math.max(min, value));
+
+        if (!LOG_SCALE) {
+            return (v - min) / (MAX_BOOST - min);
+        }
+
+        if (!unified) {
+            return Math.log(v / 100) / Math.log(MAX_BOOST / 100);
+        }
+
+        if (v <= LOG_FLOOR) {
+            return (v / LOG_FLOOR) * LOG_FLOOR_POS;
+        }
+
+        return LOG_FLOOR_POS +
+            (1 - LOG_FLOOR_POS) * Math.log(v / LOG_FLOOR) / Math.log(MAX_BOOST / LOG_FLOOR);
+    }
+
+    // バーの上の位置（0〜1）→ 値（%）
+    function posToValue(pos, unified) {
+        const min = unified ? 0 : 100;
+        const p = Math.min(1, Math.max(0, pos));
+
+        if (!LOG_SCALE) {
+            return min + p * (MAX_BOOST - min);
+        }
+
+        if (!unified) {
+            return 100 * Math.pow(MAX_BOOST / 100, p);
+        }
+
+        if (p <= LOG_FLOOR_POS) {
+            return (p / LOG_FLOOR_POS) * LOG_FLOOR;
+        }
+
+        return LOG_FLOOR * Math.pow(MAX_BOOST / LOG_FLOOR, (p - LOG_FLOOR_POS) / (1 - LOG_FLOOR_POS));
+    }
+
     function snapValue(raw) {
         if (Math.abs(raw - 100) < SNAP_TO_100) {
             return 100;
@@ -879,18 +931,14 @@
     function valueFromPointer(event, track) {
         const rect = track.getBoundingClientRect();
         const usable = rect.width - KNOB_SIZE;
-        const min = getRangeMin();
 
         if (usable <= 0) {
             return getSliderValue();
         }
 
-        const ratio = Math.min(
-            1,
-            Math.max(0, (event.clientX - rect.left - KNOB_SIZE / 2) / usable)
-        );
+        const pos = (event.clientX - rect.left - KNOB_SIZE / 2) / usable;
 
-        return snapValue(min + ratio * (MAX_BOOST - min));
+        return snapValue(posToValue(pos, isUnified()));
     }
 
     function dragTo(event, track) {
@@ -1175,9 +1223,8 @@
         lastRenderSignature = signature;
 
         const min = unified ? 0 : 100;
-        const span = MAX_BOOST - min;
-        const ratio = (value - min) / span;
-        const mark = (100 - min) / span;      // 100% の位置（1本化なら 1/6、延長だけなら 0）
+        const ratio = valueToPos(value, unified);
+        const mark = valueToPos(100, unified);    // 100% の位置（延長だけなら 0）
 
         const rail = widget.querySelector('.tm-ytvb-rail');
         const fill = widget.querySelector('.tm-ytvb-fill');
