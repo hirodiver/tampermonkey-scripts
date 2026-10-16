@@ -390,6 +390,29 @@ const openBar = async (page) => {
     check('リミッター: 0.5 × 600%（本来 3.0）でも 1 前後に抑える', aLoud > 0.6 && aLoud <= 1.1, aLoud);
     check('使い回し: 同じ <video> で次の動画に替わっても増幅が効いたまま', aLoud > 0.6);
 
+    // --- 数字のクリックで「大きく」（リミッターなし）に切り替え ---
+    await openBar(page);
+    await page.click('.tm-ytvb-label');
+    await page.waitForTimeout(50);
+    const loud = await page.evaluate(() => ({
+      mode: window.__tmYtVolumeBoost.state()['モード'],
+      limiter: window.__tmYtVolumeBoost.state()['リミッター'],
+      label: document.querySelector('.tm-ytvb-label').textContent,
+      color: getComputedStyle(document.querySelector('.tm-ytvb-label')).color,
+      saved: localStorage.getItem('tm-yt-volume-boost-limiter'),
+      toast: document.querySelector('.tm-ytvb-toast').textContent
+    }));
+    check('大きく: 数字をクリックするとリミッターを外す', loud.mode.startsWith('大きく') && loud.limiter === '通していない', loud);
+    check('大きく: 数字に ! が付き、色が変わる', loud.label === '600%!' && loud.color === 'rgb(255, 122, 61)', loud);
+    check('大きく: 切り替えを画面に出し、選択を覚える', loud.toast.startsWith('大きく') && loud.saved === 'off', loud);
+    const aNoLimit = await peak(page, 600);
+    check('大きく: リミッターなしなら 0.5 × 600% がそのまま 3.0 前後まで出る', aNoLimit > 2.5, aNoLimit);
+    await page.click('.tm-ytvb-label');
+    const aBack = await peak(page, 800);
+    check('きれい: もう一度クリックでリミッターに戻り 1 前後に抑える', aBack > 0.6 && aBack <= 1.1 &&
+      (await page.evaluate(() => localStorage.getItem('tm-yt-volume-boost-limiter'))) === 'on', aBack);
+    check('きれい: 数字をクリックしても音量は変わらない', (await valueOf(page)) === 600);
+
     // --- 閉じていても増幅中は数字が出る ---
     await page.mouse.move(900, 20);
     await page.waitForTimeout(350);
@@ -523,7 +546,7 @@ const openBar = async (page) => {
     check('ホイール: 100% を割ると YouTube の音量が 5% ずつ下がる（95%）', (await valueOf(page)) === 95 && yt.volume === 95, yt);
     check('ホイール: ページはスクロールしない', (await page.evaluate(() => window.scrollY)) === 0);
 
-    await page.dblclick('.tm-ytvb-label');
+    await page.dblclick('.tm-ytvb-track');
     check('ダブルクリック: 100% に戻る', (await valueOf(page)) === 100 && (await ytOf(page)).volume === 100);
 
     check('保存: 増幅は localStorage に残る', await page.evaluate(() => {
