@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube 音量ブースト v1.2.0
+// @name         YouTube 音量ブースト v1.3.0
 // @namespace    local.hiro.tools
-// @version      1.2.0
+// @version      1.3.0
 // @description  YouTube の音量を 100% より上（最大 600%）まで上げる。プレーヤーの音量バーを 0〜600% の1本の長いバーに置き換え、つまみ1つで動かせる（目盛りは対数で、0〜100% がバーの約2/3）。音量 100% で ↑ キーを押したときも、その先へ上がる
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -77,7 +77,9 @@
     // 次に YouTube を開いたときも増幅を引き継ぐか
     const REMEMBER_BOOST = true;
 
-    // 100% を超えている間だけ、音割れを抑えるリミッターを通すか
+    // 100% を超えている間だけ、音割れを抑えるリミッターを通すか（初期値）。
+    // バーの右の数字をクリックすると「きれい（あり）」と「大きく（なし）」が切り替わり、その選択を覚える。
+    // リミッターありは音割れしない代わりに、もともと大きい音はそれ以上大きくならない
     const USE_LIMITER = true;
 
     // リミッターの設定（DynamicsCompressorNode）。
@@ -130,6 +132,7 @@
     // ============================================================
 
     const STORE_KEY = 'tm-yt-volume-boost';
+    const LIMITER_STORE_KEY = 'tm-yt-volume-boost-limiter';
     const STYLE_ID = 'tm-ytvb-style';
     const WIDGET_CLASS = 'tm-ytvb';
     const TOAST_CLASS = 'tm-ytvb-toast';
@@ -139,6 +142,7 @@
     // 色（プレーヤーの操作バーは常に暗い背景なので固定）
     const COLOR_BASE = '#fff';                       // 0〜100%（YouTube の音量バーと同じ白）
     const COLOR_BOOST = '#ffb000';                   // 100% より上
+    const COLOR_LOUD = '#ff7a3d';                    // 「大きく」（リミッターなし）のときの数字
     const RAIL_BASE = 'rgba(255, 255, 255, .2)';
     const RAIL_BOOST = 'rgba(255, 176, 0, .25)';
 
@@ -169,6 +173,7 @@
     // ============================================================
 
     let boost = loadBoost();          // 増幅（%、100〜MAX_BOOST）
+    let limiterOn = loadLimiterOn();  // true = きれい（リミッターあり）、false = 大きく（なし）
 
     let audioCtx = null;
     let gainNode = null;
@@ -237,6 +242,24 @@
         }
     }
 
+    function loadLimiterOn() {
+        try {
+            const saved = localStorage.getItem(LIMITER_STORE_KEY);
+
+            return saved === null ? USE_LIMITER : saved === 'on';
+        } catch (e) {
+            return USE_LIMITER;
+        }
+    }
+
+    function saveLimiterOn() {
+        try {
+            localStorage.setItem(LIMITER_STORE_KEY, limiterOn ? 'on' : 'off');
+        } catch (e) {
+            // 保存できなくても、このページの中では効く
+        }
+    }
+
     function saveBoost() {
         if (!REMEMBER_BOOST) {
             return;
@@ -275,7 +298,7 @@
         gainNode = audioCtx.createGain();
         gainNode.gain.value = boost / 100;
 
-        if (USE_LIMITER && typeof audioCtx.createDynamicsCompressor === 'function') {
+        if (typeof audioCtx.createDynamicsCompressor === 'function') {
             limiterNode = audioCtx.createDynamicsCompressor();
             limiterNode.threshold.value = LIMITER.threshold;
             limiterNode.knee.value = LIMITER.knee;
@@ -302,7 +325,7 @@
             return;
         }
 
-        const useLimiter = !!limiterNode && boost > 100;
+        const useLimiter = !!limiterNode && limiterOn && boost > 100;
 
         if (routedThroughLimiter === useLimiter) {
             return;
@@ -819,7 +842,7 @@
             '    font-size: 109%;',
             '    white-space: nowrap;',
             '    font-variant-numeric: tabular-nums;',
-            '    cursor: default;',
+            '    cursor: pointer;',
             '}',
             '.' + WIDGET_CLASS + '.tm-ytvb-boosted .tm-ytvb-label,',
             '[' + HOST_ATTR + ']:hover .tm-ytvb-label,',
@@ -834,6 +857,9 @@
             '.' + WIDGET_CLASS + '.tm-ytvb-waiting .tm-ytvb-label {',
             '    opacity: .6;',
             '    text-decoration: underline dotted;',
+            '}',
+            '.' + WIDGET_CLASS + '.tm-ytvb-loud.tm-ytvb-boosted .tm-ytvb-label {',
+            '    color: ' + COLOR_LOUD + ';',
             '}',
             '.' + WIDGET_CLASS + '.tm-ytvb-error .tm-ytvb-label {',
             '    color: #ff6e6e;',
@@ -916,7 +942,8 @@
         track.addEventListener('pointercancel', onTrackPointerUp);
 
         widget.addEventListener('wheel', onWidgetWheel, { passive: false });
-        widget.addEventListener('dblclick', onWidgetDblClick);
+        track.addEventListener('dblclick', onWidgetDblClick);
+        label.addEventListener('click', onLabelClick);
 
         // YouTube 側の操作（再生・停止など）に伝わらないようにする
         ['mousedown', 'click'].forEach((type) => {
@@ -1010,6 +1037,21 @@
         setSliderValue(stepValue(getSliderValue(), event.deltaY < 0 ? 1 : -1), {
             toast: false
         });
+    }
+
+    // 数字のクリックで「きれい（リミッターあり）」と「大きく（なし）」を切り替える
+    function onLabelClick(event) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        limiterOn = !limiterOn;
+        saveLimiterOn();
+        routeOutput();
+        render();
+
+        showToast(limiterOn
+            ? 'きれい（リミッターあり・音割れしない）'
+            : '大きく（リミッターなし・音割れすることがある）');
     }
 
     function onWidgetDblClick(event) {
@@ -1152,7 +1194,10 @@
             unified
                 ? '音量: ' + value + '%（0〜' + MAX_BOOST + '%。100% より右は増幅）'
                 : '音量ブースト: ' + value + '%',
-            'ドラッグ・ホイール・←→キーで調整、ダブルクリックで 100% に戻す'
+            'ドラッグ・ホイール・←→キーで調整、バーのダブルクリックで 100% に戻す',
+            '数字をクリック: ' + (limiterOn
+                ? 'いまは「きれい」（リミッターあり）→「大きく」に切り替え'
+                : 'いまは「大きく」（リミッターなし）→「きれい」に切り替え')
         ];
 
         if (problem.waiting) {
@@ -1212,6 +1257,7 @@
             muted,
             width,
             boost,
+            limiterOn,
             problem.waiting,
             problem.error
         ].join('|');
@@ -1253,12 +1299,14 @@
 
         tick.style.left = percent(mark);
         knob.style.left = percent(ratio);
-        label.textContent = muted ? 'ミュート' : value + '%';
+        // 「大きく」（リミッターなし）のときは数字の後ろに ! を付ける
+        label.textContent = muted ? 'ミュート' : value + '%' + (limiterOn ? '' : '!');
 
         widget.classList.toggle('tm-ytvb-unified', unified);
         widget.classList.toggle('tm-ytvb-boosted', value > 100 && !muted);
         widget.classList.toggle('tm-ytvb-waiting', problem.waiting);
         widget.classList.toggle('tm-ytvb-error', !!problem.error);
+        widget.classList.toggle('tm-ytvb-loud', !limiterOn);
 
         widget.setAttribute('aria-valuemin', String(min));
         widget.setAttribute('aria-valuenow', String(value));
@@ -1266,7 +1314,8 @@
         widget.title = buildTitle(value, unified, problem);
     }
 
-    function showToast() {
+    // message を渡すとその文を、無ければ「音量 250%」を出す
+    function showToast(message) {
         const player = findPlayer();
 
         if (!player) {
@@ -1284,9 +1333,11 @@
         }
 
         const problem = getProblem();
-        let text = '音量 ' + getSliderValue() + '%';
+        let text = message || '音量 ' + getSliderValue() + '%';
 
-        if (problem.waiting) {
+        if (message) {
+            // そのまま出す
+        } else if (problem.waiting) {
             text += '（クリックで有効）';
         } else if (problem.error) {
             text += '（増幅できません）';
@@ -1624,9 +1675,10 @@
             増幅率: gainNode ? gainNode.gain.value.toFixed(2) : '（未作成）',
             AudioContext: audioCtx ? audioCtx.state : '（未作成）',
             リミッター: routedThroughLimiter === null ? '（未接続）' : (routedThroughLimiter ? '通している' : '通していない'),
+            モード: limiterOn ? 'きれい（リミッターあり）' : '大きく（リミッターなし）',
             YouTube音量: yt ? yt.volume + (yt.muted ? '（ミュート）' : '') : '（取得できない）',
             形: unified ? '1本のバー（0〜' + MAX_BOOST + '%）' : '延長部分だけ（プレーヤーAPI が無い）',
-            バーの長さ: getTrackWidth(player) + 'px（0〜100% は ' + Math.round(getTravel(player)) + 'px）',
+            バーの長さ: getTrackWidth(player) + 'px（0〜100% は ' + Math.round((getTrackWidth(player) - KNOB_SIZE) * valueToPos(100, unified)) + 'px）',
             YouTubeの音量バー: replacedPanel ? (replacedPanel.hasAttribute(HIDDEN_ATTR) ? '隠している' : '残している') : '（無い）',
             プレーヤー: describeElement(player) || '見つからない',
             設置先: mountInfo,
