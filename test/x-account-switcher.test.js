@@ -137,6 +137,11 @@ const clickDock = (page, handle) =>
       .querySelector(`.av[data-handle="${handle}"]`).click();
   }, handle);
 
+// 区切り線の下に見えている文字のボタン
+const toolLabels = (page) =>
+  page.evaluate(() => [...document.getElementById('tm-x-switch-root').shadowRoot.querySelectorAll('.tools > button')]
+    .filter((b) => !b.hidden && b.getBoundingClientRect().height > 0).map((b) => b.textContent));
+
 const stored = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem('tm-x-switch-accounts') || '[]').map((a) => a.screenName));
 
@@ -251,9 +256,16 @@ const toastText = (page) =>
       return b ? getComputedStyle(b).boxShadow : '';
     });
     check('描画: 現在のアカウントの輪が X の青', /29, 155, 240/.test(ring), ring);
+    await page.evaluate(() => { events.length = 0; });
     await clickDock(page, 'alice');
     await page.waitForTimeout(500);
-    check('現在のアカウントを押しても切替は始まらない', !(await dockButtons(page)).some((b) => b.disabled));
+    check('現在のアカウントを押しても切替は始まらない', !(await dockButtons(page)).some((b) => b.disabled) &&
+      await page.evaluate(() => !events.some((e) => e.startsWith('switch:') || e === 'open-menu')), await page.evaluate(() => events.slice()));
+    check('現在のアカウントを押すと「更新」「大きく」「小さく」が出る（v1.10.0）',
+      JSON.stringify(await toolLabels(page)) === JSON.stringify(['更新', '大きく', '小さく', 'しまう']), await toolLabels(page));
+    await clickDock(page, 'alice');
+    await page.waitForTimeout(100);
+    check('現在のアカウントをもう一度押すと引っ込む', JSON.stringify(await toolLabels(page)) === '["しまう"]', await toolLabels(page));
 
     // 重なり層に開く、切替メニュー以外の画面（画像の拡大・いいねしたユーザー一覧）。
     // 中の投稿者やユーザーを「自分」として覚えない（v1.4.0 まで、開くたびに一覧が伸びていた）
@@ -298,10 +310,10 @@ const toastText = (page) =>
       events.length = 0;
     });
     await page.waitForTimeout(400);
-    check('更新: 一覧があるときは、下に「更新」ボタンが出る', await page.evaluate(() => {
-      const b = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .reload');
-      return !b.hidden && b.getBoundingClientRect().height > 0;
-    }));
+    check('更新: ふだんは「更新」を出さない', !(await toolLabels(page)).includes('更新'), await toolLabels(page));
+    await clickDock(page, 'alice');
+    await page.waitForTimeout(100);
+    check('更新: 現在のアカウントを押すと、下に「更新」ボタンが出る', (await toolLabels(page)).includes('更新'), await toolLabels(page));
     await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .reload').click());
     await page.waitForTimeout(700);
     check('更新: 切替メニューを開いて読み直し、関係ないアカウントを消す（本物の3件だけ残る）',
@@ -310,6 +322,7 @@ const toastText = (page) =>
       !document.getElementById('accountMenu') && events.includes('open-menu') && !events.some((e) => e.startsWith('switch:'))),
       await page.evaluate(() => events.slice()));
     check('更新: 覚えた件数を知らせる', /3件のアカウントを覚えました/.test(await toastText(page)), await toastText(page));
+    check('更新: 押した後は「更新」「大きく」「小さく」を引っ込める', JSON.stringify(await toolLabels(page)) === '["しまう"]', await toolLabels(page));
 
     // v1.1.2 までに壊れて覚えた現在のアカウント（アイコン無し・名前がハンドル）を、読み込み直さなくても直す
     await page.evaluate(() => {
@@ -325,11 +338,12 @@ const toastText = (page) =>
     check('修復: ドックでも頭文字ではなくアイコンを出す', await page.evaluate(() =>
       !!document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av[data-handle="alice"] img')));
 
-    // 自分自身を押しても何もしない
+    // 自分自身を押しても切り替えない（X の切替メニューを開かない。出るのはドックの操作のボタン）
     await page.evaluate(() => { events.length = 0; });
     await clickDock(page, 'alice');
     await page.waitForTimeout(200);
-    check('切替: 現在のアカウントを押しても何もしない', !(await page.evaluate(() => events.includes('open-menu'))));
+    check('切替: 現在のアカウントを押しても X の切替メニューを開かない', !(await page.evaluate(() => events.includes('open-menu'))));
+    await clickDock(page, 'alice');
 
     // bob へ切替
     await page.evaluate(() => { events.length = 0; });
@@ -419,10 +433,10 @@ const toastText = (page) =>
     const dockClass = () => page.evaluate(() =>
       document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').className);
 
-    check('操作: 区切り線の下に文字のボタン「更新」「しまう」だけが並ぶ（「移動」と四隅の表は無い。v1.7.0）', await page.evaluate(() => {
+    check('操作: 区切り線の下はふだん文字のボタン「しまう」だけ（「移動」と四隅の表は無い。v1.7.0・v1.10.0）', await page.evaluate(() => {
       const sr = document.getElementById('tm-x-switch-root').shadowRoot;
       const labels = [...sr.querySelectorAll('.tools > button')].filter((b) => !b.hidden).map((b) => b.textContent);
-      return !sr.querySelector('.more, .move, .corners') && JSON.stringify(labels) === JSON.stringify(['更新', 'しまう']) &&
+      return !sr.querySelector('.more, .move, .corners') && JSON.stringify(labels) === JSON.stringify(['しまう']) &&
         getComputedStyle(sr.querySelector('.tools')).borderTopStyle === 'solid';
     }));
 
@@ -1016,6 +1030,7 @@ const toastText = (page) =>
       ]));
       if (opts.position) localStorage.setItem('tm-x-switch-position', JSON.stringify(opts.position));
       if (opts.tucked) localStorage.setItem('tm-x-switch-tucked', 'true');
+      if (opts.current) sessionStorage.setItem('tm-x-switch-current', JSON.stringify(opts.current));
     };
 
     const bootBottom = async (viewport, opts) => {
@@ -1207,7 +1222,7 @@ const toastText = (page) =>
       await page.close();
     }
 
-    // --- iPhone 幅では細く・低くする（v1.9.0）。デスクトップ幅は従来のまま
+    // --- 大きさを選べる（v1.10.0）。現在のアカウントを押すと「更新」「大きく」「小さく」が出る
     const sizes = (page) => page.evaluate(() => {
       const sr = document.getElementById('tm-x-switch-root').shadowRoot;
       const b = (el) => el.getBoundingClientRect();
@@ -1219,26 +1234,101 @@ const toastText = (page) =>
         range.selectNodeContents(t);
         const text = range.getBoundingClientRect();
         const box = b(t);
-        return { label: t.textContent, fits: text.left >= box.left + 1 - 0.5 && text.right <= box.right - 1 + 0.5, height: box.height };
+        return { label: t.textContent, fits: text.left >= box.left + 1 - 0.5 && text.right <= box.right - 1 + 0.5, disabled: t.disabled };
       });
-      return { dockLeft: dock.left, dockRight: dock.right, dockWidth: dock.width, dockHeight: dock.height, avWidth: av.width, avInset: av.left - dock.left, tools };
+      return {
+        dockLeft: dock.left, dockRight: dock.right, dockWidth: dock.width, dockBottom: Math.round(window.innerHeight - dock.bottom),
+        avWidth: Math.round(av.width), avInset: av.left - dock.left,
+        ring: parseFloat(getComputedStyle(sr.querySelector('.av.current') || sr.querySelector('.av')).boxShadow.split('0px 0px 0px ').pop()) || 0,
+        tools, labels: tools.map((t) => t.label)
+      };
     });
+    // 本物の指の操作に近づけるため、マウスで押す（pointerdown が出る）
+    const tapDock = async (page, selector) => {
+      const c = await page.evaluate((selector) => {
+        const r = document.getElementById('tm-x-switch-root').shadowRoot.querySelector(selector).getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }, selector);
+      await page.mouse.click(c.x, c.y);
+      await page.waitForTimeout(80);
+    };
     {
+      const page = await bootBottom(lift(402, 874), { position: 'left-bottom', current: 'alice' });
+      let s = await sizes(page);
+      check('大きさ: 既定は v1.8.1 までと同じ（アイコン 44px・幅 58px）', s.avWidth === 44 && Math.round(s.dockWidth) === 58, s);
+      check('操作: ふだんは区切り線の下に「しまう」だけ', JSON.stringify(s.labels) === '["しまう"]', s.labels);
+
+      await tapDock(page, '.av.current');
+      s = await sizes(page);
+      check('操作: 現在のアカウントを押すと「しまう」の上に「更新」「大きく」「小さく」が出る',
+        JSON.stringify(s.labels) === JSON.stringify(['更新', '大きく', '小さく', 'しまう']), s.labels);
+      check('操作: 押した現在のアカウントに「開いている」印（aria-expanded）が付く', await page.evaluate(() =>
+        document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av.current').getAttribute('aria-expanded') === 'true'));
+
+      const bottomBefore = s.dockBottom;
+      await tapDock(page, '.tool.smaller');
+      await tapDock(page, '.tool.smaller');
+      s = await sizes(page);
+      check('大きさ: 「小さく」を2回押すとアイコン 36px・幅 48px になる', s.avWidth === 36 && Math.round(s.dockWidth) === 48, s);
+      check('大きさ: 36px なら左に置いても右端が X の本文（左端から 65px 前後）の手前', s.dockRight <= 58.5, s);
+      check('大きさ: 大きさを変えている間は「大きく」「小さく」を出したまま', JSON.stringify(s.labels) === JSON.stringify(['更新', '大きく', '小さく', 'しまう']), s.labels);
+      check('大きさ: 変えても下端の位置は動かない', s.dockBottom === bottomBefore, { before: bottomBefore, after: s.dockBottom });
+      check('大きさ: 端末に覚える', await page.evaluate(() => localStorage.getItem('tm-x-switch-size') === '36'));
+
+      // 全段階を通して、文字のはみ出し・青い輪の収まりを見る
+      await tapDock(page, '.tool.smaller');
+      const seen = [];
+      for (let i = 0; i < 6; i++) {
+        s = await sizes(page);
+        seen.push({ av: s.avWidth, width: Math.round(s.dockWidth), fits: s.tools.every((t) => t.fits), ringFits: s.ring > 0 && s.avInset - 1 >= s.ring, ring: s.ring, inset: s.avInset,
+          smallerDisabled: s.tools.find((t) => t.label === '小さく').disabled, biggerDisabled: s.tools.find((t) => t.label === '大きく').disabled });
+        if (seen[seen.length - 1].biggerDisabled) break;
+        await tapDock(page, '.tool.bigger');
+      }
+      check('大きさ: 5段階（32・36・40・44・48px）を順に選べる', JSON.stringify(seen.map((x) => x.av)) === '[32,36,40,44,48]', seen);
+      check('大きさ: どの段階でも文字がボタンからはみ出さない', seen.every((x) => x.fits), seen);
+      check('大きさ: どの段階でも青い輪がドックの余白に収まる', seen.every((x) => x.ringFits), seen);
+      check('大きさ: 一番小さいと「小さく」、一番大きいと「大きく」が押せない',
+        seen[0].smallerDisabled && !seen[0].biggerDisabled && seen[seen.length - 1].biggerDisabled && !seen[seen.length - 1].smallerDisabled, seen);
+
+      // ドックの外を触ると引っ込む
+      await page.mouse.click(250, 300);
+      await page.waitForTimeout(80);
+      s = await sizes(page);
+      check('操作: ドックの外を触ると「更新」「大きく」「小さく」が引っ込む', JSON.stringify(s.labels) === '["しまう"]', s.labels);
+
+      // もう一度押して開き、さらにもう一度押すと引っ込む
+      await tapDock(page, '.av.current');
+      await tapDock(page, '.av.current');
+      s = await sizes(page);
+      check('操作: 現在のアカウントをもう一度押すと引っ込む', JSON.stringify(s.labels) === '["しまう"]', s.labels);
+
+      // 選んだ大きさは読み込み直しても続く
+      await tapDock(page, '.av.current');
+      await tapDock(page, '.tool.smaller');
+      await page.goto('https://x.com/home');
+      await page.evaluate(fixtures);
+      await page.evaluate(setupBottom, { barHeight: 53, bar: true, fab: true, leftIcon: true, position: 'left-bottom', current: 'alice' });
+      await page.evaluate(SCRIPT);
+      await page.waitForTimeout(400);
+      s = await sizes(page);
+      check('大きさ: 読み込み直しても選んだ大きさ（44px）のまま、操作のボタンは引っ込んでいる', s.avWidth === 44 && JSON.stringify(s.labels) === '["しまう"]', s);
+      await page.close();
+    }
+    {
+      // 現在のアカウントが分からない（押す先が無い）ときは、従来どおり「更新」を常に出す
       const page = await bootBottom(lift(402, 874), { position: 'left-bottom' });
       const s = await sizes(page);
-      check('大きさ: iPhone 幅ではアイコンを 36px にする', Math.round(s.avWidth) === 36, s);
-      check('大きさ: iPhone 幅ではドックの幅を 48px にする', Math.round(s.dockWidth) === 48, s);
-      check('大きさ: 左に置いたドックの右端が、X の本文の始まり（左端から 65px 前後）より手前', s.dockRight <= 56.5, s);
-      check('大きさ: 2アカウントでドックの高さが 155px 以下（従来は約 185px）', s.dockHeight <= 155, s);
-      check('大きさ: 青い輪（3px）がドックの余白に収まる', s.avInset - 1 >= 3, s);
-      check('大きさ: 「更新」「しまう」の文字がボタンからはみ出さない', s.tools.length === 2 && s.tools.every((t) => t.fits), s.tools);
+      check('操作: 現在のアカウントが分からないときは「更新」を常に出す（大きさのボタンは出さない）',
+        !(await page.evaluate(() => !!document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av.current'))) &&
+        JSON.stringify(s.labels) === JSON.stringify(['更新', 'しまう']), s.labels);
       await page.close();
     }
     {
       const page = await bootBottom(lift(1280, 800), { position: 'left-bottom', bar: false, fab: false, leftIcon: false });
       const s = await sizes(page);
-      check('大きさ: デスクトップ幅は従来どおり（アイコン 44px・幅 58px・端から 10px）',
-        Math.round(s.avWidth) === 44 && Math.round(s.dockWidth) === 58 && Math.round(s.dockLeft) === 10, s);
+      check('大きさ: デスクトップ幅も既定は従来どおり（アイコン 44px・幅 58px・端から 10px）',
+        s.avWidth === 44 && Math.round(s.dockWidth) === 58 && Math.round(s.dockLeft) === 10, s);
       await page.close();
     }
 

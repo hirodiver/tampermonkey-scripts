@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.9.0
+// @name         X アカウント切替 v1.10.0
 // @namespace    local.hiro.tools
-// @version      1.9.0
+// @version      1.10.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -57,10 +57,13 @@
  *   スクロールのたびには計算せず、X が投稿ボタンの濃さを変えたときだけ追う（v1.8.1）。
  *   投稿ボタンが無いページでは、自分でスクロールの向きを見て薄くする
  *
- * ■ iPhone では細く・低くする（v1.9.0）
- *   左に置いてもポストの本文に少しかかっていたため、iPhone 等の幅では
- *   アイコンを 44px → 36px にし、余白とボタンも詰めた（幅 58px → 48px、
- *   2アカウントで高さ約 185px → 約 150px）。デスクトップ幅は従来のまま
+ * ■ 大きさを選べる・現在のアカウントを押すと操作が出る（v1.10.0）
+ *   現在のアカウントのアイコンを押すと、「しまう」の上に「更新」「大きく」「小さく」が出る。
+ *   もう一度押すか、ドックの外を触ると引っ込む。大きさはアイコン 32〜48px の5段階で、
+ *   端末に覚える（既定は v1.8.1 までと同じ 44px）。
+ *   v1.9.0 では iPhone 幅だけ 36px に固定したが、元の大きさの方がよいこともあるため、
+ *   コードを書き換えずにその場で選べるようにした。
+ *   現在のアカウントが分からないときは押す先が無いので、従来どおり「更新」を常に出す
  *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
@@ -83,7 +86,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.9.0';
+    const VERSION = '1.10.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -104,6 +107,9 @@
 
     // 最後に測れた下の隅の高さ（測れなかったときと、次に開いたときの最初の位置に使う）
     const STORAGE_LIFT = 'tm-x-switch-lift';
+
+    // ドックの大きさ（アイコンの直径 px。DOCK_SIZES のどれか）
+    const STORAGE_SIZE = 'tm-x-switch-size';
 
     // 切替を押した印（X が読み込み直した後に、ホームの「フォロー中」を開くため）
     const SESSION_AFTER_SWITCH = 'tm-x-switch-after';
@@ -180,18 +186,27 @@
     const MOBILE_BOTTOM_MAX_PX = 240;
 
     /*
-     * iPhone 等の幅（MOBILE_MAX_WIDTH 以下）でのドックの大きさ（v1.9.0）。
-     * 左に置いてもポストの本文にかからないよう、デスクトップ（アイコン 44px・幅 58px）より
-     * 細く・低くする。ドックの幅は アイコン＋左右の余白 5px ずつ＋枠 2px で 48px。
-     * 左に置いたときの右端は 8＋48 ＝ 56px で、X の本文（画面の左端から 65px 前後）の手前に収まる
+     * ドックの大きさの段階（v1.10.0）。小さい順。
+     * 現在のアカウントのアイコンを押すと出る「大きく」「小さく」で選び、端末に覚える。
+     *
+     *   avatar: アイコンの直径     padY / padX: ドックの上下・左右の余白
+     *   gap:    アイコンの間       tool / font: 「更新」等の文字のボタンの高さ・文字の大きさ
+     *   ring:   現在のアカウントに付く青い輪の、アイコンの縁からの太さ（padX より細くする）
+     *
+     * ドックの幅は avatar ＋ padX×2 ＋ 枠 2px。画面の端から 10px 離して置くので、
+     * 左に置いたときの右端は 10px ＋ 幅。X の本文は画面の左端から 65px 前後で始まる
+     * （32px: 右端 52px / 36px: 58px / 40px: 64px / 44px: 68px / 48px: 72px）
      */
-    const MOBILE_AVATAR_PX = 36;
+    const DOCK_SIZES = [
+        { avatar: 32, padY: 5, padX: 4, gap: 5, tool: 18, font: 9, ring: 2.5 },
+        { avatar: 36, padY: 6, padX: 5, gap: 6, tool: 20, font: 10, ring: 3 },
+        { avatar: 40, padY: 7, padX: 5, gap: 7, tool: 22, font: 10.5, ring: 3.5 },
+        { avatar: 44, padY: 8, padX: 6, gap: 8, tool: 24, font: 11, ring: 4 },
+        { avatar: 48, padY: 8, padX: 6, gap: 8, tool: 26, font: 12, ring: 4 }
+    ];
 
-    // 画面の左右の端からドックまでの幅（px。デスクトップは 10px）
-    const MOBILE_EDGE_PX = 8;
-
-    // 「更新」「しまう」のボタンの高さ（px。デスクトップは 24px）
-    const MOBILE_TOOL_HEIGHT_PX = 20;
+    // 既定の大きさ（アイコンの直径 px。v1.8.1 までと同じ）
+    const DEFAULT_DOCK_SIZE = 44;
 
     // ドックを動かし始めたと見なす指の移動量（px）。これより小さければ普通のタップ
     const DRAG_THRESHOLD_PX = 8;
@@ -469,9 +484,14 @@
     let tabEl = null;
     let tuckEl = null;
     let reloadEl = null;
+    let biggerEl = null;
+    let smallerEl = null;
     let toastEl = null;
 
     let busy = false;
+
+    // 現在のアカウントを押して「更新」「大きく」「小さく」を出しているか
+    let menuOpen = false;
     let checkTimer = null;
     let toastTimer = null;
     let reloadTimer = null;
@@ -709,6 +729,69 @@
     function setTucked(tucked) {
 
         writeJson(localStorage, STORAGE_TUCKED, tucked);
+
+        menuOpen = false;
+
+        render(true);
+    }
+
+
+    /*
+     * 覚えた大きさの段階の番号（DOCK_SIZES の添字）。
+     * 段階の表を変えて覚えた値が無くなっていたら、一番近い段階にする
+     */
+    function dockSizeIndex() {
+
+        const saved = readJson(localStorage, STORAGE_SIZE, DEFAULT_DOCK_SIZE);
+
+        const wanted = Number.isFinite(saved) ? saved : DEFAULT_DOCK_SIZE;
+
+
+        let best = 0;
+
+        DOCK_SIZES.forEach((size, index) => {
+
+            if (Math.abs(size.avatar - wanted) < Math.abs(DOCK_SIZES[best].avatar - wanted)) {
+                best = index;
+            }
+        });
+
+
+        return best;
+    }
+
+
+    // step: +1 で1段大きく、-1 で1段小さく
+    function changeDockSize(step) {
+
+        const index =
+            Math.min(
+                DOCK_SIZES.length - 1,
+                Math.max(0, dockSizeIndex() + step)
+            );
+
+        writeJson(localStorage, STORAGE_SIZE, DOCK_SIZES[index].avatar);
+
+        render(true);
+    }
+
+
+    function toggleMenu() {
+
+        menuOpen = !menuOpen;
+
+        render(true);
+    }
+
+
+    function closeMenu() {
+
+        if (!menuOpen) {
+            return;
+        }
+
+
+        menuOpen = false;
 
         render(true);
     }
@@ -2657,9 +2740,9 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
-    padding: 8px 6px;
-    border-radius: 22px;
+    gap: var(--gap);
+    padding: var(--pad-y) var(--pad-x);
+    border-radius: calc(var(--av) / 2);
     background: rgba(10, 10, 11, 0.88);
     border: 1px solid rgba(244, 244, 245, 0.12);
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
@@ -2674,7 +2757,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: var(--gap);
 }
 .dock.tucked { display: none; }
 .tab {
@@ -2718,30 +2801,30 @@
     appearance: none;
     border: 0;
     padding: 0;
-    width: 44px;
-    height: 44px;
+    width: var(--av);
+    height: var(--av);
     border-radius: 999px;
     background: #1a1a1e;
     overflow: hidden;
     display: grid;
     place-items: center;
     color: #f4f4f5;
-    font-size: 15px;
+    font-size: calc(var(--av) * 0.34);
     font-weight: 600;
 }
 .av img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.av.current { box-shadow: 0 0 0 2px #0a0a0b, 0 0 0 4px #1d9bf0; cursor: default; }
-.av:not(.current):active { transform: scale(0.92); }
+.av.current { box-shadow: 0 0 0 calc(var(--ring) / 2) #0a0a0b, 0 0 0 var(--ring) #1d9bf0; }
+.av:active { transform: scale(0.92); }
 .av[disabled] { opacity: 0.45; }
 .load {
     appearance: none;
     border: 1px dashed rgba(244, 244, 245, 0.4);
     background: transparent;
     color: rgba(244, 244, 245, 0.8);
-    width: 44px;
-    height: 44px;
+    width: var(--av);
+    height: var(--av);
     border-radius: 999px;
-    font-size: 11px;
+    font-size: var(--tool-font);
 }
 .icon {
     appearance: none;
@@ -2759,42 +2842,26 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
+    gap: calc(var(--gap) - 2px);
     width: 100%;
-    padding-top: 8px;
+    padding-top: var(--gap);
     border-top: 1px solid rgba(244, 244, 245, 0.14);
 }
 .tool {
     appearance: none;
-    width: 44px;
-    height: 24px;
+    width: var(--av);
+    height: var(--tool-h);
     padding: 0;
     border: 1px solid rgba(244, 244, 245, 0.2);
     border-radius: 999px;
     background: transparent;
     color: rgba(244, 244, 245, 0.88);
-    font-size: 11px;
+    font-size: var(--tool-font);
     line-height: 1;
 }
 .tool[hidden] { display: none; }
 .tool[disabled] { opacity: 0.45; }
 .tool:active { background: rgba(244, 244, 245, 0.14); color: #f4f4f5; }
-/*
- * iPhone 等の幅では、ポストの本文にかからないよう細く・低くする（v1.9.0）。
- * 青い輪も細くして、狭くした余白（左右 5px）の中に収める
- */
-@media (max-width: ${MOBILE_MAX_WIDTH}px) {
-    .dock { gap: 6px; padding: 6px 5px; border-radius: 18px; }
-    .dock.left-bottom, .dock.left-top   { left: max(${MOBILE_EDGE_PX}px, env(safe-area-inset-left)); }
-    .dock.right-bottom, .dock.right-top { right: max(${MOBILE_EDGE_PX}px, env(safe-area-inset-right)); }
-    .list { gap: 6px; }
-    .av, .load { width: ${MOBILE_AVATAR_PX}px; height: ${MOBILE_AVATAR_PX}px; }
-    .av { font-size: 13px; }
-    .av.current { box-shadow: 0 0 0 1.5px #0a0a0b, 0 0 0 3px #1d9bf0; }
-    .load { font-size: 10px; }
-    .tools { gap: 4px; padding-top: 6px; }
-    .tool { width: ${MOBILE_AVATAR_PX}px; height: ${MOBILE_TOOL_HEIGHT_PX}px; font-size: 10px; }
-}
 .dock { touch-action: none; cursor: grab; -webkit-user-select: none; user-select: none; }
 .dock img { -webkit-user-drag: none; }
 .dock, .tab { opacity: var(--tm-fade, 1); }
@@ -2935,8 +3002,10 @@
         /*
          * アイコンの下に区切り線を引き、操作は文字のボタンで並べる
          * （記号だけでは何のボタンか分かりにくいため）。
-         *   更新:   一覧を読み直す（関係ないアカウントが入ったときの直し用）
-         *   しまう: 画面端のつまみだけにする（つまみの矢印は「出す」専用）
+         *   しまう:          画面端のつまみだけにする（つまみの矢印は「出す」専用）。常に出す
+         *   更新:            一覧を読み直す（関係ないアカウントが入ったときの直し用）
+         *   大きく / 小さく: ドックの大きさを1段ずつ変える（v1.10.0）
+         * 「更新」「大きく」「小さく」は、現在のアカウントのアイコンを押したときだけ出す（v1.10.0）。
          * 置き場所はドックを引っぱって変える（v1.7.0 で「移動」ボタンは廃止）
          */
         const tools = document.createElement('div');
@@ -2971,10 +3040,44 @@
 
         reloadEl.title = 'アカウント一覧を読み直す（関係ないアカウントが入ったときなど）';
 
-        reloadEl.addEventListener('click', loadFromNative);
+        reloadEl.addEventListener('click', () => {
+
+            menuOpen = false;
+
+            loadFromNative();
+        });
 
 
-        tools.append(reloadEl, tuckEl);
+        /*
+         * 大きさは押すたびにその場で変わる。続けて押せるよう、出したままにする
+         */
+        biggerEl = document.createElement('button');
+
+        biggerEl.type = 'button';
+
+        biggerEl.className = 'tool bigger';
+
+        biggerEl.textContent = '大きく';
+
+        biggerEl.title = 'ドックを1段大きくする';
+
+        biggerEl.addEventListener('click', () => changeDockSize(1));
+
+
+        smallerEl = document.createElement('button');
+
+        smallerEl.type = 'button';
+
+        smallerEl.className = 'tool smaller';
+
+        smallerEl.textContent = '小さく';
+
+        smallerEl.title = 'ドックを1段小さくする';
+
+        smallerEl.addEventListener('click', () => changeDockSize(-1));
+
+
+        tools.append(reloadEl, biggerEl, smallerEl, tuckEl);
 
         dock.append(listEl, tools);
 
@@ -3223,9 +3326,24 @@
 
         const tucked = isTucked();
 
+        const sizeIndex = dockSizeIndex();
+
+
+        /*
+         * 「更新」「大きく」「小さく」は現在のアカウントを押して出す。
+         * 現在のアカウントが分からない（押す先が無い）ときは、従来どおり「更新」だけ常に出す
+         * （読み直すと現在のアカウントも分かる）
+         */
+        const hasCurrent =
+            accounts.some(account => normalizeHandle(account.screenName) === current);
+
+        if (!hasCurrent) {
+            menuOpen = false;
+        }
+
 
         const signature =
-            JSON.stringify([accounts, current, position, tucked, busy]);
+            JSON.stringify([accounts, current, position, tucked, busy, sizeIndex, menuOpen]);
 
         if (!force && signature === renderedSignature) {
             return;
@@ -3236,7 +3354,24 @@
 
 
         dock.className =
-            'dock ' + position + (tucked ? ' tucked' : '');
+            'dock ' + position + (tucked ? ' tucked' : '') + (menuOpen ? ' menu-open' : '');
+
+
+        const size = DOCK_SIZES[sizeIndex];
+
+        const sizeVars = {
+            '--av': size.avatar,
+            '--pad-y': size.padY,
+            '--pad-x': size.padX,
+            '--gap': size.gap,
+            '--tool-h': size.tool,
+            '--tool-font': size.font,
+            '--ring': size.ring
+        };
+
+        for (const [name, value] of Object.entries(sizeVars)) {
+            dock.style.setProperty(name, value + 'px');
+        }
 
 
         tabEl.className =
@@ -3248,9 +3383,19 @@
         /*
          * 一覧が空のときは、アイコン欄の大きな「読込」だけにする（下の「更新」は隠す）
          */
-        reloadEl.hidden = !accounts.length;
+        reloadEl.hidden = !accounts.length || (hasCurrent && !menuOpen);
 
         reloadEl.disabled = busy;
+
+
+        biggerEl.hidden = !menuOpen;
+
+        biggerEl.disabled = busy || sizeIndex === DOCK_SIZES.length - 1;
+
+
+        smallerEl.hidden = !menuOpen;
+
+        smallerEl.disabled = busy || sizeIndex === 0;
 
 
         listEl.replaceChildren();
@@ -3334,15 +3479,27 @@
 
 
             /*
-             * 現在のアカウントは押しても反応させない（切替先だけ反応する）
+             * 現在のアカウントは押しても切り替えない。
+             * 代わりに「更新」「大きく」「小さく」を出す・引っ込める（v1.10.0）
              */
             if (normalizeHandle(account.screenName) === current) {
 
                 button.setAttribute('aria-current', 'true');
 
+                button.setAttribute('aria-expanded', String(menuOpen));
+
+                button.title = label + '（押すと「更新」と大きさのボタンを出す）';
+
+                button.addEventListener('click', toggleMenu);
+
             } else {
 
-                button.addEventListener('click', () => switchTo(account));
+                button.addEventListener('click', () => {
+
+                    menuOpen = false;
+
+                    switchTo(account);
+                });
             }
 
 
@@ -3735,10 +3892,26 @@
          */
         window.addEventListener('storage', event => {
 
-            if ([STORAGE_ACCOUNTS, STORAGE_POSITION, STORAGE_TUCKED].includes(event.key)) {
+            if ([STORAGE_ACCOUNTS, STORAGE_POSITION, STORAGE_TUCKED, STORAGE_SIZE].includes(event.key)) {
                 render(false);
             }
         });
+
+
+        /*
+         * 「更新」「大きく」「小さく」を出している間に、ドックの外を触ったら引っ込める。
+         * ドックは Shadow DOM の中なので、composedPath で自作の入れ物を通ったかを見る
+         */
+        document.addEventListener(
+            'pointerdown',
+            event => {
+
+                if (menuOpen && root && !event.composedPath().includes(root)) {
+                    closeMenu();
+                }
+            },
+            true
+        );
     }
 
 
@@ -3917,6 +4090,14 @@
         lines.push(
             '■ 覚えている一覧: ' +
             (loadAccounts().map(a => '@' + a.screenName).join(' ') || '（なし）')
+        );
+
+
+        const sizeIndex = dockSizeIndex();
+
+        lines.push(
+            '■ ドックの大きさ: アイコン ' + DOCK_SIZES[sizeIndex].avatar + 'px' +
+            '（' + (sizeIndex + 1) + '／' + DOCK_SIZES.length + '段目。小さい順）'
         );
 
 
