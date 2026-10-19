@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.8.1
+// @name         X アカウント切替 v1.9.0
 // @namespace    local.hiro.tools
-// @version      1.8.1
+// @version      1.9.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -57,6 +57,11 @@
  *   スクロールのたびには計算せず、X が投稿ボタンの濃さを変えたときだけ追う（v1.8.1）。
  *   投稿ボタンが無いページでは、自分でスクロールの向きを見て薄くする
  *
+ * ■ iPhone では細く・低くする（v1.9.0）
+ *   左に置いてもポストの本文に少しかかっていたため、iPhone 等の幅では
+ *   アイコンを 44px → 36px にし、余白とボタンも詰めた（幅 58px → 48px、
+ *   2アカウントで高さ約 185px → 約 150px）。デスクトップ幅は従来のまま
+ *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
  *   「アバターと @ハンドルを持つ、押せる要素」「アカウント追加・ログアウトの
@@ -78,7 +83,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.8.1';
+    const VERSION = '1.9.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -173,6 +178,20 @@
     const MOBILE_BOTTOM_MIN_PX = 132;
 
     const MOBILE_BOTTOM_MAX_PX = 240;
+
+    /*
+     * iPhone 等の幅（MOBILE_MAX_WIDTH 以下）でのドックの大きさ（v1.9.0）。
+     * 左に置いてもポストの本文にかからないよう、デスクトップ（アイコン 44px・幅 58px）より
+     * 細く・低くする。ドックの幅は アイコン＋左右の余白 5px ずつ＋枠 2px で 48px。
+     * 左に置いたときの右端は 8＋48 ＝ 56px で、X の本文（画面の左端から 65px 前後）の手前に収まる
+     */
+    const MOBILE_AVATAR_PX = 36;
+
+    // 画面の左右の端からドックまでの幅（px。デスクトップは 10px）
+    const MOBILE_EDGE_PX = 8;
+
+    // 「更新」「しまう」のボタンの高さ（px。デスクトップは 24px）
+    const MOBILE_TOOL_HEIGHT_PX = 20;
 
     // ドックを動かし始めたと見なす指の移動量（px）。これより小さければ普通のタップ
     const DRAG_THRESHOLD_PX = 8;
@@ -2760,6 +2779,22 @@
 .tool[hidden] { display: none; }
 .tool[disabled] { opacity: 0.45; }
 .tool:active { background: rgba(244, 244, 245, 0.14); color: #f4f4f5; }
+/*
+ * iPhone 等の幅では、ポストの本文にかからないよう細く・低くする（v1.9.0）。
+ * 青い輪も細くして、狭くした余白（左右 5px）の中に収める
+ */
+@media (max-width: ${MOBILE_MAX_WIDTH}px) {
+    .dock { gap: 6px; padding: 6px 5px; border-radius: 18px; }
+    .dock.left-bottom, .dock.left-top   { left: max(${MOBILE_EDGE_PX}px, env(safe-area-inset-left)); }
+    .dock.right-bottom, .dock.right-top { right: max(${MOBILE_EDGE_PX}px, env(safe-area-inset-right)); }
+    .list { gap: 6px; }
+    .av, .load { width: ${MOBILE_AVATAR_PX}px; height: ${MOBILE_AVATAR_PX}px; }
+    .av { font-size: 13px; }
+    .av.current { box-shadow: 0 0 0 1.5px #0a0a0b, 0 0 0 3px #1d9bf0; }
+    .load { font-size: 10px; }
+    .tools { gap: 4px; padding-top: 6px; }
+    .tool { width: ${MOBILE_AVATAR_PX}px; height: ${MOBILE_TOOL_HEIGHT_PX}px; font-size: 10px; }
+}
 .dock { touch-action: none; cursor: grab; -webkit-user-select: none; user-select: none; }
 .dock img { -webkit-user-drag: none; }
 .dock, .tab { opacity: var(--tm-fade, 1); }

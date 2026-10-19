@@ -1207,6 +1207,41 @@ const toastText = (page) =>
       await page.close();
     }
 
+    // --- iPhone 幅では細く・低くする（v1.9.0）。デスクトップ幅は従来のまま
+    const sizes = (page) => page.evaluate(() => {
+      const sr = document.getElementById('tm-x-switch-root').shadowRoot;
+      const b = (el) => el.getBoundingClientRect();
+      const dock = b(sr.querySelector('.dock'));
+      const av = b(sr.querySelector('.av'));
+      // 文字のボタンの文字が枠からはみ出していないか（Range で文字そのものの幅を測る）
+      const tools = [...sr.querySelectorAll('.tool')].filter((t) => !t.hidden).map((t) => {
+        const range = document.createRange();
+        range.selectNodeContents(t);
+        const text = range.getBoundingClientRect();
+        const box = b(t);
+        return { label: t.textContent, fits: text.left >= box.left + 1 - 0.5 && text.right <= box.right - 1 + 0.5, height: box.height };
+      });
+      return { dockLeft: dock.left, dockRight: dock.right, dockWidth: dock.width, dockHeight: dock.height, avWidth: av.width, avInset: av.left - dock.left, tools };
+    });
+    {
+      const page = await bootBottom(lift(402, 874), { position: 'left-bottom' });
+      const s = await sizes(page);
+      check('大きさ: iPhone 幅ではアイコンを 36px にする', Math.round(s.avWidth) === 36, s);
+      check('大きさ: iPhone 幅ではドックの幅を 48px にする', Math.round(s.dockWidth) === 48, s);
+      check('大きさ: 左に置いたドックの右端が、X の本文の始まり（左端から 65px 前後）より手前', s.dockRight <= 56.5, s);
+      check('大きさ: 2アカウントでドックの高さが 155px 以下（従来は約 185px）', s.dockHeight <= 155, s);
+      check('大きさ: 青い輪（3px）がドックの余白に収まる', s.avInset - 1 >= 3, s);
+      check('大きさ: 「更新」「しまう」の文字がボタンからはみ出さない', s.tools.length === 2 && s.tools.every((t) => t.fits), s.tools);
+      await page.close();
+    }
+    {
+      const page = await bootBottom(lift(1280, 800), { position: 'left-bottom', bar: false, fab: false, leftIcon: false });
+      const s = await sizes(page);
+      check('大きさ: デスクトップ幅は従来どおり（アイコン 44px・幅 58px・端から 10px）',
+        Math.round(s.avWidth) === 44 && Math.round(s.dockWidth) === 58 && Math.round(s.dockLeft) === 10, s);
+      await page.close();
+    }
+
     // --- iPhone 幅では、何があっても範囲（下から 132〜240px）に収める（v1.7.1）
     const dockBottom = (page) => page.evaluate(() =>
       Math.round(window.innerHeight - document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').getBoundingClientRect().bottom));
