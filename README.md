@@ -22,6 +22,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 | `tenbin-ai-biz-terms-expand-all.user.js` | 天秤AI 約款一括展開 | biz.tenbin.ai/trust |
 | `page-to-markdown.user.js` | ページ本文コピー | 全サイト |
+| `claude-dictation-shortcut.user.js` | Claude 音声入力キー | claude.ai（Claude Code on the web） |
 
 **`@name` は短く、末尾に `@version` と同じ値を付ける。** Tampermonkeyの一覧画面は
 名前が長いと省略され、バージョンも一覧には出ない（個別のスクリプト詳細画面を
@@ -56,6 +57,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/tenbin-ai-biz-terms-expand-all.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/page-to-markdown.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/claude-dictation-shortcut.user.js
 
 ### 新しいスクリプトを入れるとき
 
@@ -740,6 +742,82 @@ NODE_PATH=$(npm root -g) node test/youtube-volume-boost.test.js
 自動再生の制限中はつながず、クリック後に効く）を確認する。
 
 YouTube の実DOMとは異なるため、**実機確認の代わりにはならない**。
+
+## Claude 音声入力キー について（ファイル: `claude-dictation-shortcut.user.js`）
+
+Claude Code on the web（`claude.ai/code`）の音声入力を、マイクボタンをクリックする代わりに
+**Ctrl+D** で開始・停止する（Chrome で使う想定）。通常のチャット（`claude.ai`）の入力欄でも効く。
+Ctrl+D はデスクトップ版の Claude で音声入力を始めるキーと同じ。
+
+### 使い方
+
+1. Claude Code の画面で **Ctrl+D** を押すと、入力欄のマイクボタンを押したのと同じになる。
+   画面下に「🎙 マイクボタンを押しました」と短く出る
+2. 話し終えたら、もう一度 **Ctrl+D** でマイクボタンをもう一度押す（＝止まる）
+3. 入力欄に文字があると、claude.ai ではマイクボタンが送信ボタンに入れ替わって見えなくなるが、
+   **Ctrl+D なら押せる**。書きかけの文に続けて音声入力できる
+4. フォーカスがどこにあっても効く。押したあとは入力欄にフォーカスを戻す
+5. マイクボタンが見つからないときは「マイクボタンを1回クリックすると覚えます」と出る。
+   そのままマイクボタンをクリックすると覚え、次から Ctrl+D で押せる（`localStorage`、キー
+   `tm-claude-dictation-shortcut-learned`）。**Ctrl+Shift+D** でいつでも覚え直せる。Esc でやめる
+6. claude.ai の中では、Chrome の Ctrl+D（ブックマークに追加）・Ctrl+Shift+D（すべてのタブをブックマーク）は効かなくなる。
+   キーを変えたいときは、スクリプト先頭の `SHORTCUT` / `LEARN_SHORTCUT` を書き換える
+
+### 作りの要点
+
+- **入力欄の右端の構造**（claude.ai の通常チャットについて公開されている情報、2026-10）:
+  `[data-cds-part="send-slot"]`（送信）と `[data-cds-part="idle-slot"]`（音声入力「Dictate」と、
+  マイクを選ぶ ∨）が同じ場所に重なっている。文字があると idle-slot は `inert` + 不可視になるが、
+  DOM には残っている
+- **探し方**（上から順に強い）: 覚えたボタン → ラベル（`aria-label` 等）が「Dictate」「音声入力」
+  「ディクテーション」「録音」など → 直前に Ctrl+D で押したボタン（録音中にラベルが「Stop」等に変わっても
+  止められるように。忘れる・覚え直すと消える）→ 入力欄の idle-slot の中のボタン（ラベルが何語でも当たる）→
+  ラベルが「Microphone」「マイク」だけのボタン → マイクの絵のボタン。
+  idle-slot 以下は、いま使っている入力欄（フォーカス中か、最後にフォーカスがあったもの）の近くにあるものだけ。
+  入力欄が2つあれば、使っている方のボタンを押す
+- **押さないもの**: メニューを開くボタン（`aria-haspopup`。マイク選択の ∨）、音声モード（声で会話する別機能）、
+  録音の取り消し、マイクの選び直し。ラベルで音声入力と分からないボタンのうち、送信・停止・中断・削除・
+  PR 作成なども押さない（Claude の作業を止めたり、PR を作ったりしないように）
+- **押し方**: 人のクリックと同じ順（`pointerdown` → `mousedown` → `pointerup` → `mouseup` → `click`）に
+  `dispatchEvent` で送る。`inert` の中のボタンにも届く（本物のクリックは届かない）
+- **常駐の監視は持たない。** キーを押した瞬間に探すので、画面の作り直しや SPA の移動に左右されない
+- 日本語の変換中は何もしない。押しっぱなしの繰り返しでは1回だけ押す
+- キーは `window` のキャプチャで、claude.ai より先に受け取って打ち消す（`document-start`）
+
+### 未確認の点
+
+- **Claude Code（`claude.ai/code`）の入力欄の実DOMは見ていない。** 通常のチャットについて公開されている
+  構造と同じ部品を使っている前提で作った。日本語表示のときのマイクボタンのラベルも未確認
+  （「音声入力」「ディクテーション」などを並べ、ラベルが何であっても idle-slot の構造で当たるようにしている）
+- 文字があって隠れているマイクボタンを押したとき、claude.ai 側が録音を始めるかは実機で確認が要る
+  （隠れたボタンを見えるようにして押せば続けて音声入力できることは、ほかの利用者のスクリプトで確かめられている）
+
+### 診断
+
+うまく効かないときは、DevTools のコンソールで `__tmClaudeDictation.dump()` を実行する。
+押す候補（判定の段・ラベル・見えているか・`inert` の中か・入力欄から何段か）と、
+入力欄のまわりのボタン（外した理由つき）が `console.table` で出る。
+`__tmClaudeDictation.forget()` で覚えたボタンを忘れる。`__tmClaudeDictation.press()` で Ctrl+D と同じことをする。
+
+### 検証
+
+```
+node --check claude-dictation-shortcut.user.js
+NODE_PATH=$(npm root -g) node test/claude-dictation-shortcut.test.js
+```
+
+claude.ai の入力欄（右端に send-slot と idle-slot が重なり、文字があると idle-slot を `inert` + 不可視にする。
+クリックは React と同じくルートで受ける）を模したページを `https://claude.ai/code/...` として出し、
+本物のキー入力（Ctrl+D）を送って60項目を確認する（Ctrl+D で音声入力ボタンが1回押される／もう一度で止まる／
+∨・音声モード・送信は押さない／ページ側に Ctrl+D を渡さない／普通の打鍵・ほかのショートカットは素通し／
+文字があって隠れたボタンも押せる／変換中・押しっぱなしでは押さない／録音中にラベルが「Stop dictation」やただの「Stop」に
+変わっても押して止める（Claude の「Stop response」は押さない）／
+日本語のラベル／ラベルが無くても idle-slot の構造で当てる／入力欄の作り直し／入力欄が2つならフォーカスのある方・最後に使った方／
+textarea の入力欄／`pointerdown` で動く部品も1回だけ／無効なボタンは押さずに知らせる／
+マイクボタンが無い画面で停止・PR 作成・送信を押さない／見つからないとき教える状態になり、クリックで覚え、再読み込み後も覚えている／
+停止ボタンは覚えない／Esc でやめる／Ctrl+Shift+D で覚え直す／診断の中身）。
+
+claude.ai の実DOMとは異なるため、**実機確認の代わりにはならない**。
 
 ## YouTube Full Dates (JST) について
 
