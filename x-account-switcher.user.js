@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.10.0
+// @name         X アカウント切替 v1.11.0
 // @namespace    local.hiro.tools
-// @version      1.10.0
+// @version      1.11.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -43,7 +43,8 @@
  *     （v1.0.1 で、ホームでは動き、個別ポストでは動かないと報告あり）。
  *     このときは下のタブの「ホーム」でいったんホームへ移ってから開き、
  *     終わったら元のページへ戻る（v1.0.2）。
- *     ただし切替に成功したときは、ホームの「フォロー中」を開く（v1.4.0）
+ *     ただし切替に成功したときは、ホームの「フォロー中」を開く（v1.4.0）。
+ *     個別ポストから切り替えたときは、そのポストへ戻る（v1.11.0。下記）
  *
  * ■ iPhone で下の隅に置くとき（v1.6.0）
  *   下のタブの上に浮いている X のボタン（右下の投稿ボタン、左下のアイコン等）を
@@ -64,6 +65,13 @@
  *   v1.9.0 では iPhone 幅だけ 36px に固定したが、元の大きさの方がよいこともあるため、
  *   コードを書き換えずにその場で選べるようにした。
  *   現在のアカウントが分からないときは押す先が無いので、従来どおり「更新」を常に出す
+ *
+ * ■ 個別ポストから切り替えたら、そのポストへ戻る（v1.11.0）
+ *   ポスト（/ユーザー/status/数字）を開いたまま切り替えると、切替後にそのポストを開き直す。
+ *   別のアカウントで返信・いいねし直すため。ポスト以外のページからの切替は、
+ *   従来どおりホームの「フォロー中」を開く。
+ *   X は切替後にページを読み込み直すので、戻り先は切替を押した印（sessionStorage）に
+ *   入れておき、読み込み直した後の起動時に開く
  *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
@@ -86,7 +94,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.10.0';
+    const VERSION = '1.11.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -111,7 +119,7 @@
     // ドックの大きさ（アイコンの直径 px。DOCK_SIZES のどれか）
     const STORAGE_SIZE = 'tm-x-switch-size';
 
-    // 切替を押した印（X が読み込み直した後に、ホームの「フォロー中」を開くため）
+    // 切替を押した印（X が読み込み直した後に、ホームの「フォロー中」か元のポストを開くため）
     const SESSION_AFTER_SWITCH = 'tm-x-switch-after';
 
     // 最後に確かめられた現在のアカウント（左上のアイコンが無いページで使う）
@@ -268,6 +276,22 @@
      * false なら X に任せる（ホームのおすすめ等になる）
      */
     const OPEN_FOLLOWING_AFTER_SWITCH = true;
+
+    /*
+     * 個別ポストから切り替えたら、切替後にそのポストへ戻る（v1.11.0）。
+     * false なら、ポストからの切替でもホームの「フォロー中」を開く（v1.10.0 までと同じ）
+     */
+    const RETURN_TO_POST_AFTER_SWITCH = true;
+
+    /*
+     * 個別ポストのページ。一致した部分（/ユーザー/status/数字）へ戻る。
+     * 画像を開いた /photo/1 等の続きは付けない（ポスト本体を開く）
+     */
+    const POST_PATH_PATTERNS = [
+        /^\/[A-Za-z0-9_]{1,15}\/status(?:es)?\/\d+/,
+        /^\/i\/web\/status\/\d+/,
+        /^\/i\/status\/\d+/
+    ];
 
     // 切替を押した印を有効とみなす期間（ミリ秒）。これより古い印は捨てる
     const AFTER_SWITCH_MAX_AGE_MS = 60 * 1000;
@@ -2087,8 +2111,11 @@
 
         const startPath = location.pathname + location.search;
 
+        const returnTo = postPathOf(location.pathname);
+
         writeJson(sessionStorage, SESSION_AFTER_SWITCH, {
             handle,
+            returnTo,
             at: Date.now()
         });
 
@@ -2138,7 +2165,7 @@
             }
 
 
-            waitForReload(handle, startPath);
+            waitForReload(handle, startPath, returnTo);
 
         } catch (error) {
 
@@ -2167,7 +2194,7 @@
      * 通常は X がページを読み込み直すので、ここには戻ってこない。
      * 読み込み直さなかった場合は、切り替わったかを確かめてボタンを戻す
      */
-    function waitForReload(handle, startPath) {
+    function waitForReload(handle, startPath, returnTo) {
 
         clearTimeout(reloadTimer);
 
@@ -2182,7 +2209,18 @@
                     finishSwitch('切り替えました');
 
 
-                    if (OPEN_FOLLOWING_AFTER_SWITCH) {
+                    if (returnTo) {
+
+                        /*
+                         * 個別ポストから切り替えた: ホームへ移っていれば履歴で戻る
+                         */
+                        log('切替後、元のポストへ戻る', returnTo);
+
+                        sessionStorage.removeItem(SESSION_AFTER_SWITCH);
+
+                        leaveTemporaryPages(returnTo);
+
+                    } else if (OPEN_FOLLOWING_AFTER_SWITCH) {
 
                         /*
                          * 元のページへは戻らない（ホームへ移るので、履歴を戻す必要もない）
@@ -2315,7 +2353,33 @@
 
 
     /*
-     * 起動時: 切替を押した直後（X が読み込み直した）なら、ホームの「フォロー中」を開く
+     * 個別ポストのページなら、戻り先（/ユーザー/status/数字）を返す。
+     * ポストでない・戻らない設定なら空文字
+     */
+    function postPathOf(pathname) {
+
+        if (!RETURN_TO_POST_AFTER_SWITCH) {
+            return '';
+        }
+
+
+        for (const pattern of POST_PATH_PATTERNS) {
+
+            const match = pathname.match(pattern);
+
+            if (match) {
+                return match[0];
+            }
+        }
+
+
+        return '';
+    }
+
+
+    /*
+     * 起動時: 切替を押した直後（X が読み込み直した）なら、
+     * 元のポストへ戻る。ポスト以外から切り替えていれば、ホームの「フォロー中」を開く
      */
     function afterSwitchOnBoot() {
 
@@ -2326,7 +2390,39 @@
         }
 
 
-        if (!OPEN_FOLLOWING_AFTER_SWITCH || Date.now() - (pending.at || 0) > AFTER_SWITCH_MAX_AGE_MS) {
+        if (Date.now() - (pending.at || 0) > AFTER_SWITCH_MAX_AGE_MS) {
+
+            sessionStorage.removeItem(SESSION_AFTER_SWITCH);
+
+            return;
+        }
+
+
+        if (pending.returnTo && RETURN_TO_POST_AFTER_SWITCH) {
+
+            /*
+             * 印は先に消す。開き直した先でもう一度ここへ来ないように
+             */
+            sessionStorage.removeItem(SESSION_AFTER_SWITCH);
+
+
+            if (location.pathname === pending.returnTo) {
+
+                log('切替後、元のポストに居る', pending.returnTo);
+
+                return;
+            }
+
+
+            log('切替後、元のポストを開き直す', location.pathname + ' → ' + pending.returnTo);
+
+            location.replace(pending.returnTo);
+
+            return;
+        }
+
+
+        if (!OPEN_FOLLOWING_AFTER_SWITCH) {
 
             sessionStorage.removeItem(SESSION_AFTER_SWITCH);
 
