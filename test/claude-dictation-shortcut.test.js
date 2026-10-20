@@ -272,7 +272,7 @@ function check(name, cond, extra) {
 
   check('起動: 診断の口が出る', await page.evaluate(() =>
     typeof window.__tmClaudeDictation?.dump === 'function' &&
-    window.__tmClaudeDictation.version === '1.0.0'));
+    window.__tmClaudeDictation.version === '1.0.1'));
 
   // --- 基本: 空の入力欄で Ctrl+D ---
   await page.evaluate(() => window.mkComposer('c1'));
