@@ -823,12 +823,36 @@ const toastText = (page) =>
     await page.waitForTimeout(800);
     ev = await page.evaluate(() => events.slice());
     check(tag + '切替: ホームへ移ってからドロワーの bob を押す', ev.includes('go-home') && ev.includes('switch:bob'), ev);
-    check(tag + '切替: 切替を押した印を残す', await page.evaluate(() =>
-      JSON.parse(sessionStorage.getItem('tm-x-switch-after') || 'null')?.handle === 'bob'));
+    check(tag + '切替: 切替を押した印に、戻り先のポストを入れる', await page.evaluate(() => {
+      const after = JSON.parse(sessionStorage.getItem('tm-x-switch-after') || 'null');
+      return after?.handle === 'bob' && after?.returnTo === '/dave/status/1';
+    }), await page.evaluate(() => sessionStorage.getItem('tm-x-switch-after')));
     await page.waitForTimeout(1200);
-    check(tag + '切替後（再読み込みなし）: 元の個別ポストへは戻らず、ホームに居る', page.url() === 'https://x.com/home', page.url());
-    check(tag + '切替後: ホームの「フォロー中」タブを開く', await page.evaluate(() => followingSelected()), await page.evaluate(() => events.slice()));
+    check(tag + '切替後（再読み込みなし）: 元の個別ポストへ戻る', page.url() === STATUS, page.url());
+    check(tag + '切替後: 「フォロー中」タブは押さない', await page.evaluate(() => !events.includes('tab:フォロー中')), await page.evaluate(() => events.slice()));
+    check(tag + '切替後: 印を消す', await page.evaluate(() => sessionStorage.getItem('tm-x-switch-after') === null));
+
+    // 履歴で戻れず開き直した場合はページが読み込み直されているので、模擬DOMとスクリプトを入れ直す
+    if (!(await page.evaluate(() => !!window.h))) {
+      await page.evaluate(fixtures);
+      await page.evaluate(mobileSetup, variant);
+      await page.evaluate(SCRIPT);
+      await page.waitForTimeout(400);
+    }
     check(tag + '切替後: 印が bob に移る', (await dockButtons(page)).find((b) => b.handle === 'bob')?.current, await dockButtons(page));
+
+    // ポスト以外（通知）から切り替えたときは、従来どおりホームの「フォロー中」を開く
+    await page.evaluate(() => {
+      history.pushState(null, '', '/notifications');
+      window.renderTopBar();
+      document.querySelectorAll('[role="tab"]').forEach((t) => t.setAttribute('aria-selected', String(t.textContent === 'おすすめ')));
+      events.length = 0;
+    });
+    await clickDock(page, 'alice');
+    await page.waitForTimeout(2000);
+    check(tag + 'ポスト以外から切替: 戻り先を入れず、ホームの「フォロー中」を開く',
+      page.url() === 'https://x.com/home' && await page.evaluate(() => followingSelected() && events.includes('switch:alice')),
+      { url: page.url(), ev: await page.evaluate(() => events.slice()) });
 
     // ドロワーに出ていない carol（一覧まで開く）。もう一度個別ポストから
     await page.evaluate(() => {
@@ -842,8 +866,9 @@ const toastText = (page) =>
     ev = await page.evaluate(() => events.slice());
     check(tag + '切替: ホーム → ドロワー → 一覧で carol を押す', ev.includes('go-home') && ev.includes('open-sheet') && ev.includes('switch:carol'), ev);
     await page.waitForTimeout(1200);
-    check(tag + '切替後: ホームの「フォロー中」を開く', page.url() === 'https://x.com/home' && await page.evaluate(() => followingSelected()),
-      { url: page.url(), ev: await page.evaluate(() => events.slice()) });
+    // 履歴で戻れなかったときは開き直す（ページが読み込み直され、events は無くなる）
+    check(tag + '切替後: 元の個別ポストへ戻る', page.url() === STATUS,
+      { url: page.url(), ev: await page.evaluate(() => window.events?.slice()).catch(() => null) });
 
     // 履歴で戻れず開き直した場合はページが読み込み直されているので、模擬DOMとスクリプトを入れ直す
     if (!(await page.evaluate(() => !!window.h))) {
@@ -978,6 +1003,23 @@ const toastText = (page) =>
     check('切替後の起動: ホーム以外で読み込み直されたら、ホームへ移って「フォロー中」を開く',
       page.url() === 'https://x.com/home' && await page.evaluate(() => events.includes('go-home') && followingSelected()),
       { url: page.url(), ev: await page.evaluate(() => events.slice()) });
+
+    // 個別ポストから切り替え、X がホームで読み込み直した
+    await bootWith('https://x.com/home', { handle: 'bob', returnTo: '/dave/status/1', at: Date.now() }, true);
+    await page.waitForURL('https://x.com/dave/status/1', { timeout: 3000 }).catch(() => {});
+    check('切替後の起動: 個別ポストから切り替えていたら、そのポストを開き直す', page.url() === 'https://x.com/dave/status/1', page.url());
+    await page.evaluate(fixtures);
+    await page.evaluate(SCRIPT).catch(() => {});
+    await page.waitForTimeout(800);
+    check('切替後の起動: ポストを開き直した後は、印が消えていて何もしない',
+      page.url() === 'https://x.com/dave/status/1' && await page.evaluate(() => sessionStorage.getItem('tm-x-switch-after') === null), page.url());
+
+    // 個別ポストのまま読み込み直された（戻り先と同じページ）
+    await bootWith('https://x.com/dave/status/1', { handle: 'bob', returnTo: '/dave/status/1', at: Date.now() }, true);
+    await page.waitForTimeout(800);
+    check('切替後の起動: 既に元のポストに居れば、開き直さず印だけ消す',
+      page.url() === 'https://x.com/dave/status/1' && await page.evaluate(() => !!window.h && !events.includes('go-home') && sessionStorage.getItem('tm-x-switch-after') === null),
+      page.url());
 
     await bootWith('https://x.com/home', { handle: 'bob', at: Date.now() - 5 * 60 * 1000 }, true);
     await page.waitForTimeout(800);
