@@ -24,6 +24,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `page-to-markdown.user.js` | ページ本文コピー | 全サイト |
 | `claude-dictation-shortcut.user.js` | Claude 音声入力キー | claude.ai（Claude Code on the web） |
 | `google-hide-ai-overview.user.js` | Google AI概要非表示 | www.google.com / www.google.co.jp の検索結果 |
+| `block-ctrl-d-bookmark.user.js` | Ctrl+D ブックマーク無効 | 全サイト |
 
 **`@name` は短く、末尾に `@version` と同じ値を付ける。** Tampermonkeyの一覧画面は
 名前が長いと省略され、バージョンも一覧には出ない（個別のスクリプト詳細画面を
@@ -60,6 +61,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/page-to-markdown.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/claude-dictation-shortcut.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/google-hide-ai-overview.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/block-ctrl-d-bookmark.user.js
 
 ### 新しいスクリプトを入れるとき
 
@@ -1320,3 +1322,33 @@ NODE_PATH=$(npm root -g) node test/google-hide-ai-overview.test.js
 パソコン幅と iPhone 幅の模擬DOMで、目印付きの概要が入れ物ごと消える、見出しだけで分かる
 概要が消える、通常の検索結果・「AI Overview とは」の記事・「他の人はこちらも質問」が残る、
 使い回しで中身が変わったら表示に戻る、を確かめる。模擬DOMは Google の実DOMそのものではない。
+
+## Ctrl+D ブックマーク無効 について（ファイル: `block-ctrl-d-bookmark.user.js`）
+
+Chrome で Ctrl+D を押したときの「ブックマークに追加」を止める。全サイトが対象。
+
+- 止めるのはキーの既定動作だけ（`preventDefault`）。サイト側のキー処理には渡すので、
+  サイトが Ctrl+D に割り当てた働きは残る
+- 日本語の変換中も止める。埋め込みの枠（iframe）の中にカーソルがあるときも止める（`@noframes` を付けない）
+- Ctrl+Shift+D（すべてのタブをブックマーク）など、ほかのキーは触らない
+- claude.ai では「Claude 音声入力キー」が Ctrl+D で音声入力を始める。両方入れても動きはぶつからない
+- **止められないページ**：新しいタブ、`chrome://` のページ、Chrome ウェブストア、PDF ビューア。
+  ユーザースクリプトが動かないため、ここでは Ctrl+D でブックマークに追加される
+- ブックマークに追加したいときは、アドレスバー右の☆を押す
+
+### 診断
+
+止まらないときは、DevTools のコンソールで `__tmBlockCtrlD.dump()` を実行する。
+スクリプトが動いているか、打ち消した回数と最後の時刻が `console.table` で出る。
+
+### 検証
+
+```
+node --check block-ctrl-d-bookmark.user.js
+NODE_PATH=$(npm root -g) node test/block-ctrl-d-bookmark.test.js
+```
+
+入力欄・contenteditable・何も選んでいない状態・同じページの iframe で Ctrl+D を押し、
+既定動作が打ち消されること、サイト側のキー処理には届くこと、Ctrl+Shift+D・Ctrl+S・Ctrl+Alt+D と
+普通の打鍵は素通しすること、変換中も打ち消すことを確かめる（14項目）。
+ヘッドレスではブックマークの画面そのものは出ないので、画面が出ないことは Chrome の実機で確かめる。
