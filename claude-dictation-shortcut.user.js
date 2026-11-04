@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Claude 音声入力キー v1.0.1
+// @name         Claude 音声入力キー v1.0.2
 // @namespace    local.hiro.tools
-// @version      1.0.1
+// @version      1.0.2
 // @description  Claude Code（claude.ai/code）の音声入力を、マイクボタンをクリックする代わりに Ctrl+D で開始・停止する。入力欄に文字があってマイクボタンが隠れているときも押せる。通常のチャット（claude.ai）でも効く
 // @match        https://claude.ai/*
 // @grant        none
@@ -63,7 +63,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.0.1';
+    const VERSION = '1.0.2';
 
     /*
      * 音声入力を開始・停止するキー。
@@ -974,8 +974,14 @@
 
     function onKeyDown(event) {
 
-        // 日本語の変換中は触らない
+        // 日本語の変換中は音声入力を押さない。
+        // ただし Ctrl+D・Ctrl+Shift+D は打ち消す（変換中でも Chrome のブックマーク画面を出さない）
         if (event.isComposing || event.keyCode === 229) {
+
+            if (matchesShortcut(event, SHORTCUT) || matchesShortcut(event, LEARN_SHORTCUT)) {
+                event.preventDefault();
+            }
+
             return;
         }
 

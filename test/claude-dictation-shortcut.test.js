@@ -272,7 +272,7 @@ function check(name, cond, extra) {
 
   check('起動: 診断の口が出る', await page.evaluate(() =>
     typeof window.__tmClaudeDictation?.dump === 'function' &&
-    window.__tmClaudeDictation.version === '1.0.1'));
+    window.__tmClaudeDictation.version === '1.0.2'));
 
   // --- 基本: 空の入力欄で Ctrl+D ---
   await page.evaluate(() => window.mkComposer('c1'));
@@ -324,7 +324,27 @@ function check(name, cond, extra) {
     document.getElementById('c1-editor').dispatchEvent(ev);
     return ev.defaultPrevented;
   });
-  check('変換中: 日本語の変換中は何もしない', (await count('c1-dictate')) === before && imeResult === false);
+  check('変換中: 日本語の変換中は音声入力ボタンを押さない', (await count('c1-dictate')) === before);
+  check('変換中: 変換中でも Ctrl+D は打ち消す（ブックマーク画面を出さない）', imeResult === true);
+
+  const ime229Result = await page.evaluate(() => {
+    const ev = new KeyboardEvent('keydown', {
+      code: 'KeyD', key: 'Process', keyCode: 229, ctrlKey: true, bubbles: true, cancelable: true
+    });
+    document.getElementById('c1-editor').dispatchEvent(ev);
+    return ev.defaultPrevented;
+  });
+  check('変換中: keyCode 229 の Ctrl+D も打ち消し、押さない',
+    ime229Result === true && (await count('c1-dictate')) === before);
+
+  const imeOtherResult = await page.evaluate(() => {
+    const ev = new KeyboardEvent('keydown', {
+      code: 'KeyS', key: 's', ctrlKey: true, isComposing: true, bubbles: true, cancelable: true
+    });
+    document.getElementById('c1-editor').dispatchEvent(ev);
+    return ev.defaultPrevented;
+  });
+  check('変換中: ほかのキー（Ctrl+S）は打ち消さない', imeOtherResult === false);
 
   const repeatResult = await page.evaluate(() => {
     const ev = new KeyboardEvent('keydown', {

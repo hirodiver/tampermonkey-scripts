@@ -790,7 +790,9 @@ Ctrl+D は、GitHub の issue で「デスクトップ版の Claude で効く」
 - **押し方**: 人のクリックと同じ順（`pointerdown` → `mousedown` → `pointerup` → `mouseup` → `click`）に
   `dispatchEvent` で送る。`inert` の中のボタンにも届く（本物のクリックは届かない）
 - **常駐の監視は持たない。** キーを押した瞬間に探すので、画面の作り直しや SPA の移動に左右されない
-- 日本語の変換中は何もしない。押しっぱなしの繰り返しでは1回だけ押す
+- 日本語の変換中は音声入力ボタンを押さない。ただし Ctrl+D・Ctrl+Shift+D は打ち消すので、変換中に押しても
+  ブックマークの画面は出ない（v1.0.2。v1.0.1 までは変換中に素通しして、ブックマークの画面が出ていた）。
+  押しっぱなしの繰り返しでは1回だけ押す
 - キーは `window` のキャプチャで、claude.ai より先に受け取って打ち消す（`document-start`）
 
 ### 実機での確認（2026-10、Chrome・claude.ai/code、v1.0.0）
@@ -825,9 +827,9 @@ NODE_PATH=$(npm root -g) node test/claude-dictation-shortcut.test.js
 
 claude.ai の入力欄（右端に send-slot と idle-slot が重なり、文字があると idle-slot を `inert` + 不可視にする。
 クリックは React と同じくルートで受ける）を模したページを `https://claude.ai/code/...` として出し、
-本物のキー入力（Ctrl+D）を送って60項目を確認する（Ctrl+D で音声入力ボタンが1回押される／もう一度で止まる／
+本物のキー入力（Ctrl+D）を送って63項目を確認する（Ctrl+D で音声入力ボタンが1回押される／もう一度で止まる／
 ∨・音声モード・送信は押さない／ページ側に Ctrl+D を渡さない／普通の打鍵・ほかのショートカットは素通し／
-文字があって隠れたボタンも押せる／変換中・押しっぱなしでは押さない／録音中にラベルが「Stop dictation」やただの「Stop」に
+文字があって隠れたボタンも押せる／変換中・押しっぱなしでは押さない（変換中も Ctrl+D は打ち消す）／録音中にラベルが「Stop dictation」やただの「Stop」に
 変わっても押して止める（Claude の「Stop response」は押さない）／
 日本語のラベル／ラベルが無くても idle-slot の構造で当てる／入力欄の作り直し／入力欄が2つならフォーカスのある方・最後に使った方／
 textarea の入力欄／`pointerdown` で動く部品も1回だけ／無効なボタンは押さずに知らせる／
