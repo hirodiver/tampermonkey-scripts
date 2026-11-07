@@ -94,8 +94,46 @@ async function openPage(context, bar) {
         check('A: 枠として #input-container を選ぶ', await page.evaluate(() =>
             document.querySelector('#input-container').classList.contains('tm-ycin-pill')));
 
+        // YouTube の送信処理の代わり: 枠で Enter を受けたら「送信」を数える
+        await page.evaluate(() => {
+            window.sent = 0;
+            document.querySelector('div[contenteditable]').addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') {
+                    window.sent += 1;
+                }
+            });
+        });
+
         await page.click('#tm-ycin-toggle');
         await page.waitForTimeout(50);
+
+        check('A: クリック後、ボタンにフォーカスが残らない', await page.evaluate(() =>
+            document.activeElement === null || document.activeElement.id !== 'tm-ycin-toggle'));
+
+        // Enter・スペースを押しても戻らない（v1.0.0 の不具合）
+        await page.keyboard.press('Enter');
+        await page.keyboard.press('Space');
+        await page.waitForTimeout(50);
+        check('A: Enter・スペースを押しても戻らない', !(await visible(page, 'div[contenteditable]')));
+
+        // ボタンにフォーカスを当てて Enter / キーボード由来の click
+        await page.evaluate(() => {
+            const b = document.getElementById('tm-ycin-toggle');
+            b.focus();
+            b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+            b.click();
+        });
+        await page.waitForTimeout(50);
+        check('A: ボタンへのキーボード操作では切り替わらない', !(await visible(page, 'div[contenteditable]')));
+        check('A: ボタンは Tab で来ない（tabindex=-1）', await page.evaluate(() =>
+            document.getElementById('tm-ycin-toggle').tabIndex === -1));
+
+        // 隠している間に枠へ Enter が届いても送信されない
+        await page.evaluate(() => {
+            const ed = document.querySelector('div[contenteditable]');
+            ed.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        });
+        check('A: 隠している間は Enter が送信処理に届かない', await page.evaluate(() => window.sent === 0));
 
         check('A: 押すと文字の枠が消える', !(await visible(page, 'div[contenteditable]')));
         check('A: 絵文字ボタンも消える', !(await visible(page, '#emoji')));
@@ -130,8 +168,25 @@ async function openPage(context, bar) {
         check('A: もう一度押すと戻る', await visible(page, 'div[contenteditable]'));
         check('A: 絵文字も戻る', await visible(page, '#emoji'));
         check('A: 戻したらボタンは「隠す」', (await page.textContent('#tm-ycin-toggle')) === '隠す');
-        check('A: 戻したら入力欄にカーソルが入る', await page.evaluate(() =>
-            document.activeElement && document.activeElement.matches('[contenteditable]')));
+        check('A: 戻しても入力欄に勝手にカーソルは入らない', await page.evaluate(() =>
+            !(document.activeElement && document.activeElement.matches('[contenteditable]'))));
+
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(50);
+        check('A: 戻した直後の Enter で隠れない', await visible(page, 'div[contenteditable]'));
+
+        // 出している間は普通に送れる（送信処理を止めていない）
+        await page.evaluate(() => {
+            window.sent = 0;
+            document.querySelector('div[contenteditable]').addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') {
+                    window.sent += 1;
+                }
+            });
+        });
+        await page.click('div[contenteditable]');
+        await page.keyboard.press('Enter');
+        check('A: 出している間は Enter で送れる', await page.evaluate(() => window.sent === 1));
 
         const rows = await page.evaluate(() => window.__tmYtChatInput.dump());
         check('A: 診断 dump が表を返す', Array.isArray(rows) && rows.some((r) => r['隠す対象'] === '★'), rows);

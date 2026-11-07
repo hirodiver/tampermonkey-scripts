@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube チャット入力欄切替 v1.0.0
+// @name         YouTube チャット入力欄切替 v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
-// @description  ライブチャット下部の入力欄（文字を打つ枠と絵文字ボタン）を、ボタン1つで隠したり戻したりする。スーパーチャット（¥）とハートのボタンは残す
+// @version      1.1.0
+// @description  ライブチャット下部の入力欄（文字を打つ枠と絵文字ボタン）を、ボタンのクリック・タップで隠したり戻したりする（キーボードでは切り替えない）。隠している間はチャットへ送れない。スーパーチャット（¥）とハートのボタンは残す
 // @match        https://www.youtube.com/live_chat*
 // @grant        none
 // @run-at       document-start
@@ -348,15 +348,38 @@
         btn.id = BTN_ID;
         btn.type = 'button';
 
+        /*
+         * 切り替えはクリック・タップだけで行う。
+         * キーボード（Enter・スペース）では切り替えない。
+         * ボタンにフォーカスが残ったまま Enter を押すと、
+         * 意図せず入力欄が戻ってしまうため（v1.0.0 の不具合）。
+         *
+         *   tabindex=-1   … Tab でボタンに来ない
+         *   mousedown     … 押してもフォーカスを奪わない
+         *   detail === 0  … キーボード由来の click は無視する
+         */
+        btn.tabIndex = -1;
+
+        btn.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+        });
+
         btn.addEventListener('click', (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
+
+            if (ev.detail === 0) {
+                return;
+            }
+
+            btn.blur();
             toggle();
         });
 
-        // YouTube 側のキー操作（入力帯のショートカット等）に渡さない
         btn.addEventListener('keydown', (ev) => {
+            ev.preventDefault();
             ev.stopPropagation();
+            btn.blur();
         });
 
         return btn;
@@ -440,17 +463,65 @@
         saveHidden();
         apply();
 
-        // 出したときは、すぐ打てるようにカーソルを入れる
-        if (!hidden) {
-            const field = findField();
-            const editable = field && (field.matches('[contenteditable]')
-                ? field
-                : field.querySelector('[contenteditable]'));
-
-            if (editable && typeof editable.focus === 'function') {
-                editable.focus();
-            }
+        /*
+         * 出したときもカーソルは入れない（v1.0.0 では入れていた）。
+         * 別の作業をしながら Enter を押したとき、
+         * 勝手にチャットへ送られる事故を防ぐため。
+         * 打つときは自分で入力欄をクリックする。
+         */
+        if (hidden) {
+            releaseFocus();
         }
+    }
+
+    // ============================================================
+    // 隠している間の送信防止
+    // ============================================================
+
+    // 入力帯（隠した枠）の中にフォーカスが残っていたら外す
+    function releaseFocus() {
+        const active = document.activeElement;
+
+        if (!active || active === document.body) {
+            return;
+        }
+
+        if (currentPill && currentPill.contains(active)) {
+            active.blur();
+        }
+    }
+
+    function isInHiddenInput(target) {
+        if (!hidden || !target || target.nodeType !== 1) {
+            return false;
+        }
+
+        if (currentPill && currentPill.contains(target)) {
+            return true;
+        }
+
+        return !!target.closest(FIELD_SELECTORS.join(','));
+    }
+
+    /*
+     * 隠している間は、文字の枠へのキー入力・文字入力・貼り付けを
+     * 先回り（capture）で止める。YouTube の送信処理まで届かない。
+     */
+    function blockWhileHidden(ev) {
+        if (!isInHiddenInput(ev.target)) {
+            return;
+        }
+
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+
+        if (ev.target.blur) {
+            ev.target.blur();
+        }
+    }
+
+    for (const type of ['keydown', 'keypress', 'keyup', 'beforeinput', 'input', 'paste', 'drop', 'focusin']) {
+        window.addEventListener(type, blockWhileHidden, true);
     }
 
     // ============================================================
