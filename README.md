@@ -18,6 +18,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
 | `youtube-chat-highlight.user.js` | YouTube チャット強調 | www.youtube.com/live_chat |
+| `youtube-chat-input-toggle.user.js` | YouTube チャット入力欄切替 | www.youtube.com/live_chat |
 | `youtube-volume-boost.user.js` | YouTube 音量ブースト | www.youtube.com |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 | `tenbin-ai-biz-terms-expand-all.user.js` | 天秤AI 約款一括展開 | biz.tenbin.ai/trust |
@@ -55,6 +56,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-highlight.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-input-toggle.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-volume-boost.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/tenbin-ai-biz-terms-expand-all.user.js
@@ -1322,6 +1324,42 @@ NODE_PATH=$(npm root -g) node test/google-hide-ai-overview.test.js
 パソコン幅と iPhone 幅の模擬DOMで、目印付きの概要が入れ物ごと消える、見出しだけで分かる
 概要が消える、通常の検索結果・「AI Overview とは」の記事・「他の人はこちらも質問」が残る、
 使い回しで中身が変わったら表示に戻る、を確かめる。模擬DOMは Google の実DOMそのものではない。
+
+## YouTube チャット入力欄切替 について（ファイル: `youtube-chat-input-toggle.user.js`）
+
+ライブチャット下部の入力欄（文字を打つ枠と、その中の絵文字ボタン）を、ボタン1つで隠したり戻したりする。
+スーパーチャット（¥）とハートのボタンは残す。隠すのは画面上だけで、YouTube 側には何も送らない。
+
+### 使い方
+
+1. 入力欄の左に **「隠す」** ボタンが出る。押すと入力欄が消え、¥ とハートだけが残る
+2. 隠している間、ボタンは **「入力欄」** になる。押すと戻り、そのまま打てるようにカーソルが入る
+3. 隠したかどうかは端末に覚える（`localStorage` のキー `tm-yt-chat-input-hidden`）。
+   再読み込みしても、別の配信を開いても続く。ポップアウトと埋め込みの両方を開いていれば揃って切り替わる
+
+### 作りの要点
+
+- 入力帯の内部構造は確認できていないので、id やクラスに頼らず**構造で狙う**。
+  文字を打つ枠（`yt-live-chat-text-input-field-renderer` か contenteditable）から親へたどり、
+  **¥・ハートなど絵文字以外のボタンを含まない一番外側の入れ物**を「入力欄」として隠す
+- 絵文字ボタンだけは入力欄の一部として一緒に隠す（id・クラス・aria-label に emoji / 絵文字 を含むもの）
+- 隠す CSS は `document-start` で先に入れる。読み込み直後に一瞬見えるのを防ぐため、
+  JS が入れ物を見つける前から文字の枠だけは CSS で消しておく
+- チャットは入力帯を作り直すことがあるので、DOM の変化を見て入れ物を探し直し、ボタンを付け直す
+- **効かないとき**（¥ まで消える・枠が残る など）は、チャット欄の iframe を選んだ状態の
+  DevTools コンソールで `__tmYtChatInput.dump()` を実行する。文字の枠から親へたどった各段と、
+  どのボタンで止まったか、どれを隠す対象にしたか（★）が `console.table` で出る
+
+### 検証
+
+```
+node --check youtube-chat-input-toggle.user.js
+NODE_PATH=$(npm root -g) node test/youtube-chat-input-toggle.test.js
+```
+
+構造の違う2種類の模擬入力帯（id の手がかりあり／なし）で25項目（文字の枠と絵文字が消える／
+¥・ハート・発言は残る／戻せる／作り直されても効く／再読み込み後も覚えている／戻したらカーソルが入る）を確認する。
+実際のチャットの描画とは異なるため、**実機確認の代わりにはならない**。
 
 ## Ctrl+D ブックマーク無効 について（ファイル: `block-ctrl-d-bookmark.user.js`）
 
