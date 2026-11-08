@@ -8,7 +8,7 @@ const path = require('path');
 // スクリプトを流し込み、
 // 「ボタンが出る／確認で断ると何も消えない／全部消える（続きの読み込み分も）／
 //   一覧の外の動画は残る／止められる／消せない行は飛ばす／
-//   ほかの再生リストではボタンが出ない」を確認する。
+//   ほかの再生リストではボタンが出ない／消した動画の記録がテキストで保存される」を確認する。
 //
 //   NODE_PATH=$(npm root -g) node test/youtube-watch-later-clear.test.js
 //
@@ -81,7 +81,24 @@ function html(opts) {
     });
     icon.appendChild(btn);
     menu.appendChild(icon);
-    row.append(a, menu);
+    const thumb = document.createElement('ytd-thumbnail-overlay-time-status-renderer');
+    const time = document.createElement('span');
+    time.id = 'text';
+    time.textContent = '  1' + n + ':0' + (n % 10) + '  ';
+    thumb.appendChild(time);
+    const channel = document.createElement('ytd-channel-name');
+    const ca = document.createElement('a');
+    ca.href = '/@ch' + n;
+    ca.textContent = 'チャンネル' + n;
+    channel.appendChild(ca);
+    const info = document.createElement('div');
+    info.id = 'video-info';
+    ['1' + n + '万 回視聴', '•', n + '日前'].forEach((t) => {
+      const span = document.createElement('span');
+      span.textContent = t;
+      info.appendChild(span);
+    });
+    row.append(thumb, a, channel, info, menu);
     contents.appendChild(row);
   }
 
@@ -160,9 +177,12 @@ async function waitIdle(page, timeout) {
         check('後で見るのページにボタンが出る', await page.isVisible('#tm-ywlc-button'));
         check('ボタンの文字', (await page.textContent('#tm-ywlc-button')) === '後で見るを全部削除');
 
+        const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
+
         await page.click('#tm-ywlc-button');
         await page.waitForTimeout(300);
         check('実行中はボタンが「停止」になる', /停止/.test(await page.textContent('#tm-ywlc-button')));
+        check('実行中は「記録を保存」を出さない', !(await page.isVisible('#tm-ywlc-save')));
 
         await waitIdle(page, 30000);
 
@@ -171,6 +191,31 @@ async function waitIdle(page, timeout) {
             await page.evaluate(() => window.removed));
         check('一覧の外の関連動画は残る', await page.evaluate(() => !!document.getElementById('related')));
         check('終わりの表示に件数が出る', /完了：7件削除/.test(await statusText(page)), await statusText(page));
+
+        // 終わったら記録のテキストが自動で保存される
+        const download = await downloadPromise;
+        const file = fs.readFileSync(await download.path(), 'utf8');
+        check('記録のファイル名', /^youtube-watch-later-removed_\d{8}-\d{4}\.txt$/.test(download.suggestedFilename()), download.suggestedFilename());
+        check('記録に件数が出る', file.includes('削除 7件 / 失敗 0件'));
+        check('記録にタイトルが出る', file.includes('1. 動画1') && file.includes('7. 動画7'));
+        check('記録にチャンネル名が出る', file.includes('チャンネル: チャンネル3'));
+        check('記録の URL は list を外した形', file.includes('URL: https://www.youtube.com/watch?v=vid5\r\n'));
+        check('記録に長さが出る', file.includes('長さ: 12:02'));
+        check('記録に再生回数・投稿時期が出る', file.includes('再生回数・投稿: 14万 回視聴 / 4日前'));
+        check('記録に削除日時が出る', /削除: \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}/.test(file));
+        check('記録は BOM 付き', file.charCodeAt(0) === 0xFEFF);
+
+        check('終わったら「記録を保存（7件）」が出る', (await page.textContent('#tm-ywlc-save')) === '記録を保存（7件）');
+
+        // 再読み込みしても前回の記録を保存し直せる
+        await page.reload();
+        await page.waitForTimeout(400);
+        check('再読み込み後も「記録を保存」が出る', await page.isVisible('#tm-ywlc-save'));
+
+        const again = page.waitForEvent('download', { timeout: 5000 });
+        await page.click('#tm-ywlc-save');
+        const file2 = fs.readFileSync(await (await again).path(), 'utf8');
+        check('前回の記録を保存し直せる', file2.includes('削除 7件 / 失敗 0件'));
 
         await context.close();
     }
@@ -199,6 +244,9 @@ async function waitIdle(page, timeout) {
         check('止めると途中で止まる', left > 0 && left < 10, left);
         check('止めたと表示される', /停止しました/.test(await statusText(page)), await statusText(page));
 
+        const log = await page.evaluate(() => window.__tmYtWatchLaterClear.log());
+        check('止めたときも消した分は記録に残る', log.entries.length === 10 - left && !!log.finishedAt, log);
+
         await context.close();
     }
 
@@ -213,6 +261,9 @@ async function waitIdle(page, timeout) {
             Array.from(document.querySelectorAll('ytd-playlist-video-renderer')).map((r) => r.dataset.n));
         check('消せない行だけ残る', JSON.stringify(left) === '["2"]', left);
         check('失敗件数が出る', /3件削除（失敗1件）/.test(await statusText(page)), await statusText(page));
+
+        const text = await page.evaluate(() => window.__tmYtWatchLaterClear.text());
+        check('記録に消せなかった動画が分けて出る', /消せなかった動画[\s\S]*動画2[\s\S]*失敗: /.test(text), text);
         check('失敗後にメニューは閉じている', await page.evaluate(() =>
             !document.querySelector('tp-yt-iron-dropdown').classList.contains('open')));
 
