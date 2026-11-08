@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube 後で見る一括削除 v1.1.0
+// @name         YouTube 後で見る一括削除 v1.2.0
 // @namespace    local.hiro.tools
-// @version      1.1.0
-// @description  「後で見る」の再生リスト画面に「全部削除」ボタンを出し、押すと中の動画を上から順に1本ずつ「[後で見る]から削除」していく。途中で止められる。消した動画のタイトル・チャンネル・URL・長さ・投稿時期・削除日時をテキストファイルに残す。YouTube 本体のメニューを代わりに押すだけで、非公式APIは叩かない
+// @version      1.2.0
+// @description  「後で見る」の再生リスト画面に「全部削除」ボタンを出し、押すと中の動画を上から順に1本ずつ「[後で見る]から削除」していく。途中で止められる。消した動画のタイトル・チャンネル・URL・長さ・投稿時期・削除日時を記録し、終わったら画面に出してファイル保存・コピーできるようにする。YouTube 本体のメニューを代わりに押すだけで、非公式APIは叩かない
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-idle
@@ -31,7 +31,12 @@
      *
      * 消す直前に、その行からタイトル・チャンネル・URL などを読み取って記録する。
      * 記録は1本ごとに localStorage へ書き足すので、途中でタブを閉じても残る。
-     * 終わったら（止めたときも）テキストファイルとして自動で保存する。
+     * 終わったら（止めたときも）記録の画面を開き、そこからファイル保存・コピーする。
+     *
+     * v1.1.0 は終わったときに自動でダウンロードさせるだけだったが、
+     * 数分かかる削除のあとの「クリックに結び付かないダウンロード」はブラウザに止められることがあり、
+     * 実際に記録が手元に残らなかった。保存とコピーは必ず人のクリックで行う。
+     * 自動ダウンロードは「試すだけ」に下げ、画面の表示を正にする。
      */
 
     // ============================================================
@@ -59,12 +64,12 @@
     // ボタンの文字
     const LABEL_IDLE = '後で見るを全部削除';
     const LABEL_STOP_PREFIX = '停止';
-    const LABEL_SAVE_PREFIX = '記録を保存';
+    const LABEL_SAVE_PREFIX = '記録を見る';
 
     // 記録を置くキー（localStorage）。直近の1回分だけ持つ
     const LOG_STORE_KEY = 'tm-yt-watch-later-clear-log';
 
-    // 終わったときに記録を自動で保存するか
+    // 終わったときに記録の自動ダウンロードも試すか（止められることがあるので、画面の表示が正）
     const AUTO_SAVE_LOG = true;
 
     // ============================================================
@@ -75,6 +80,9 @@
     const BUTTON_ID = 'tm-ywlc-button';
     const STATUS_ID = 'tm-ywlc-status';
     const SAVE_BUTTON_ID = 'tm-ywlc-save';
+    const LOG_VIEW_ID = 'tm-ywlc-log';
+    const LOG_TEXT_ID = 'tm-ywlc-log-text';
+    const LOG_NOTE_ID = 'tm-ywlc-log-note';
 
     // 一覧の1行。新旧を順に試す
     const ROW_SELECTORS = [
@@ -666,6 +674,176 @@
         setTimeout(() => URL.revokeObjectURL(url), 10000);
     }
 
+    async function copyLog() {
+        if (!currentLog || currentLog.entries.length === 0) {
+            return false;
+        }
+
+        const text = logToText(currentLog);
+
+        try {
+            await navigator.clipboard.writeText(text);
+
+            return true;
+        } catch (e) {
+            // クリップボード API が使えないときは、記録欄を選んで古い方法でコピーする
+            const area = document.getElementById(LOG_TEXT_ID);
+
+            if (!area) {
+                return false;
+            }
+
+            area.focus();
+            area.select();
+
+            try {
+                return document.execCommand('copy');
+            } catch (e2) {
+                return false;
+            }
+        }
+    }
+
+    // ============================================================
+    // 記録の画面
+    // ============================================================
+
+    function makeLogButton(label, onClick, primary) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+
+        Object.assign(button.style, {
+            padding: '8px 14px',
+            borderRadius: '18px',
+            fontSize: '13px',
+            fontWeight: '500',
+            cursor: 'pointer',
+            border: primary ? 'none' : '1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, 0.15))',
+            color: primary ? '#fff' : 'var(--yt-spec-text-primary, #0f0f0f)',
+            background: primary ? '#065fd4' : 'transparent'
+        });
+
+        button.addEventListener('click', onClick);
+
+        return button;
+    }
+
+    function setLogNote(text) {
+        const note = document.getElementById(LOG_NOTE_ID);
+
+        if (note) {
+            note.textContent = text;
+        }
+    }
+
+    function closeLogView() {
+        const view = document.getElementById(LOG_VIEW_ID);
+
+        if (view) {
+            view.remove();
+        }
+    }
+
+    function openLogView(note) {
+        if (!currentLog || currentLog.entries.length === 0) {
+            setStatus('記録がありません');
+
+            return;
+        }
+
+        closeLogView();
+
+        const view = document.createElement('div');
+        view.id = LOG_VIEW_ID;
+
+        Object.assign(view.style, {
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: '2400',
+            width: 'min(720px, calc(100vw - 32px))',
+            maxHeight: 'calc(100vh - 64px)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            padding: '16px',
+            boxSizing: 'border-box',
+            borderRadius: '12px',
+            fontFamily: 'Roboto, Arial, sans-serif',
+            color: 'var(--yt-spec-text-primary, #0f0f0f)',
+            background: 'var(--yt-spec-menu-background, var(--yt-spec-base-background, #fff))',
+            boxShadow: '0 4px 24px rgba(0, 0, 0, 0.4)'
+        });
+
+        const heading = document.createElement('div');
+        heading.textContent = '消した動画の記録（' + currentLog.entries.length + '件）';
+
+        Object.assign(heading.style, {
+            fontSize: '16px',
+            fontWeight: '700'
+        });
+
+        const noteEl = document.createElement('div');
+        noteEl.id = LOG_NOTE_ID;
+        noteEl.textContent = note || '「ファイルに保存」か「コピー」で手元に残してください。';
+
+        Object.assign(noteEl.style, {
+            fontSize: '13px',
+            lineHeight: '1.5',
+            color: 'var(--yt-spec-text-secondary, #606060)'
+        });
+
+        const area = document.createElement('textarea');
+        area.id = LOG_TEXT_ID;
+        area.readOnly = true;
+        area.value = logToText(currentLog).replace(/\r\n/g, '\n');
+
+        Object.assign(area.style, {
+            flex: '1',
+            minHeight: '240px',
+            height: '50vh',
+            resize: 'vertical',
+            padding: '8px',
+            boxSizing: 'border-box',
+            fontSize: '12px',
+            lineHeight: '1.5',
+            fontFamily: 'Consolas, Menlo, monospace',
+            color: 'inherit',
+            background: 'transparent',
+            border: '1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, 0.15))',
+            borderRadius: '8px'
+        });
+
+        const actions = document.createElement('div');
+
+        Object.assign(actions.style, {
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'flex-end',
+            gap: '8px'
+        });
+
+        actions.append(
+            makeLogButton('ファイルに保存', () => {
+                downloadLog();
+                setLogNote('保存しました。ダウンロードに出ていなければ「コピー」を使ってください。');
+            }, true),
+            makeLogButton('コピー', async () => {
+                const ok = await copyLog();
+
+                setLogNote(ok
+                    ? 'コピーしました。メモ帳などに貼り付けて保存してください。'
+                    : 'コピーできませんでした。上の欄を全部選んでコピーしてください。');
+            }, false),
+            makeLogButton('閉じる', closeLogView, false)
+        );
+
+        view.append(heading, noteEl, area, actions);
+        document.body.appendChild(view);
+    }
+
     // ============================================================
     // 実行
     // ============================================================
@@ -781,15 +959,21 @@
             message += '（失敗' + failedCount + '件）';
         }
 
-        if (AUTO_SAVE_LOG && currentLog.entries.length > 0) {
-            message += '。記録はテキストで保存しました';
-        }
-
         setStatus(message);
         render();
 
-        if (AUTO_SAVE_LOG && currentLog.entries.length > 0) {
-            downloadLog();
+        if (currentLog.entries.length > 0) {
+            // 記録の画面は必ず開く。自動ダウンロードは止められても困らないよう、試すだけ
+            openLogView(message + '。「ファイルに保存」か「コピー」で手元に残してください。'
+                + '（記録はこのブラウザにも残っていて、後で見るのページの「記録を見る」から開き直せます）');
+
+            if (AUTO_SAVE_LOG) {
+                try {
+                    downloadLog();
+                } catch (e) {
+                    console.warn('[後で見る一括削除] 自動ダウンロードに失敗:', e);
+                }
+            }
         }
     }
 
@@ -884,7 +1068,7 @@
             boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)'
         });
 
-        saveButton.addEventListener('click', downloadLog);
+        saveButton.addEventListener('click', () => openLogView());
 
         panel.append(status, saveButton, button);
 
@@ -898,6 +1082,8 @@
             if (panel) {
                 panel.remove();
             }
+
+            closeLogView();
 
             return;
         }
@@ -919,7 +1105,7 @@
 
         button.style.background = running ? '#606060' : '#cc0000';
 
-        // 記録があれば、実行していない間は「記録を保存」を出す（前回分も含む）
+        // 記録があれば、実行していない間は「記録を見る」を出す（前回分も含む）
         const saveButton = document.getElementById(SAVE_BUTTON_ID);
         const logCount = currentLog ? currentLog.entries.length : 0;
         const showSave = !running && logCount > 0;
@@ -1008,6 +1194,9 @@
         },
         save() {
             downloadLog();
+        },
+        show() {
+            openLogView();
         }
     };
 

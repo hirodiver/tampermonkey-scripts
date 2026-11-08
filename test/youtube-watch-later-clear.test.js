@@ -142,13 +142,39 @@ function check(name, cond, extra) {
     console.log((cond ? 'PASS  ' : 'FAIL  ') + name + (!cond && extra !== undefined ? '  -> ' + JSON.stringify(extra) : ''));
 }
 
+// ブラウザの「クリックに結び付かないダウンロードは止める」動きを真似る。
+// 最後に人がクリックしてから1秒より後の a[download] のクリックは握りつぶす。
+// （v1.1.0 は数分かかる削除のあとに自動でダウンロードさせるだけで、実機で記録が残らなかった）
+const BLOCK_LATE_DOWNLOADS = `
+(() => {
+    let lastTrustedClick = 0;
+    window.blockedDownloads = 0;
+    document.addEventListener('click', (ev) => {
+        if (ev.isTrusted) {
+            lastTrustedClick = Date.now();
+        }
+    }, true);
+    const original = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+        if (this.hasAttribute('download') && Date.now() - lastTrustedClick > 1000) {
+            window.blockedDownloads += 1;
+            return;
+        }
+        return original.call(this);
+    };
+})();
+`;
+
 async function openPage(browser, url, opts, confirmAnswer) {
-    const context = await browser.newContext();
+    const context = await browser.newContext({
+        permissions: ['clipboard-read', 'clipboard-write']
+    });
     const page = await context.newPage();
     page.on('dialog', (d) => (confirmAnswer ? d.accept() : d.dismiss()));
     await page.route('https://www.youtube.com/**', (route) =>
         route.fulfill({ contentType: 'text/html; charset=utf-8', body: html(opts) })
     );
+    await page.addInitScript(BLOCK_LATE_DOWNLOADS);
     await page.addInitScript(SCRIPT);
     await page.goto(url);
     await page.waitForTimeout(400);
@@ -177,12 +203,10 @@ async function waitIdle(page, timeout) {
         check('後で見るのページにボタンが出る', await page.isVisible('#tm-ywlc-button'));
         check('ボタンの文字', (await page.textContent('#tm-ywlc-button')) === '後で見るを全部削除');
 
-        const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
-
         await page.click('#tm-ywlc-button');
         await page.waitForTimeout(300);
         check('実行中はボタンが「停止」になる', /停止/.test(await page.textContent('#tm-ywlc-button')));
-        check('実行中は「記録を保存」を出さない', !(await page.isVisible('#tm-ywlc-save')));
+        check('実行中は「記録を見る」を出さない', !(await page.isVisible('#tm-ywlc-save')));
 
         await waitIdle(page, 30000);
 
@@ -192,11 +216,22 @@ async function waitIdle(page, timeout) {
         check('一覧の外の関連動画は残る', await page.evaluate(() => !!document.getElementById('related')));
         check('終わりの表示に件数が出る', /完了：7件削除/.test(await statusText(page)), await statusText(page));
 
-        // 終わったら記録のテキストが自動で保存される
+        // 自動ダウンロードが止められても、記録は画面に出る
+        await page.waitForTimeout(300);
+        check('（前提）終わったときの自動ダウンロードは止められた', (await page.evaluate(() => window.blockedDownloads)) >= 1);
+        check('終わったら記録の画面が開く', await page.isVisible('#tm-ywlc-log'));
+
+        const shown = await page.inputValue('#tm-ywlc-log-text');
+        check('画面の記録に件数が出る', shown.includes('削除 7件 / 失敗 0件'), shown.slice(0, 200));
+        check('画面の記録にタイトルが出る', shown.includes('1. 動画1') && shown.includes('7. 動画7'));
+
+        // 人が「ファイルに保存」を押せば保存される
+        const downloadPromise = page.waitForEvent('download', { timeout: 5000 });
+        await page.click('#tm-ywlc-log button:has-text("ファイルに保存")');
         const download = await downloadPromise;
         const file = fs.readFileSync(await download.path(), 'utf8');
+        check('「ファイルに保存」で保存できる', file.includes('削除 7件 / 失敗 0件'));
         check('記録のファイル名', /^youtube-watch-later-removed_\d{8}-\d{4}\.txt$/.test(download.suggestedFilename()), download.suggestedFilename());
-        check('記録に件数が出る', file.includes('削除 7件 / 失敗 0件'));
         check('記録にタイトルが出る', file.includes('1. 動画1') && file.includes('7. 動画7'));
         check('記録にチャンネル名が出る', file.includes('チャンネル: チャンネル3'));
         check('記録の URL は list を外した形', file.includes('URL: https://www.youtube.com/watch?v=vid5\r\n'));
@@ -205,15 +240,27 @@ async function waitIdle(page, timeout) {
         check('記録に削除日時が出る', /削除: \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}/.test(file));
         check('記録は BOM 付き', file.charCodeAt(0) === 0xFEFF);
 
-        check('終わったら「記録を保存（7件）」が出る', (await page.textContent('#tm-ywlc-save')) === '記録を保存（7件）');
+        // 「コピー」でクリップボードに入る
+        await page.click('#tm-ywlc-log button:has-text("コピー")');
+        await page.waitForTimeout(200);
+        const clip = await page.evaluate(() => navigator.clipboard.readText());
+        check('「コピー」でクリップボードに入る', clip.includes('削除 7件 / 失敗 0件') && clip.includes('7. 動画7'));
+        check('コピーしたと出る', /コピーしました/.test(await page.textContent('#tm-ywlc-log-note')));
 
-        // 再読み込みしても前回の記録を保存し直せる
+        await page.click('#tm-ywlc-log button:has-text("閉じる")');
+        check('「閉じる」で記録の画面が閉じる', !(await page.$('#tm-ywlc-log')));
+        check('閉じたあとは「記録を見る（7件）」が出る', (await page.textContent('#tm-ywlc-save')) === '記録を見る（7件）');
+
+        // 再読み込みしても前回の記録を開き直して保存できる
         await page.reload();
         await page.waitForTimeout(400);
-        check('再読み込み後も「記録を保存」が出る', await page.isVisible('#tm-ywlc-save'));
+        check('再読み込み後も「記録を見る」が出る', await page.isVisible('#tm-ywlc-save'));
+
+        await page.click('#tm-ywlc-save');
+        check('「記録を見る」で記録の画面が開く', await page.isVisible('#tm-ywlc-log'));
 
         const again = page.waitForEvent('download', { timeout: 5000 });
-        await page.click('#tm-ywlc-save');
+        await page.click('#tm-ywlc-log button:has-text("ファイルに保存")');
         const file2 = fs.readFileSync(await (await again).path(), 'utf8');
         check('前回の記録を保存し直せる', file2.includes('削除 7件 / 失敗 0件'));
 
