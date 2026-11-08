@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube 後で見る一括削除 v1.0.0
+// @name         YouTube 後で見る一括削除 v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
-// @description  「後で見る」の再生リスト画面に「全部削除」ボタンを出し、押すと中の動画を上から順に1本ずつ「[後で見る]から削除」していく。途中で止められる。YouTube 本体のメニューを代わりに押すだけで、非公式APIは叩かない
+// @version      1.1.0
+// @description  「後で見る」の再生リスト画面に「全部削除」ボタンを出し、押すと中の動画を上から順に1本ずつ「[後で見る]から削除」していく。途中で止められる。消した動画のタイトル・チャンネル・URL・長さ・投稿時期・削除日時をテキストファイルに残す。YouTube 本体のメニューを代わりに押すだけで、非公式APIは叩かない
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-idle
@@ -28,6 +28,10 @@
      *
      * 一覧は100本ずつ読み込まれる。見えている分を消し終えたら下端までスクロールして
      * 続きを読ませ、無くなるまで繰り返す。
+     *
+     * 消す直前に、その行からタイトル・チャンネル・URL などを読み取って記録する。
+     * 記録は1本ごとに localStorage へ書き足すので、途中でタブを閉じても残る。
+     * 終わったら（止めたときも）テキストファイルとして自動で保存する。
      */
 
     // ============================================================
@@ -55,6 +59,13 @@
     // ボタンの文字
     const LABEL_IDLE = '後で見るを全部削除';
     const LABEL_STOP_PREFIX = '停止';
+    const LABEL_SAVE_PREFIX = '記録を保存';
+
+    // 記録を置くキー（localStorage）。直近の1回分だけ持つ
+    const LOG_STORE_KEY = 'tm-yt-watch-later-clear-log';
+
+    // 終わったときに記録を自動で保存するか
+    const AUTO_SAVE_LOG = true;
 
     // ============================================================
     // 目印
@@ -63,6 +74,7 @@
     const PANEL_ID = 'tm-ywlc-panel';
     const BUTTON_ID = 'tm-ywlc-button';
     const STATUS_ID = 'tm-ywlc-status';
+    const SAVE_BUTTON_ID = 'tm-ywlc-save';
 
     // 一覧の1行。新旧を順に試す
     const ROW_SELECTORS = [
@@ -110,6 +122,33 @@
         /^\s*Remove from/i
     ];
 
+    // 行の中のチャンネル名
+    const CHANNEL_SELECTORS = [
+        'ytd-channel-name a',
+        '#channel-name a',
+        '#byline a',
+        'a[href^="/@"]',
+        'a[href*="/channel/"]',
+        'ytd-channel-name #text',
+        '#channel-name'
+    ];
+
+    // 行の中の動画の長さ
+    const DURATION_SELECTORS = [
+        'ytd-thumbnail-overlay-time-status-renderer #text',
+        'ytd-thumbnail-overlay-time-status-renderer',
+        'badge-shape .badge-shape-wiz__text',
+        'badge-shape',
+        '#time-status'
+    ];
+
+    // 行の中の「再生回数・投稿時期」の欄
+    const META_SELECTORS = [
+        '#video-info',
+        'ytd-video-meta-block #metadata-line',
+        '#metadata-line'
+    ];
+
     // 続きの読み込み口
     const CONTINUATION_SELECTORS = [
         'ytd-playlist-video-list-renderer ytd-continuation-item-renderer',
@@ -130,6 +169,9 @@
 
     // 消せなかった行は飛ばす（同じ行を延々と押し続けないため）
     let failedRows = new WeakSet();
+
+    // 今回（または前回）の記録。{ startedAt, finishedAt, endReason, entries: [...] }
+    let currentLog = loadLog();
 
     // ============================================================
     // 小物
@@ -272,6 +314,90 @@
         return text || 'タイトル不明';
     }
 
+    function cleanText(el) {
+        if (!el) {
+            return '';
+        }
+
+        return (el.getAttribute('title') || el.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function rowVideoUrl(row) {
+        const links = row.querySelectorAll('a[href*="/watch?v="]');
+
+        for (const a of links) {
+            const match = a.getAttribute('href').match(/[?&]v=([\w-]+)/);
+
+            if (match) {
+                return 'https://www.youtube.com/watch?v=' + match[1];
+            }
+        }
+
+        return 'URL不明';
+    }
+
+    function rowChannel(row) {
+        for (const selector of CHANNEL_SELECTORS) {
+            for (const el of row.querySelectorAll(selector)) {
+                const text = cleanText(el);
+
+                if (text) {
+                    return text;
+                }
+            }
+        }
+
+        return 'チャンネル不明';
+    }
+
+    function rowDuration(row) {
+        for (const selector of DURATION_SELECTORS) {
+            for (const el of row.querySelectorAll(selector)) {
+                const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+
+                // 「12:34」「1:02:03」の形だけ拾う（「ライブ」等の札は飛ばす）
+                const match = text.match(/\d{1,2}(?::\d{2}){1,2}/);
+
+                if (match) {
+                    return match[0];
+                }
+            }
+        }
+
+        return '';
+    }
+
+    function rowMeta(row) {
+        const el = queryFirst(row, META_SELECTORS);
+
+        if (!el) {
+            return '';
+        }
+
+        // 「12万 回視聴 • 3日前」のように、子の文字を「 / 」でつなぐ
+        const parts = Array.from(el.children)
+            .map((child) => (child.textContent || '').replace(/\s+/g, ' ').trim())
+            .filter((text) => text && !/^[•·]$/.test(text));
+
+        if (parts.length > 0) {
+            return parts.join(' / ');
+        }
+
+        return (el.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function readRowInfo(row) {
+        return {
+            title: rowTitle(row),
+            channel: rowChannel(row),
+            url: rowVideoUrl(row),
+            duration: rowDuration(row),
+            meta: rowMeta(row)
+        };
+    }
+
     function findMenuButton(row) {
         for (const selector of MENU_BUTTON_SELECTORS) {
             const candidates = row.querySelectorAll(selector);
@@ -400,6 +526,147 @@
     }
 
     // ============================================================
+    // 記録
+    // ============================================================
+
+    const jstFormatter = new Intl.DateTimeFormat('ja-JP', {
+        timeZone: 'Asia/Tokyo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+
+    function formatJst(time) {
+        return jstFormatter.format(new Date(time));
+    }
+
+    // ファイル名用: 20261108-2103
+    function fileStamp(time) {
+        const parts = {};
+
+        for (const part of jstFormatter.formatToParts(new Date(time))) {
+            parts[part.type] = part.value;
+        }
+
+        return parts.year + parts.month + parts.day + '-' + parts.hour + parts.minute;
+    }
+
+    function loadLog() {
+        try {
+            const raw = localStorage.getItem(LOG_STORE_KEY);
+
+            if (!raw) {
+                return null;
+            }
+
+            const log = JSON.parse(raw);
+
+            return log && Array.isArray(log.entries) ? log : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function saveLog() {
+        try {
+            if (currentLog) {
+                localStorage.setItem(LOG_STORE_KEY, JSON.stringify(currentLog));
+            }
+        } catch (e) {
+            // 容量切れなどで書けなくても、手元の記録は持っている
+            console.warn('[後で見る一括削除] 記録を localStorage に書けませんでした:', e);
+        }
+    }
+
+    function addLogEntry(info, error) {
+        currentLog.entries.push(Object.assign({}, info, {
+            removedAt: Date.now(),
+            error: error || ''
+        }));
+
+        saveLog();
+    }
+
+    function logToText(log) {
+        const removed = log.entries.filter((e) => !e.error);
+        const failed = log.entries.filter((e) => e.error);
+
+        const lines = [
+            '「後で見る」削除記録',
+            '開始: ' + formatJst(log.startedAt) + '（日本時間）',
+            '終了: ' + (log.finishedAt ? formatJst(log.finishedAt) : '途中（記録はここまで）')
+                + (log.endReason ? '　' + log.endReason : ''),
+            '削除 ' + removed.length + '件 / 失敗 ' + failed.length + '件',
+            ''
+        ];
+
+        function pushEntry(entry, index) {
+            lines.push((index + 1) + '. ' + entry.title);
+            lines.push('   チャンネル: ' + entry.channel);
+            lines.push('   URL: ' + entry.url);
+
+            if (entry.duration) {
+                lines.push('   長さ: ' + entry.duration);
+            }
+
+            if (entry.meta) {
+                lines.push('   再生回数・投稿: ' + entry.meta);
+            }
+
+            if (entry.error) {
+                lines.push('   失敗: ' + entry.error);
+            } else {
+                lines.push('   削除: ' + formatJst(entry.removedAt));
+            }
+
+            lines.push('');
+        }
+
+        lines.push('■ 削除した動画');
+        lines.push('');
+        removed.forEach(pushEntry);
+
+        if (failed.length > 0) {
+            lines.push('■ 消せなかった動画（後で見るに残っている）');
+            lines.push('');
+            failed.forEach(pushEntry);
+        }
+
+        return lines.join('\r\n');
+    }
+
+    function downloadLog() {
+        if (!currentLog || currentLog.entries.length === 0) {
+            setStatus('保存する記録がありません');
+
+            return;
+        }
+
+        // 先頭の BOM はメモ帳などで文字化けさせないため
+        const blob = new Blob(['\uFEFF' + logToText(currentLog)], {
+            type: 'text/plain;charset=utf-8'
+        });
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+
+        a.href = url;
+        // 日本語のファイル名は環境によって捨てられ「download」になるので英数字にする
+        a.download = 'youtube-watch-later-removed_' + fileStamp(currentLog.startedAt) + '.txt';
+        a.style.display = 'none';
+
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+
+    // ============================================================
     // 実行
     // ============================================================
 
@@ -431,6 +698,15 @@
         removedCount = 0;
         failedCount = 0;
         failedRows = new WeakSet();
+
+        currentLog = {
+            startedAt: Date.now(),
+            finishedAt: null,
+            endReason: '',
+            entries: []
+        };
+
+        saveLog();
 
         let consecutiveFailures = 0;
         let endReason = '完了';
@@ -466,8 +742,12 @@
                 }
             }
 
-            const title = rowTitle(row);
+            // 消すと行ごと無くなるので、先に読み取っておく
+            const info = readRowInfo(row);
+            const title = info.title;
             const error = await removeRow(row);
+
+            addLogEntry(info, error);
 
             if (error) {
                 failedRows.add(row);
@@ -491,14 +771,26 @@
 
         running = false;
 
+        currentLog.finishedAt = Date.now();
+        currentLog.endReason = endReason;
+        saveLog();
+
         let message = endReason + '：' + removedCount + '件削除';
 
         if (failedCount > 0) {
             message += '（失敗' + failedCount + '件）';
         }
 
+        if (AUTO_SAVE_LOG && currentLog.entries.length > 0) {
+            message += '。記録はテキストで保存しました';
+        }
+
         setStatus(message);
         render();
+
+        if (AUTO_SAVE_LOG && currentLog.entries.length > 0) {
+            downloadLog();
+        }
     }
 
     function onButtonClick() {
@@ -576,7 +868,25 @@
 
         button.addEventListener('click', onButtonClick);
 
-        panel.append(status, button);
+        const saveButton = document.createElement('button');
+        saveButton.id = SAVE_BUTTON_ID;
+        saveButton.type = 'button';
+
+        Object.assign(saveButton.style, {
+            display: 'none',
+            padding: '6px 12px',
+            border: '1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, 0.1))',
+            borderRadius: '16px',
+            fontSize: '12px',
+            cursor: 'pointer',
+            color: 'var(--yt-spec-text-primary, #0f0f0f)',
+            background: 'var(--yt-spec-menu-background, var(--yt-spec-base-background, #fff))',
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)'
+        });
+
+        saveButton.addEventListener('click', downloadLog);
+
+        panel.append(status, saveButton, button);
 
         return panel;
     }
@@ -608,6 +918,18 @@
         }
 
         button.style.background = running ? '#606060' : '#cc0000';
+
+        // 記録があれば、実行していない間は「記録を保存」を出す（前回分も含む）
+        const saveButton = document.getElementById(SAVE_BUTTON_ID);
+        const logCount = currentLog ? currentLog.entries.length : 0;
+        const showSave = !running && logCount > 0;
+        const saveLabel = LABEL_SAVE_PREFIX + '（' + logCount + '件）';
+
+        saveButton.style.display = showSave ? 'block' : 'none';
+
+        if (saveButton.textContent !== saveLabel) {
+            saveButton.textContent = saveLabel;
+        }
     }
 
     function scheduleApply() {
@@ -656,6 +978,10 @@
                 '番号': index + 1,
                 'タイトル': rowTitle(row),
                 '行の要素': row.tagName.toLowerCase(),
+                'チャンネル': rowChannel(row),
+                'URL': rowVideoUrl(row),
+                '長さ': rowDuration(row),
+                '再生回数・投稿': rowMeta(row),
                 '︙ボタン': findMenuButton(row) ? '○' : '×',
                 '失敗済み': failedRows.has(row) ? '★' : ''
             }));
@@ -673,6 +999,15 @@
         },
         stop() {
             stopRequested = true;
+        },
+        log() {
+            return currentLog;
+        },
+        text() {
+            return currentLog ? logToText(currentLog) : '';
+        },
+        save() {
+            downloadLog();
         }
     };
 
