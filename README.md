@@ -20,6 +20,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `youtube-chat-highlight.user.js` | YouTube チャット強調 | www.youtube.com/live_chat |
 | `youtube-chat-input-toggle.user.js` | YouTube チャット入力欄切替 | www.youtube.com/live_chat |
 | `youtube-volume-boost.user.js` | YouTube 音量ブースト | www.youtube.com |
+| `youtube-watch-later-clear.user.js` | YouTube 後で見る一括削除 | www.youtube.com/playlist?list=WL |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 | `tenbin-ai-biz-terms-expand-all.user.js` | 天秤AI 約款一括展開 | biz.tenbin.ai/trust |
 | `page-to-markdown.user.js` | ページ本文コピー | 全サイト |
@@ -58,6 +59,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-highlight.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-input-toggle.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-volume-boost.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-watch-later-clear.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/tenbin-ai-biz-terms-expand-all.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/page-to-markdown.user.js
@@ -1404,3 +1406,45 @@ NODE_PATH=$(npm root -g) node test/block-ctrl-d-bookmark.test.js
 既定動作が打ち消されること、サイト側のキー処理には届くこと、Ctrl+Shift+D・Ctrl+S・Ctrl+Alt+D と
 普通の打鍵は素通しすること、変換中も打ち消すことを確かめる（14項目）。
 ヘッドレスではブックマークの画面そのものは出ないので、画面が出ないことは Chrome の実機で確かめる。
+
+## YouTube 後で見る一括削除 について（ファイル: `youtube-watch-later-clear.user.js`）
+
+「後で見る」の中身を一気に消す。YouTube には「全部消す」が無い（「視聴済みの動画を削除」だけある）ため、
+各動画の「︙」メニュー →「[後で見る]から削除」を、人の代わりに上から順に押していく。
+YouTube 本体のメニューを押すだけで、非公式APIは叩かない。
+
+### 使い方
+
+1. 「後で見る」（`https://www.youtube.com/playlist?list=WL`）を開く。右下に赤い **「後で見るを全部削除」** ボタンが出る
+   （ほかのページ・ほかの再生リストでは出ない）
+2. 押すと確認が出る。OK で開始。**元には戻せない**
+3. 実行中はボタンが **「停止（n件削除済み）」** になる。押すとその場で止まる
+4. 一覧は100本ずつ読み込まれるので、見えている分を消し終えたら自動で下までスクロールして続きを読ませ、無くなるまで続ける
+5. 終わると「完了：n件削除」と出る。念のためページを再読み込みして空になったか確かめる
+
+1本あたり1秒前後かかる（間を `INTERVAL_MS` = 350ms 置いている）。数百本なら数分。
+実行中はタブを前面に置いたままにする（裏に回すとブラウザが処理を遅らせる）。
+
+### 作りの要点
+
+- 消せなかった行（メニューに削除が無い・押しても消えない）は飛ばして先へ進む。
+  5回続けて失敗したら止める（`MAX_CONSECUTIVE_FAILURES`）。理由はコンソールに `console.warn` で出る
+- 一覧の行は `ytd-playlist-video-renderer` を先に試し、だめなら `list=WL` 付きの動画リンクから
+  「︙」を含む一番近い入れ物へたどる。メニュー項目は文字（「後で見る…から削除」「から削除」「Remove from」）で探す
+- 関連動画など、一覧の外の動画には触らない
+
+### 診断
+
+止まる・何も消えないときは、後で見るのページで DevTools のコンソールから
+`__tmYtWatchLaterClear.dump()` を実行する。見つけた行・「︙」ボタンの有無・失敗した行が `console.table` で出る。
+メニューを手で開いた状態で実行すると、削除項目を見つけられたかも出る。
+
+### 検証
+
+```
+node --check youtube-watch-later-clear.user.js
+NODE_PATH=$(npm root -g) node test/youtube-watch-later-clear.test.js
+```
+
+模擬の一覧（続きの読み込みあり）で、全部消えること・関連動画が残ること・確認で断ると消えないこと・
+途中で止まること・消せない行を飛ばすこと・ほかのページでボタンが出ないことを確かめる（17項目）。
