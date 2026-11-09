@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.7.1
+// @name         ページ本文コピー v1.8.0
 // @namespace    local.hiro.tools
-// @version      1.7.1
-// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのサイトではボタンを出さず、保存もしない。
+// @version      1.8.0
+// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのサイトではコピーだけして、Driveには保存しない（ボタンの色が変わる）。
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -41,7 +41,7 @@
  *   - window.__tmCopyText.pending() で、未保存の控えが表で出る
  *
  * 成人向けのサイト
- *   - 次のどれかに当たるサイトでは、ボタンを出さず、Drive にも送らない
+ *   - 次のどれかに当たるサイトでは、ボタンを橙にして、コピーだけする（Drive には送らない）
  *     ・ドメイン名（.xxx などの末尾、porn などの語）
  *     ・Cloudflare の家族向け DNS（1.1.1.3 と同じ判定）が成人向けとしたサイト
  *     ・ページの年齢区分の meta、タイトルの「R-18」「18禁」など（そのページだけ）
@@ -189,6 +189,10 @@
 
     // ボタンの透明度（ふだん）
     const IDLE_OPACITY = '0.5';
+
+    // ボタンの色。成人向けと判定したページでは、コピーだけになることを色で示す
+    const BUTTON_COLOR = '#1f2933';
+    const COPY_ONLY_COLOR = '#b45309';
 
     // 本文コンテナの候補（上から順に試す。狭いものが先）
     const BODY_SELECTORS = [
@@ -2346,6 +2350,29 @@
     // ============================================================
 
     let hostEl = null;
+
+    // ボタン本体（色を変えるために持っておく）
+    let buttonEl = null;
+
+
+    // 成人向けと判定したページでは、ボタンを橙にして、コピーだけになることを示す
+    function applyButtonMode() {
+
+        if (!buttonEl) {
+            return;
+        }
+
+        const copyOnly = uiBlocked();
+
+        buttonEl.style.background = copyOnly ? COPY_ONLY_COLOR : BUTTON_COLOR;
+
+        buttonEl.title =
+            copyOnly
+                ? '成人向けと判定したページ: コピーだけ（Driveには保存しない）（Alt+Shift+C）／ドラッグで移動'
+                : '本文をコピー・設定済みならDrive保存（Alt+Shift+C）／ドラッグで移動';
+
+        buttonEl.dataset.mode = copyOnly ? 'copy-only' : 'normal';
+    }
     let toastEl = null;
 
 
@@ -2565,15 +2592,12 @@
     // 成人向けのサイトの除外
     // ============================================================
 
-    // 除外したサイトでは true。ボタンを作らず、ショートカットも受けない
+    // 除外したサイトでは true。コピーだけして、Drive には送らない
     let siteBlocked = false;
 
-    // タイトルの語・年齢区分の meta で除外したページでは true。
+    // タイトルの語・年齢区分の meta で除外したページでは true（コピーだけにする）。
     // note などの SPA は記事を移っても読み込み直さないので、ページが変わるたびに判定し直す
     let pageBlocked = false;
-
-    // メニューで「このページではボタンを出す」としたページの URL
-    let pageAllowedUrl = '';
 
 
     function uiBlocked() {
@@ -2715,12 +2739,7 @@
     }
 
 
-    // メニューで許したページは、ページ単位の判定を外す
     function currentPageRuleReason() {
-
-        if (pageAllowedUrl && pageAllowedUrl === location.href) {
-            return '';
-        }
 
         return pageRuleReason();
     }
@@ -2737,22 +2756,7 @@
 
         pageBlocked = Boolean(currentPageRuleReason());
 
-        if (siteBlocked) {
-            return;
-        }
-
-        if (pageBlocked) {
-
-            const host = document.getElementById(HOST_ID);
-
-            if (host) {
-                host.remove();
-            }
-
-            return;
-        }
-
-        buildUi();
+        applyButtonMode();
     }
 
 
@@ -2934,41 +2938,24 @@
     }
 
 
-    function removeUi(pageOnly = false) {
-
-        if (pageOnly) {
-            pageBlocked = true;
-        } else {
-            siteBlocked = true;
-        }
-
-        const host = document.getElementById(HOST_ID);
-
-        if (host) {
-            host.remove();
-        }
-    }
-
-
-    // トーストを読める間だけ残してから、ボタンを消す
-    function hideUiLater(pageOnly = false) {
-
-        if (pageOnly) {
-            pageBlocked = true;
-        } else {
-            siteBlocked = true;
-        }
-
-        setTimeout(() => removeUi(pageOnly), TOAST_MS + 400);
-    }
-
-
+    // コピーだけにする（ボタンは残し、色を変える）。
     // pageOnly: タイトル・meta による判定。サイト全体は除外せず、別のページに移れば戻る
-    function refuseOnBlockedPage(reason, pageOnly = false) {
+    function setCopyOnly(pageOnly = false) {
 
-        showToast('成人向けと判定したページなので、コピーも保存もしません（' + reason + '）', true);
+        if (pageOnly) {
+            pageBlocked = true;
+        } else {
+            siteBlocked = true;
+        }
 
-        hideUiLater(pageOnly);
+        applyButtonMode();
+    }
+
+
+    // 成人向けと判定したページで、コピーだけにする理由。ふつうのページは空文字
+    function copyOnlyReason() {
+
+        return localBlockReason(location.hostname) || currentPageRuleReason();
     }
 
 
@@ -3006,13 +2993,7 @@
                 return;
             }
 
-            // 押した直後なら、保存しない理由をトーストで出してから消す（copyPage が消す）
-            if (saving) {
-                siteBlocked = true;
-                return;
-            }
-
-            removeUi();
+            setCopyOnly();
         });
     }
 
@@ -3027,7 +3008,7 @@
 
         const ok = confirm(
             '「' + host + '」を除外しますか？\n\n' +
-            'このサイトではボタンを出さず、Driveにも保存しません。' +
+            'このサイトではコピーだけにして、Driveには保存しません（ボタンが橙になります）。' +
             '外すときはメニュー「除外したサイトを一覧・解除」から。'
         );
 
@@ -3037,51 +3018,48 @@
 
         blockSite(host, '手動で除外');
 
-        removeUi();
+        setCopyOnly();
 
         alert('「' + host + '」を除外しました');
     }
 
 
     /*
-     * ボタンが見えないときに、メニューから理由を確かめる。
-     * ページ単位の判定（タイトルの語など）なら、このページだけボタンを出せる
+     * ボタンの色・保存の判定をメニューから確かめる。
+     * 橙のボタン（コピーだけ）なら理由を出し、ふつうの色ならボタンを初期位置に戻せる
      */
-    function explainHiddenButton() {
+    function explainButton() {
 
         const host = normalizeHost(location.hostname);
         const siteReason = localBlockReason(location.hostname);
-        const pageReason = pageRuleReason();
+        const pageReason = currentPageRuleReason();
 
         if (siteReason) {
 
             alert(
-                '「' + host + '」は成人向けのサイトとして除外しています（' + siteReason + '）。\n\n' +
-                '外すときはメニュー「除外したサイトを一覧・解除」から。'
+                '「' + host + '」は成人向けのサイトと判定しています（' + siteReason + '）。\n' +
+                'ボタンは橙になり、コピーだけして Drive には保存しません。\n\n' +
+                '判定を外すときはメニュー「除外したサイトを一覧・解除」から。'
             );
 
             return;
         }
 
-        if (pageReason && pageAllowedUrl !== location.href) {
+        if (pageReason) {
 
-            const ok = confirm(
-                'このページは成人向けと判定してボタンを消しています（' + pageReason + '）。\n' +
+            alert(
+                'このページは成人向けと判定しています（' + pageReason + '）。\n' +
                 'タイトル: ' + (document.title || '（なし）') + '\n\n' +
-                'このページではボタンを出しますか？（Drive の受け口の判定はそのまま働きます）'
+                'ボタンは橙になり、コピーだけして Drive には保存しません。' +
+                '別のページに移れば判定し直します。'
             );
-
-            if (ok) {
-                pageAllowedUrl = location.href;
-                refreshPageBlock();
-            }
 
             return;
         }
 
         const ok = confirm(
-            '成人向けの判定ではボタンを消していません。\n' +
-            '画面の外や、ほかの表示の陰にあるのかもしれません。\n\n' +
+            'このページは成人向けと判定していません（コピーと Drive 保存の両方をします）。\n' +
+            'ボタンが見えないなら、画面の外や、ほかの表示の陰にあるのかもしれません。\n\n' +
             'ボタンを初期位置（画面上部の中央より右）に戻しますか？'
         );
 
@@ -3919,19 +3897,11 @@
 
     async function copyPage() {
 
-        // 成人向けのサイト・ページでは、コピーも保存もしない
-        const siteReason = localBlockReason(location.hostname);
+        // 成人向けのサイト・ページでは、コピーだけして Drive には送らない
+        const adultReason = copyOnlyReason();
 
-        if (siteReason) {
-            refuseOnBlockedPage(siteReason);
-            return;
-        }
-
-        const pageReason = currentPageRuleReason();
-
-        if (pageReason) {
-            refuseOnBlockedPage(pageReason, true);
-            return;
+        if (adultReason) {
+            setCopyOnly(!localBlockReason(location.hostname));
         }
 
         if (saving) {
@@ -3965,7 +3935,7 @@
 
         // ユーザー操作の直後にコピーを開始する（iOSの権限判定対策）
         const copying = writeClipboard(result.text);
-        const config = readDriveConfig();
+        const config = adultReason ? null : readDriveConfig();
 
         if (config) {
 
@@ -4019,11 +3989,11 @@
 
                     showToast(
                         (copyOk ? 'コピーはしましたが、' : '') +
-                        '成人向けのサイトと判定したので、Driveには保存しません。このサイトではボタンを出しません',
+                        '成人向けのサイトと判定したので、Driveには保存しません。このサイトでは以後コピーだけにします',
                         true
                     );
 
-                    hideUiLater();
+                    setCopyOnly();
 
                 } else if (driveOk) {
                     removePending(upload.requestId);
@@ -4046,7 +4016,7 @@
                     }
 
                     if (!outcome.saved && outcome.error.adult) {
-                        hideUiLater();
+                        setCopyOnly();
                     }
 
                     showToast(
@@ -4102,6 +4072,10 @@
             result.chars.toLocaleString() +
             '文字をコピーしました（' + label + '）';
 
+        if (adultReason) {
+            message += '。成人向けと判定したので、Driveには送っていません（' + adultReason + '）';
+        }
+
         if (result.chars > WARN_CHARS) {
             message += ' ※長文です。AIの入力上限に注意';
         }
@@ -4116,7 +4090,7 @@
 
     function buildUi() {
 
-        if (uiBlocked() || document.getElementById(HOST_ID)) {
+        if (document.getElementById(HOST_ID)) {
             return;
         }
 
@@ -4156,7 +4130,7 @@
                 height: BUTTON_SIZE + 'px',
                 border: 'none',
                 borderRadius: '50%',
-                background: '#1f2933',
+                background: BUTTON_COLOR,
                 color: '#fff',
                 fontSize: '18px',
                 lineHeight: BUTTON_SIZE + 'px',
@@ -4374,6 +4348,10 @@
 
         shadow.append(toastEl, button, badgeEl);
 
+        buttonEl = button;
+
+        applyButtonMode();
+
         document.documentElement.appendChild(hostEl);
 
         placeButton();
@@ -4399,11 +4377,6 @@
                 event.code === HOTKEY_CODE
             ) {
 
-                // 除外したサイト・ページでは、キーをページにそのまま渡す
-                if (uiBlocked()) {
-                    return;
-                }
-
                 event.preventDefault();
 
                 copyPage();
@@ -4423,7 +4396,7 @@
      */
     new MutationObserver(() => {
 
-        if (!uiBlocked() && !document.getElementById(HOST_ID)) {
+        if (!document.getElementById(HOST_ID)) {
             buildUi();
         }
 
@@ -4516,7 +4489,7 @@
         GM_registerMenuCommand('本文抽出を診断', () => window.__tmCopyText.dump());
         GM_registerMenuCommand('このサイトを除外', blockFromMenu);
         GM_registerMenuCommand('除外したサイトを一覧・解除', unblockFromMenu);
-        GM_registerMenuCommand('ボタンが出ない理由を確認', explainHiddenButton);
+        GM_registerMenuCommand('ボタンの色・保存の判定を確認', explainButton);
     }
 
     // 成人向けと分かっているサイト・ページでは、ボタンを作らない
@@ -4526,7 +4499,7 @@
 
     buildUi();
 
-    // 初めてのサイトは家族向け DNS に問い合わせ、成人向けならボタンを消す
+    // 初めてのサイトは家族向け DNS に問い合わせ、成人向けならボタンを橙にしてコピーだけにする
     checkCurrentSite();
 
     // 前のページで届かなかった保存があれば、待ち時間のあとで送り直す
