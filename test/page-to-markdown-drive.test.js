@@ -417,129 +417,126 @@ async function main() {
         assert.equal('images' in payload, false);
     });
 
-    // ---- 成人向けのサイトの除外 ----
+    // ---- 成人向けのサイト（コピーだけにする） ----
     const hasButton = page => page.evaluate(() => Boolean(document.getElementById('tm-copy-text-host')));
+    const buttonMode = page => page.evaluate(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode);
+    const buttonColor = page => page.evaluate(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').style.background);
     const blockedSites = page => page.evaluate(() => window.sites['tm-copy-text-blocked-sites'] || {});
     const pressHotkey = page => page.keyboard.press('Alt+Shift+KeyC');
-    await test('ふつうのサイトは家族向けDNSで確かめ、ボタンを出して保存する', async page => {
+    const clipboardText = page => page.evaluate(() => navigator.clipboard.readText());
+    const clearClipboard = page => page.evaluate(() => navigator.clipboard.writeText(''));
+    // コピーだけで、Drive には送っていないことを確かめる
+    async function assertCopyOnly(page, how = 'copy') {
+        await clearClipboard(page);
+        const before = await page.evaluate(() => window.sent.length);
+        if (how === 'hotkey') {
+            await pressHotkey(page);
+            await page.waitForFunction(() => navigator.clipboard.readText().then(text => text.length > 0));
+        } else {
+            await page.evaluate(() => window.__tmCopyText.copy());
+        }
+        assert.match(await clipboardText(page), /本文のテストです。/);
+        assert.equal(await page.evaluate(() => window.sent.length), before);
+        assert.equal((await pendingKeys(page)).length, 0);
+        assert.match(await toast(page), /文字をコピーしました.*Driveには送っていません/);
+    }
+    await test('ふつうのサイトは家族向けDNSで確かめ、ふつうの色のボタンで保存する', async page => {
         await page.waitForFunction(() => window.dnsAsked.length === 1);
         assert.equal(await page.evaluate(() => new URL(window.dnsAsked[0].url).searchParams.get('name')), 'example.com');
         assert.equal(await page.evaluate(() => window.dnsAsked[0].anonymous), true);
-        assert.equal(await hasButton(page), true);
+        assert.equal(await buttonMode(page), 'normal');
         await page.evaluate(() => window.__tmCopyText.copy());
         assert.equal(await page.evaluate(() => window.sent.length), 1);
         // 判定は控えて使い回す
         assert.equal(await page.evaluate(() => window.dnsAsked.length), 1);
         assert.equal(await page.evaluate(() => window.sites['tm-copy-text-site-checks']['example.com'].adult), false);
     });
-    await test('家族向けDNSが成人向けとしたサイトでは、ボタンを消して除外の一覧に足す', async page => {
-        await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'));
+    await test('家族向けDNSが成人向けとしたサイトでは、ボタンを橙にしてコピーだけにし、除外の一覧に足す', async page => {
+        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'copy-only');
+        assert.notEqual(await buttonColor(page), 'rgb(31, 41, 51)');
         assert.equal((await blockedSites(page))['example.com'].reason, '家族向けDNSが成人向けと判定');
-        await pressHotkey(page);
-        await page.evaluate(() => window.__tmCopyText.copy());
-        assert.equal(await page.evaluate(() => window.sent.length), 0);
-        assert.equal(await page.evaluate(() => document.querySelectorAll('#tm-copy-text-host').length), 0);
+        await assertCopyOnly(page, 'hotkey');
+        await assertCopyOnly(page);
+        assert.equal(await page.evaluate(() => document.querySelectorAll('#tm-copy-text-host').length), 1);
     }, { dnsAdult: ['example.com'] });
-    await test('除外の一覧にあるサイトでは、問い合わせずにボタンを出さない（下のホストも）', async page => {
+    await test('除外の一覧にあるサイトでは、問い合わせずに最初からコピーだけにする（下のホストも）', async page => {
         await page.waitForTimeout(300);
-        assert.equal(await hasButton(page), false);
+        assert.equal(await hasButton(page), true);
+        assert.equal(await buttonMode(page), 'copy-only');
         assert.equal(await page.evaluate(() => window.dnsAsked.length), 0);
-        await pressHotkey(page);
-        assert.equal(await page.evaluate(() => window.sent.length), 0);
+        await assertCopyOnly(page, 'hotkey');
+        assert.match(await toast(page), /手動で除外/);
     }, { pageUrl: 'https://sub.blocked.example/a', sites: { 'tm-copy-text-blocked-sites': { 'blocked.example': { reason: '手動で除外', at: 1 } } } });
-    await test('ドメイン名の語や末尾で分かるサイトは、ボタンを出さずに一覧へ足す', async page => {
-        assert.equal(await hasButton(page), false);
+    await test('ドメイン名の語や末尾で分かるサイトは、コピーだけにして一覧へ足す', async page => {
+        assert.equal(await buttonMode(page), 'copy-only');
         assert.equal((await blockedSites(page))['free-porn.example'].reason, 'ドメイン名の語');
         assert.equal(await page.evaluate(() => window.dnsAsked.length), 0);
+        await assertCopyOnly(page);
     }, { pageUrl: 'https://www.free-porn.example/a' });
-    await test('.xxx のサイトもボタンを出さない', async page => {
-        assert.equal(await hasButton(page), false);
+    await test('.xxx のサイトもコピーだけにする', async page => {
+        assert.equal(await buttonMode(page), 'copy-only');
         assert.equal((await blockedSites(page))['site.xxx'].reason, 'ドメインの末尾');
     }, { pageUrl: 'https://site.xxx/a' });
-    await test('タイトルの語や年齢区分の meta があるページは、そのページだけボタンを出さない', async page => {
-        assert.equal(await hasButton(page), false);
+    await test('タイトルの語があるページは、そのページだけコピーだけにする（サイトは除外しない）', async page => {
+        assert.equal(await buttonMode(page), 'copy-only');
         assert.deepEqual(await blockedSites(page), {});
-        await page.evaluate(() => window.__tmCopyText.copy());
-        assert.equal(await page.evaluate(() => window.sent.length), 0);
+        await assertCopyOnly(page);
+        assert.match(await toast(page), /タイトルの語/);
+        assert.deepEqual(await blockedSites(page), {});
     }, { title: '【R-18】作品' });
-    await test('カタカナ語の一部の「アダルト」「エロ」では消さない', async page => {
-        assert.equal(await hasButton(page), true);
+    await test('年齢区分の meta があるページもコピーだけにする', async page => {
+        assert.equal(await buttonMode(page), 'copy-only');
+        await assertCopyOnly(page);
+    }, { head: '<meta name="rating" content="RTA-5042-1996-1400-1577-RTA">' });
+    await test('カタカナ語の一部の「アダルト」「エロ」では判定しない', async page => {
+        assert.equal(await buttonMode(page), 'normal');
         for (const title of ['ヒエログリフ入門', 'エロージョンの対策', 'アダルトラーニングの実践', 'PR-180の仕様']) {
             await page.evaluate(t => { document.title = t; }, title);
             await page.waitForTimeout(500);
-            assert.equal(await hasButton(page), true, title);
+            assert.equal(await buttonMode(page), 'normal', title);
         }
         for (const title of ['エロ漫画のまとめ', 'アダルト動画', 'エロゲの話']) {
             await page.evaluate(t => { document.title = t; }, title);
-            await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'));
+            await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'copy-only');
             await page.evaluate(() => { document.title = '普通の記事'; });
-            await page.waitForFunction(() => Boolean(document.getElementById('tm-copy-text-host')));
+            await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'normal');
         }
     }, { title: 'アダルトチルドレンと向き合う｜note' });
     await test('SPA で別の記事に移ったら、ページ単位の判定をやり直す', async page => {
-        assert.equal(await hasButton(page), false);
+        assert.equal(await buttonMode(page), 'copy-only');
         await page.evaluate(() => { history.pushState({}, '', '/n/normal'); document.title = '普通の記事｜note'; });
-        await page.waitForFunction(() => Boolean(document.getElementById('tm-copy-text-host')));
+        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'normal');
         await page.evaluate(() => window.__tmCopyText.copy());
         assert.equal(await page.evaluate(() => window.sent.length), 1);
-        // 成人向けの記事に移ったら消え、サイト全体は除外しない
+        // 成人向けの記事に移ったらコピーだけになり、サイト全体は除外しない
         await page.evaluate(() => { history.pushState({}, '', '/n/adult'); document.title = '【R-18】作品｜note'; });
-        await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'));
-        await pressHotkey(page);
-        assert.equal(await page.evaluate(() => window.sent.length), 1);
+        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'copy-only');
+        await assertCopyOnly(page, 'hotkey');
         assert.deepEqual(await blockedSites(page), {});
-        await page.evaluate(() => { history.back(); });
-        await page.evaluate(() => { document.title = '普通の記事｜note'; });
-        await page.waitForFunction(() => Boolean(document.getElementById('tm-copy-text-host')));
+        await page.evaluate(() => { history.pushState({}, '', '/n/next'); document.title = '次の記事｜note'; });
+        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'normal');
     }, { title: '【R-18】作品' });
-    await test('押したときにページ単位で断っても、別の記事に移ればボタンが戻る', async page => {
-        await page.evaluate(() => { document.title = '【R-18】作品'; window.__tmCopyText.copy(); });
-        assert.equal(await page.evaluate(() => window.sent.length), 0);
-        assert.deepEqual(await blockedSites(page), {});
-        await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'), null, { timeout: 6000 });
-        await page.evaluate(() => { history.pushState({}, '', '/n/next'); document.title = '次の記事'; });
-        await page.waitForFunction(() => Boolean(document.getElementById('tm-copy-text-host')));
-    });
-    await test('メニュー「ボタンが出ない理由を確認」で、理由を出し、このページだけボタンを出せる', async page => {
-        assert.equal(await hasButton(page), false);
-        await page.evaluate(() => { window.confirm = text => { window.confirmText = text; return true; }; window.menus['ボタンが出ない理由を確認'](); });
-        assert.match(await page.evaluate(() => window.confirmText), /タイトルの語/);
-        assert.equal(await hasButton(page), true);
-        await page.evaluate(() => window.__tmCopyText.copy());
-        assert.equal(await page.evaluate(() => window.sent.length), 1);
-    }, { title: '【R-18】作品' });
-    await test('メニュー「ボタンが出ない理由を確認」は、サイトの除外なら解除の場所を案内する', async page => {
-        await page.evaluate(() => { window.alert = text => { window.alerted = text; }; window.menus['ボタンが出ない理由を確認'](); });
-        assert.match(await page.evaluate(() => window.alerted), /blocked\.example.*手動で除外[\s\S]*除外したサイトを一覧・解除/);
-    }, { pageUrl: 'https://blocked.example/a', sites: { 'tm-copy-text-blocked-sites': { 'blocked.example': { reason: '手動で除外', at: 1 } } } });
-    await test('メニュー「ボタンが出ない理由を確認」は、判定で消していなければ位置を初期に戻す', async page => {
-        await page.evaluate(() => { localStorage.setItem('tm-copy-text-position', JSON.stringify({ x: 0.1, y: 0.9 })); window.confirm = text => { window.confirmText = text; return true; }; window.menus['ボタンが出ない理由を確認'](); });
-        assert.match(await page.evaluate(() => window.confirmText), /消していません/);
-        assert.equal(await page.evaluate(() => localStorage.getItem('tm-copy-text-position')), null);
-        assert.equal(await hasButton(page), true);
-    });
-    await test('年齢区分の meta があるページもボタンを出さない', async page => {
-        assert.equal(await hasButton(page), false);
-    }, { head: '<meta name="rating" content="RTA-5042-1996-1400-1577-RTA">' });
-    await test('押したあとに成人向けと分かったら、Driveへ送らず控えも消し、ボタンを消す', async page => {
+    await test('押したあとに成人向けと分かったら、Driveへ送らず控えも消し、コピーだけにする', async page => {
         await page.evaluate(() => { window.__tmCopyText.copy().then(() => { window.done = true; }); });
         await page.waitForFunction(() => Object.keys(window.store).some(key => key.startsWith('tm-copy-text-pending:')));
         await page.evaluate(() => { window.dnsAdult = ['example.com']; window.answerDns(window.dnsAsked[0]); });
         await page.waitForFunction(() => window.done);
         assert.equal(await page.evaluate(() => window.sent.length), 0);
         assert.equal((await pendingKeys(page)).length, 0);
-        assert.match(await toast(page), /成人向けのサイトと判定したので、Driveには保存しません/);
+        assert.match(await toast(page), /成人向けのサイトと判定したので、Driveには保存しません。このサイトでは以後コピーだけにします/);
         assert.ok((await blockedSites(page))['example.com']);
-        await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'), null, { timeout: 5000 });
+        assert.equal(await buttonMode(page), 'copy-only');
+        assert.match(await clipboardText(page), /本文のテストです。/);
     }, { dnsMode: 'hold' });
-    await test('受け口が成人向けと断ったら、控えを消してサイトを除外する', async page => {
+    await test('受け口が成人向けと断ったら、控えを消してサイトを除外し、コピーだけにする', async page => {
         await page.evaluate(() => { window.respond = () => ({ ok: false, message: '成人向けのサイトと判定したので、保存しません' }); });
         await page.evaluate(() => window.__tmCopyText.copy());
         assert.equal(await page.evaluate(() => window.sent.length), 1);
         assert.equal((await pendingKeys(page)).length, 0);
         assert.equal((await blockedSites(page))['example.com'].reason, '受け口が成人向けと判定');
         assert.match(await toast(page), /成人向け/);
-        await page.waitForFunction(() => !document.getElementById('tm-copy-text-host'), null, { timeout: 5000 });
+        assert.equal(await buttonMode(page), 'copy-only');
+        await assertCopyOnly(page);
     });
     await test('除外したサイトの控えは送らずに消す', async page => {
         await page.waitForFunction(() => !Object.keys(window.store).some(key => key.startsWith('tm-copy-text-pending:')), null, { timeout: 5000 });
@@ -564,9 +561,9 @@ async function main() {
         const payload = await page.evaluate(() => window.sent[0].payload);
         assert.deepEqual(payload.images.map(image => image.url), ['https://example.com/img/ok.png']);
     });
-    await test('メニューでサイトを除外し、一覧から外せる', async page => {
+    await test('メニューでサイトを除外するとコピーだけになり、一覧から外せる', async page => {
         await page.evaluate(() => { window.confirm = () => true; window.alert = text => { window.alerted = text; }; window.menus['このサイトを除外'](); });
-        assert.equal(await hasButton(page), false);
+        assert.equal(await buttonMode(page), 'copy-only');
         assert.equal((await blockedSites(page))['example.com'].reason, '手動で除外');
         await page.evaluate(() => { window.prompt = text => { window.promptText = text; return '1'; }; window.menus['除外したサイトを一覧・解除'](); });
         assert.match(await page.evaluate(() => window.promptText), /1\. example\.com（手動で除外）/);
@@ -575,15 +572,29 @@ async function main() {
         assert.equal(await page.evaluate(() => 'example.com' in (window.sites['tm-copy-text-site-checks'] || {})), false);
     });
     await test('一覧から外したサイトは、ドメイン名の語では除外しない', async page => {
-        assert.equal(await hasButton(page), true);
+        assert.equal(await buttonMode(page), 'normal');
         await page.waitForFunction(() => window.dnsAsked.length === 1);
     }, { pageUrl: 'https://www.free-porn.example/a', sites: { 'tm-copy-text-allowed-sites': { 'free-porn.example': 1 } } });
-    await test('家族向けDNSに問い合わせられなくても、ボタンは出して受け口の判定に任せる', async page => {
+    await test('家族向けDNSに問い合わせられなくても、ふつうのボタンにして受け口の判定に任せる', async page => {
         await page.waitForFunction(() => window.dnsAsked.length === 1);
-        assert.equal(await hasButton(page), true);
+        assert.equal(await buttonMode(page), 'normal');
         await page.evaluate(() => window.__tmCopyText.copy());
         assert.equal(await page.evaluate(() => window.sent.length), 1);
     }, { dnsMode: 'error' });
+    await test('メニュー「ボタンの色・保存の判定を確認」は、サイトの除外なら理由と解除の場所を出す', async page => {
+        await page.evaluate(() => { window.alert = text => { window.alerted = text; }; window.menus['ボタンの色・保存の判定を確認'](); });
+        assert.match(await page.evaluate(() => window.alerted), /blocked\.example.*手動で除外[\s\S]*コピーだけ[\s\S]*除外したサイトを一覧・解除/);
+    }, { pageUrl: 'https://blocked.example/a', sites: { 'tm-copy-text-blocked-sites': { 'blocked.example': { reason: '手動で除外', at: 1 } } } });
+    await test('メニュー「ボタンの色・保存の判定を確認」は、ページ単位の判定なら理由とタイトルを出す', async page => {
+        await page.evaluate(() => { window.alert = text => { window.alerted = text; }; window.menus['ボタンの色・保存の判定を確認'](); });
+        assert.match(await page.evaluate(() => window.alerted), /タイトルの語[\s\S]*【R-18】作品/);
+    }, { title: '【R-18】作品' });
+    await test('メニュー「ボタンの色・保存の判定を確認」は、判定していなければ位置を初期に戻せる', async page => {
+        await page.evaluate(() => { localStorage.setItem('tm-copy-text-position', JSON.stringify({ x: 0.1, y: 0.9 })); window.confirm = text => { window.confirmText = text; return true; }; window.menus['ボタンの色・保存の判定を確認'](); });
+        assert.match(await page.evaluate(() => window.confirmText), /判定していません/);
+        assert.equal(await page.evaluate(() => localStorage.getItem('tm-copy-text-position')), null);
+        assert.equal(await hasButton(page), true);
+    });
     await browser.close();
 
     // GASのサービス境界をモック化し、認証・作成・再送・例外時ロック解放を確認する。
