@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.7.0
+// @name         ページ本文コピー v1.7.1
 // @namespace    local.hiro.tools
-// @version      1.7.0
+// @version      1.7.1
 // @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのサイトではボタンを出さず、保存もしない。
 // @match        *://*/*
 // @grant        GM_getValue
@@ -126,8 +126,25 @@
     const ADULT_TLD = /\.(xxx|adult|porn|sex)$/i;
     const ADULT_HOST_WORDS = /porn|xxx|hentai|xvideos|xhamster|xnxx|redtube|youporn|nsfw|onlyfans|fanza|(^|\.)dmm\.co\.jp$/i;
 
-    // そのページだけを成人向けとみなす、タイトルの語と年齢区分の meta
-    const ADULT_TITLE_WORDS = /R-?18(?![0-9])|18禁|成人向け|アダルト|エロ|ポルノ|porn|hentai|nsfw/i;
+    // そのページだけを成人向けとみなす、タイトルの語と年齢区分の meta。
+    // 「エロ」「アダルト」はカタカナ語の一部（ヒエログリフ・アダルトチルドレンなど）では当てない
+    const ADULT_TITLE_WORDS = new RegExp(
+        [
+            '(?<![A-Za-z0-9])R-?18(?![0-9])',
+            '18禁',
+            '成人向け',
+            '(?<![ァ-ヴー])アダルト(?!チルドレン|ラーニング|エデュケーション|[ァ-ヴー])',
+            '(?<![ァ-ヴー])エロ(?:ゲ|(?![ァ-ヴー]))',
+            'ポルノ',
+            'porn',
+            'hentai',
+            'nsfw'
+        ].join('|'),
+        'i'
+    );
+
+    // ページの切り替え（タイトル・URL の変化）を待ってから、ページ単位の判定をやり直す（ms）
+    const PAGE_CHECK_DEBOUNCE_MS = 300;
     const ADULT_RATING = /adult|mature|restricted|RTA-5042-1996-1400-1577-RTA/i;
 
     // X（旧Twitter）のポストページでは、URLの status ID と一致するポストだけを取る。
@@ -2548,8 +2565,21 @@
     // 成人向けのサイトの除外
     // ============================================================
 
-    // 除外したサイト・ページでは true。ボタンを作らず、ショートカットも受けない
+    // 除外したサイトでは true。ボタンを作らず、ショートカットも受けない
     let siteBlocked = false;
+
+    // タイトルの語・年齢区分の meta で除外したページでは true。
+    // note などの SPA は記事を移っても読み込み直さないので、ページが変わるたびに判定し直す
+    let pageBlocked = false;
+
+    // メニューで「このページではボタンを出す」としたページの URL
+    let pageAllowedUrl = '';
+
+
+    function uiBlocked() {
+
+        return siteBlocked || pageBlocked;
+    }
 
     // 家族向け DNS への問い合わせ中のもの（同じホストを二重に問い合わせない）
     const siteChecks = new Map();
@@ -2685,9 +2715,70 @@
     }
 
 
+    // メニューで許したページは、ページ単位の判定を外す
+    function currentPageRuleReason() {
+
+        if (pageAllowedUrl && pageAllowedUrl === location.href) {
+            return '';
+        }
+
+        return pageRuleReason();
+    }
+
+
     function pageBlockReason() {
 
-        return localBlockReason(location.hostname) || pageRuleReason();
+        return localBlockReason(location.hostname) || currentPageRuleReason();
+    }
+
+
+    // ページが変わったら（SPA の遷移・タイトルの書き換え）、ページ単位の判定をやり直す
+    function refreshPageBlock() {
+
+        pageBlocked = Boolean(currentPageRuleReason());
+
+        if (siteBlocked) {
+            return;
+        }
+
+        if (pageBlocked) {
+
+            const host = document.getElementById(HOST_ID);
+
+            if (host) {
+                host.remove();
+            }
+
+            return;
+        }
+
+        buildUi();
+    }
+
+
+    let pageCheckTimer = null;
+    let lastPageSignature = '';
+
+
+    function schedulePageCheck() {
+
+        clearTimeout(pageCheckTimer);
+
+        pageCheckTimer = setTimeout(
+            () => {
+
+                const signature = location.href + '\n' + document.title;
+
+                if (signature === lastPageSignature) {
+                    return;
+                }
+
+                lastPageSignature = signature;
+
+                refreshPageBlock();
+            },
+            PAGE_CHECK_DEBOUNCE_MS
+        );
     }
 
 
@@ -2843,9 +2934,13 @@
     }
 
 
-    function removeUi() {
+    function removeUi(pageOnly = false) {
 
-        siteBlocked = true;
+        if (pageOnly) {
+            pageBlocked = true;
+        } else {
+            siteBlocked = true;
+        }
 
         const host = document.getElementById(HOST_ID);
 
@@ -2856,19 +2951,24 @@
 
 
     // トーストを読める間だけ残してから、ボタンを消す
-    function hideUiLater() {
+    function hideUiLater(pageOnly = false) {
 
-        siteBlocked = true;
+        if (pageOnly) {
+            pageBlocked = true;
+        } else {
+            siteBlocked = true;
+        }
 
-        setTimeout(removeUi, TOAST_MS + 400);
+        setTimeout(() => removeUi(pageOnly), TOAST_MS + 400);
     }
 
 
-    function refuseOnBlockedPage(reason) {
+    // pageOnly: タイトル・meta による判定。サイト全体は除外せず、別のページに移れば戻る
+    function refuseOnBlockedPage(reason, pageOnly = false) {
 
         showToast('成人向けと判定したページなので、コピーも保存もしません（' + reason + '）', true);
 
-        hideUiLater();
+        hideUiLater(pageOnly);
     }
 
 
@@ -2940,6 +3040,68 @@
         removeUi();
 
         alert('「' + host + '」を除外しました');
+    }
+
+
+    /*
+     * ボタンが見えないときに、メニューから理由を確かめる。
+     * ページ単位の判定（タイトルの語など）なら、このページだけボタンを出せる
+     */
+    function explainHiddenButton() {
+
+        const host = normalizeHost(location.hostname);
+        const siteReason = localBlockReason(location.hostname);
+        const pageReason = pageRuleReason();
+
+        if (siteReason) {
+
+            alert(
+                '「' + host + '」は成人向けのサイトとして除外しています（' + siteReason + '）。\n\n' +
+                '外すときはメニュー「除外したサイトを一覧・解除」から。'
+            );
+
+            return;
+        }
+
+        if (pageReason && pageAllowedUrl !== location.href) {
+
+            const ok = confirm(
+                'このページは成人向けと判定してボタンを消しています（' + pageReason + '）。\n' +
+                'タイトル: ' + (document.title || '（なし）') + '\n\n' +
+                'このページではボタンを出しますか？（Drive の受け口の判定はそのまま働きます）'
+            );
+
+            if (ok) {
+                pageAllowedUrl = location.href;
+                refreshPageBlock();
+            }
+
+            return;
+        }
+
+        const ok = confirm(
+            '成人向けの判定ではボタンを消していません。\n' +
+            '画面の外や、ほかの表示の陰にあるのかもしれません。\n\n' +
+            'ボタンを初期位置（画面上部の中央より右）に戻しますか？'
+        );
+
+        if (!ok) {
+            return;
+        }
+
+        try {
+            localStorage.removeItem(POSITION_KEY);
+        } catch (error) {
+            // 保存できない環境では、もともと初期位置
+        }
+
+        const existing = document.getElementById(HOST_ID);
+
+        if (existing) {
+            existing.remove();
+        }
+
+        buildUi();
     }
 
 
@@ -3758,10 +3920,17 @@
     async function copyPage() {
 
         // 成人向けのサイト・ページでは、コピーも保存もしない
-        const blocked = pageBlockReason();
+        const siteReason = localBlockReason(location.hostname);
 
-        if (blocked) {
-            refuseOnBlockedPage(blocked);
+        if (siteReason) {
+            refuseOnBlockedPage(siteReason);
+            return;
+        }
+
+        const pageReason = currentPageRuleReason();
+
+        if (pageReason) {
+            refuseOnBlockedPage(pageReason, true);
             return;
         }
 
@@ -3947,7 +4116,7 @@
 
     function buildUi() {
 
-        if (siteBlocked || document.getElementById(HOST_ID)) {
+        if (uiBlocked() || document.getElementById(HOST_ID)) {
             return;
         }
 
@@ -4230,8 +4399,8 @@
                 event.code === HOTKEY_CODE
             ) {
 
-                // 除外したサイトでは、キーをページにそのまま渡す
-                if (siteBlocked) {
+                // 除外したサイト・ページでは、キーをページにそのまま渡す
+                if (uiBlocked()) {
                     return;
                 }
 
@@ -4254,7 +4423,7 @@
      */
     new MutationObserver(() => {
 
-        if (!siteBlocked && !document.getElementById(HOST_ID)) {
+        if (!uiBlocked() && !document.getElementById(HOST_ID)) {
             buildUi();
         }
 
@@ -4262,6 +4431,22 @@
         document.documentElement,
         { childList: true }
     );
+
+
+    /*
+     * SPA の記事の切り替えを拾う（note・X など）。
+     * タイトルの書き換えを見張り、戻る・進むでも確かめる
+     */
+    new MutationObserver(schedulePageCheck).observe(
+        document.head || document.documentElement,
+        {
+            childList: true,
+            subtree: true,
+            characterData: true
+        }
+    );
+
+    window.addEventListener('popstate', schedulePageCheck);
 
 
     // ============================================================
@@ -4331,10 +4516,13 @@
         GM_registerMenuCommand('本文抽出を診断', () => window.__tmCopyText.dump());
         GM_registerMenuCommand('このサイトを除外', blockFromMenu);
         GM_registerMenuCommand('除外したサイトを一覧・解除', unblockFromMenu);
+        GM_registerMenuCommand('ボタンが出ない理由を確認', explainHiddenButton);
     }
 
     // 成人向けと分かっているサイト・ページでは、ボタンを作らない
-    siteBlocked = Boolean(pageBlockReason());
+    siteBlocked = Boolean(localBlockReason(location.hostname));
+    pageBlocked = Boolean(currentPageRuleReason());
+    lastPageSignature = location.href + '\n' + document.title;
 
     buildUi();
 
