@@ -23,7 +23,7 @@ const HIDE_USERS = read('youtube-hide-chat-users.user.js');
 
 const MASTHEAD = 56;
 const PLAYER = 400;
-const CHAT_TOP_GAP = 24;   // 映像とチャット枠のあいだ
+const CHAT_TOP_GAP = 32;   // 映像とチャット枠のあいだ（チャットの入れ物の margin）
 const NATURAL = 900;       // YouTube が付けるチャット枠の高さ
 const STRIP = 40;          // 見出しを細くしたときの帯の高さ
 
@@ -50,7 +50,7 @@ function pageHtml(options) {
   ytd-page-manager { display: block; margin-top: var(--ytd-masthead-height, ${MASTHEAD}px); }
   ytd-watch-flexy { display: ${twoColumns ? 'flex' : 'block'}; }
   #player-full-bleed-container { display: block; height: ${PLAYER}px; background: #000; ${twoColumns ? 'width: 60%;' : ''} }
-  #chat-container { display: block; margin-top: ${twoColumns ? 0 : CHAT_TOP_GAP}px; ${twoColumns ? 'width: 40%;' : ''} }
+  #chat-container { display: block; margin-top: ${twoColumns ? 0 : (options.gap || CHAT_TOP_GAP)}px; ${twoColumns ? 'width: 40%;' : ''} }
   ytd-live-chat-frame { display: flex; flex-direction: column; height: ${NATURAL}px; min-height: 400px; border: 1px solid #ccc; }
   ytd-live-chat-frame iframe { flex: 1; border: 0; width: 100%; }
   #below { display: block; height: 2000px; }
@@ -122,6 +122,8 @@ async function chatBox(page) {
             bottom: Math.round(rect.bottom),
             height: Math.round(rect.height),
             mark: chat.dataset.tmChatFit || '',
+            gap: Math.round(rect.top - document.getElementById('player-full-bleed-container').getBoundingClientRect().bottom),
+            inlineMargin: chat.style.marginTop,
             viewport: document.documentElement.clientHeight
         };
     });
@@ -180,6 +182,7 @@ async function inputBottom(page) {
 
         check('上の帯（ロゴ・検索）が消える', !top.mastheadShown, JSON.stringify(top));
         check('映像がページの一番上に来る', top.playerTop === 0, JSON.stringify(top));
+        check('映像とチャットのあいだが 4px に詰まる', box.gap === 4, JSON.stringify(box));
         check('縦並びでチャットが縮む', box.height < NATURAL, JSON.stringify(box));
         check('チャットの下端が画面下端の 8px 上', box.viewport - box.bottom === 8, `${box.viewport - box.bottom}px あき`);
         check('入力欄が画面内', input <= box.viewport, `${input} <= ${box.viewport}`);
@@ -202,6 +205,7 @@ async function inputBottom(page) {
         const box2 = await chatBox(page);
 
         check('映像が伸びたら追従して縮む', box2.bottom <= box2.viewport && box2.height < box.height, JSON.stringify(box2));
+        check('映像が伸びてもあいだは 4px', box2.gap === 4, JSON.stringify(box2));
 
         // 3. YouTube がスタイルを書き直しても付け直す
         await page.evaluate(() => {
@@ -211,7 +215,7 @@ async function inputBottom(page) {
 
         const box3 = await chatBox(page);
 
-        check('スタイルを書き直されても戻る', box3.height === box2.height, JSON.stringify(box3));
+        check('スタイルを書き直されても戻る', box3.height === box2.height && box3.gap === 4, JSON.stringify(box3));
 
         // 4. 窓を広げて横並びになったら、全部元に戻す
         await page.evaluate(() => {
@@ -229,6 +233,7 @@ async function inputBottom(page) {
 
         check('横並びに戻すと上の帯が出る', top4.mastheadShown && top4.playerTop === MASTHEAD, JSON.stringify(top4));
         check('横並びに戻すとチャットの高さも戻る', box4.height === NATURAL + 2 && box4.mark === '', JSON.stringify(box4));
+        check('横並びに戻すと margin も戻る', box4.inlineMargin === '', JSON.stringify(box4));
         check('横並びに戻すと見出しも戻る', inner4.header.height === 62 && inner4.menuVisible && inner4.ticker.height === 72,
             JSON.stringify(inner4));
         check('横並びに戻すとボタンは見出しの下へ戻る', inner4.hideBtn.top >= 62, JSON.stringify(inner4.hideBtn));
@@ -249,6 +254,18 @@ async function inputBottom(page) {
 
         check('高い窓でも上の帯は消える', !top.mastheadShown, JSON.stringify(top));
         check('収まっているときは高さを触らない', box.height === NATURAL + 2 && box.mark === '', JSON.stringify(box));
+        check('収まっているときもあいだは詰める', box.gap === 4, JSON.stringify(box));
+
+        await page.close();
+    }
+
+    // 6b. あいだが広すぎる（別の物が挟まっていそう）ときは詰めない
+    {
+        const page = await openPage(browser, { gap: 120 });
+        const box = await chatBox(page);
+
+        check('あいだが 80px を超えると詰めない', box.gap === 120 && box.inlineMargin === '', JSON.stringify(box));
+        check('そのときも入力欄までは収まる', box.viewport - box.bottom === 8, JSON.stringify(box));
 
         await page.close();
     }
