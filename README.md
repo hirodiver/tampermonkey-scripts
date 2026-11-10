@@ -19,6 +19,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
 | `youtube-chat-highlight.user.js` | YouTube チャット強調 | www.youtube.com/live_chat |
 | `youtube-chat-input-toggle.user.js` | YouTube チャット入力欄切替 | www.youtube.com/live_chat |
+| `youtube-watch-chat-fit.user.js` | YouTube チャット高さ調整 | www.youtube.com（再生ページ） |
 | `youtube-volume-boost.user.js` | YouTube 音量ブースト | www.youtube.com |
 | `youtube-watch-later-clear.user.js` | YouTube 後で見る一括削除 | www.youtube.com/playlist?list=WL |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
@@ -58,6 +59,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-highlight.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-input-toggle.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-watch-chat-fit.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-volume-boost.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-watch-later-clear.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
@@ -641,6 +643,52 @@ NODE_PATH=$(npm root -g) node test/youtube-chat-highlight.test.js
 空にしたら全部外れる／再読み込み後の保持／「非表示リスト」ボタンと重ならない）を確認する。
 
 実際のチャットの描画とは異なるため、**実機確認の代わりにはならない**。
+
+## YouTube チャット高さ調整 について（ファイル: `youtube-watch-chat-fit.user.js`）
+
+ウインドウが狭く、ライブチャットが映像の**下**に出る並びのとき、チャット欄が長すぎて
+入力欄が画面の下にはみ出す。スクロールすると今度は映像が上に隠れる。
+このスクリプトは、チャット欄を画面に収まる高さまで縮め、
+**映像・流れるチャット・入力欄（¥・ハートのボタンを含む）** が一画面に入るようにする。
+
+### 使い方
+
+入れるだけ。設定はない。
+
+- 縮めるのは必要なときだけ。もともと収まっているとき、チャットが映像の**横**にある広い窓のとき、
+  全画面表示のときは何もしない（YouTube の高さのまま）。
+- 窓の大きさを変えたり、シアターモードで映像の大きさが変わったりすると計算し直す。
+- 画面がとても低いときは 240px で止める（流れるチャットが1〜2行になるのを防ぐ）。
+  このときはページを少しスクロールして使う。
+- 「YouTube チャット入力欄切替」とは別のスクリプトで、一緒に使える
+  （あちらはチャットの iframe の中、こちらは外枠の高さだけを触る）。
+
+### 作りの要点
+
+- 入力欄は iframe（`live_chat`）の一番下に固定されていて、iframe は外枠
+  `ytd-live-chat-frame` の高さに合わせて伸び縮みする。外枠の `height` / `max-height` を
+  `!important` で縮め、`min-height` を 0 にする。
+- 高さは「ページ最上部（スクロール 0）でチャットの下端が画面下端から 8px 上に来る値」。
+  YouTube 自身の高さを毎回測り直し、それより短いときだけ付ける（長くはしない）。
+- 「映像の下にあるか」は、チャット上端が映像下端より下かどうかで決める。
+  クラス名や `is-two-columns_` 属性には頼らない。
+- 窓の大きさ・映像の大きさ（`ResizeObserver`）・チャット枠の作り直し（`MutationObserver`）・
+  YouTube による枠のスタイル書き直しを見張って付け直す。
+
+### 診断
+
+コンソールで `__tmWatchChatFit.dump()`。見つけた要素のセレクタ、画面の高さ、チャット上端の位置、
+YouTube の高さ、付けた高さ、判定（「縮めた」「チャットは映像の横にある」など）を表で出す。
+
+### 検証
+
+```
+NODE_PATH=$(npm root -g) node test/youtube-watch-chat-fit.test.js
+```
+
+模擬した再生ページで、縮んで入力欄が画面内に入る／映像の大きさの変化に追従する／
+スタイルを書き直されても戻る／枠を作り直されても効く／収まるようになったら元に戻る／
+横並びと収まっているときは触らない／最小 240px で止まる、を確かめる。
 
 ## YouTube 音量ブースト について（ファイル: `youtube-volume-boost.user.js`）
 
