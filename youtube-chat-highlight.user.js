@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube チャット強調 v1.0.0
+// @name         YouTube チャット強調 v1.1.0
 // @namespace    https://www.youtube.com/
-// @version      1.0.0
+// @version      1.1.0
 // @description  ライブチャットで、指定した文字列を名前・チャンネルID・発言のどこかに含む発言をまるごと強調表示する（改行区切りで複数指定・部分一致・大文字小文字と全角半角を区別しない）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -53,6 +53,14 @@
     const OPEN_GAP = 6;
     const OPEN_RIGHT = 8;
     const OPEN_FALLBACK_TOP = 56;
+
+    /*
+     * YouTube チャット高さ調整（youtube-watch-chat-fit.user.js）が、狭い窓で
+     * 見出し帯と上部の帯（スーパーチャットの帯）を細い帯1本にしているときの目印。
+     * このときボタンはその細い帯の中（上から COMPACT_TOP）に置く。
+     */
+    const COMPACT_ATTR = 'data-tm-chat-compact';
+    const COMPACT_TOP = 4;
     const OPEN_MAX_RATIO = 0.3;
     const HEADER_MAX_RATIO = 0.4;
 
@@ -478,6 +486,11 @@
             if (rect.bottom + OPEN_GAP > top) {
                 top = rect.bottom + OPEN_GAP;
             }
+        }
+
+        // 見出し帯が細い帯になっているときは、その帯の中に置く
+        if (document.documentElement.hasAttribute(COMPACT_ATTR)) {
+            top = COMPACT_TOP;
         }
 
         if (viewport) {
