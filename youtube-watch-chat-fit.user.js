@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube チャット高さ調整 v1.1.0
+// @name         YouTube チャット高さ調整 v1.2.0
 // @namespace    local.hiro.tools
-// @version      1.1.0
-// @description  ウインドウが狭く、ライブチャットが映像の下に出る並びのとき、上の YouTube ロゴ・検索の帯を隠し、チャット上部の見出しとスーパーチャットの帯を細い帯1本（強調ワード・非表示リストのボタンだけ）にし、チャット欄を画面に収まる高さまで縮める。映像・流れるチャット・入力欄（スーパーチャット等のボタンを含む）が、ページをスクロールしなくても一画面に入る。チャットが映像の横にある広い窓では何もしない
+// @version      1.2.0
+// @description  ウインドウが狭く、ライブチャットが映像の下に出る並びのとき、上の YouTube ロゴ・検索の帯を隠し、チャット上部の見出しとスーパーチャットの帯を細い帯1本（強調ワード・非表示リストのボタンだけ）にし、映像とチャット欄のあいだの余白を詰め、チャット欄を画面に収まる高さまで縮める。映像・流れるチャット・入力欄（スーパーチャット等のボタンを含む）が、ページをスクロールしなくても一画面に入る。チャットが映像の横にある広い窓では何もしない
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-start
@@ -41,6 +41,14 @@
     // 「チャットが映像の下にある」とみなす、チャット上端と映像下端のずれの許容（px）
     const BELOW_TOLERANCE = 4;
 
+    // 縦並びのとき、映像とチャット欄のあいだに残す余白（px）。
+    // YouTube は 30px ほど空けているので、ここまで詰める
+    const PLAYER_GAP = 4;
+
+    // 映像とチャット欄のあいだがこれより広いときは、何か別の物が挟まっているとみなし、
+    // 詰めない（px）
+    const MAX_GAP_TO_CLOSE = 80;
+
     // 変化を受けてから計算し直すまでの待ち時間（ms）
     const DEBOUNCE_MS = 80;
 
@@ -59,7 +67,8 @@
     const STYLE_PROPS = [
         'height',
         'min-height',
-        'max-height'
+        'max-height',
+        'margin-top'
     ];
 
     // ============================================================
@@ -119,9 +128,9 @@
 
     const originalStyles = new WeakMap();
 
-    // いま手を入れている要素と、入れた高さ
+    // いま手を入れている要素と、入れたスタイル（{ 'height': '612px', ... }）
     let fittedEl = null;
-    let fittedHeight = 0;
+    let fittedStyles = null;
 
     function rememberOriginal(el) {
         if (originalStyles.has(el)) {
@@ -160,16 +169,26 @@
         }
     }
 
-    function applyHeight(el, height) {
+    // styles に無いものは YouTube の元の値に戻す
+    function applyStyles(el, styles) {
         rememberOriginal(el);
+        restoreOriginal(el);
 
-        const px = height + 'px';
+        for (const prop of Object.keys(styles)) {
+            el.style.setProperty(prop, styles[prop], 'important');
+        }
 
-        el.style.setProperty('height', px, 'important');
-        el.style.setProperty('min-height', '0px', 'important');
-        el.style.setProperty('max-height', px, 'important');
+        if (styles.height) {
+            el.dataset.tmChatFit = String(parseInt(styles.height, 10));
+        } else {
+            delete el.dataset.tmChatFit;
+        }
 
-        el.dataset.tmChatFit = String(height);
+        if (styles['margin-top']) {
+            el.dataset.tmChatGap = String(parseInt(styles['margin-top'], 10));
+        } else {
+            delete el.dataset.tmChatGap;
+        }
     }
 
     function release(el) {
@@ -180,6 +199,7 @@
         restoreOriginal(el);
         originalStyles.delete(el);
         delete el.dataset.tmChatFit;
+        delete el.dataset.tmChatGap;
     }
 
     // ============================================================
@@ -347,71 +367,111 @@
     // 最後の判定結果（診断用）
     let lastResult = { state: 'まだ判定していない' };
 
-    function measure() {
-        const chat = findFirst(chatSelectors);
-        const player = findFirst(playerSelectors);
-
-        const result = {
+    function emptyResult(chat, player) {
+        return {
             state: '',
+            compact: false,
             chatSelector: chat.selector,
             playerSelector: player.selector,
             viewportHeight: document.documentElement.clientHeight,
             scrollY: Math.round(window.scrollY),
             playerTopInPage: null,
+            gapBefore: null,
+            gapAfter: null,
             chatTopInPage: null,
             naturalHeight: null,
             availableHeight: null,
             appliedHeight: null
+        };
+    }
+
+    // 映像下端からチャット上端までの距離
+    function gapBetween(playerEl, chatEl) {
+        return Math.round(
+            chatEl.getBoundingClientRect().top
+            - playerEl.getBoundingClientRect().bottom
+        );
+    }
+
+    /*
+     * 判定して、チャット枠に付けるスタイルを決める。
+     * 戻り値の styles が空なら何も付けない。
+     */
+    function decide() {
+        const chat = findFirst(chatSelectors);
+        const player = findFirst(playerSelectors);
+        const result = emptyResult(chat, player);
+        const none = (state, chatEl) => {
+            result.state = state;
+            return { result, chatEl, styles: {} };
         };
 
         // 前に手を入れた要素が差し替わっていたら、古い方は戻しておく
         if (fittedEl && fittedEl !== chat.el) {
             release(fittedEl);
             fittedEl = null;
-            fittedHeight = 0;
+            fittedStyles = null;
         }
 
-        result.compact = false;
-
         if (document.fullscreenElement) {
-            result.state = '全画面表示中のため何もしない';
-            return { result, chatEl: null, height: 0 };
+            return none('全画面表示中のため何もしない', null);
         }
 
         if (!chat.el) {
-            result.state = 'チャット欄が見つからない（ライブでない・閉じている）';
-            return { result, chatEl: null, height: 0 };
+            return none('チャット欄が見つからない（ライブでない・閉じている）', null);
         }
 
         if (chat.el.hasAttribute('collapsed')) {
-            result.state = 'チャット欄は折りたたまれている';
-            return { result, chatEl: chat.el, height: 0 };
+            return none('チャット欄は折りたたまれている', chat.el);
         }
 
         if (!player.el) {
-            result.state = '映像が見つからない';
-            return { result, chatEl: chat.el, height: 0 };
+            return none('映像が見つからない', chat.el);
+        }
+
+        // YouTube 自身の位置と高さを測る。同じ処理の中で付け直すので画面には出ない
+        if (fittedEl === chat.el) {
+            restoreOriginal(chat.el);
         }
 
         // 横並び（チャットが映像の右）なら、YouTube が画面に合わせているので触らない。
         // 上の帯を隠しても映像とチャットは一緒に動くので、この判定は変わらない
-        const isBelowPlayer = chat.el.getBoundingClientRect().top
-            >= player.el.getBoundingClientRect().bottom - BELOW_TOLERANCE;
-
-        if (!isBelowPlayer) {
-            result.state = 'チャットは映像の横にある（何もしない）';
-            return { result, chatEl: chat.el, height: 0 };
+        if (gapBetween(player.el, chat.el) < -BELOW_TOLERANCE) {
+            return none('チャットは映像の横にある（何もしない）', chat.el);
         }
 
         // 上の帯を減らしてから、位置と高さを測る
         result.compact = true;
         setPageCompact(true);
 
-        // YouTube 自身の高さを測る。同じ処理の中で戻すので画面には出ない
-        if (fittedEl === chat.el) {
-            restoreOriginal(chat.el);
+        const styles = {};
+
+        // 下で仮に margin を付けるので、その前に YouTube の元の値を覚えておく
+        rememberOriginal(chat.el);
+
+        // 1. 映像とのあいだを詰める（負の margin で引き上げる）
+        const gap = gapBetween(player.el, chat.el);
+
+        result.gapBefore = gap;
+
+        if (gap > PLAYER_GAP && gap <= MAX_GAP_TO_CLOSE) {
+            const marginTop = parseFloat(getComputedStyle(chat.el).marginTop) || 0;
+
+            styles['margin-top'] = Math.round(marginTop - (gap - PLAYER_GAP)) + 'px';
+            chat.el.style.setProperty('margin-top', styles['margin-top'], 'important');
+
+            // 外側の余白と打ち消し合って思ったほど上がらなかったら、もう一度だけ足す
+            const rest = gapBetween(player.el, chat.el) - PLAYER_GAP;
+
+            if (rest > 0) {
+                styles['margin-top'] = Math.round(parseFloat(styles['margin-top']) - rest) + 'px';
+                chat.el.style.setProperty('margin-top', styles['margin-top'], 'important');
+            }
         }
 
+        result.gapAfter = gapBetween(player.el, chat.el);
+
+        // 2. 画面に収まる高さ
         const chatRect = chat.el.getBoundingClientRect();
         const naturalHeight = Math.round(chatRect.height);
         const chatTopInPage = Math.round(chatRect.top + window.scrollY);
@@ -429,15 +489,15 @@
         result.availableHeight = available;
 
         if (naturalHeight <= available) {
-            result.state = 'もともと画面に収まっている（何もしない）';
-            return { result, chatEl: chat.el, height: 0 };
+            result.state = 'もともと画面に収まっている（高さは触らない）';
+            return { result, chatEl: chat.el, styles };
         }
 
         const height = Math.max(MIN_CHAT_HEIGHT, available);
 
         if (height >= naturalHeight) {
-            result.state = '最小の高さより縮められない（何もしない）';
-            return { result, chatEl: chat.el, height: 0 };
+            result.state = '最小の高さより縮められない（高さは触らない）';
+            return { result, chatEl: chat.el, styles };
         }
 
         result.state = available < MIN_CHAT_HEIGHT
@@ -446,20 +506,21 @@
         result.appliedHeight = height;
 
         // height は枠線・内側余白を含まない（content-box）ことがあるので、そのぶんを引く
-        const style = getComputedStyle(chat.el);
-        const extra = style.boxSizing === 'border-box'
+        const computed = getComputedStyle(chat.el);
+        const extra = computed.boxSizing === 'border-box'
             ? 0
-            : Math.max(0, chatRect.height - parseFloat(style.height || '0'));
+            : Math.max(0, chatRect.height - parseFloat(computed.height || '0'));
+        const px = Math.round(height - extra) + 'px';
 
-        return {
-            result,
-            chatEl: chat.el,
-            height: Math.round(height - extra)
-        };
+        styles['height'] = px;
+        styles['min-height'] = '0px';
+        styles['max-height'] = px;
+
+        return { result, chatEl: chat.el, styles };
     }
 
     function update() {
-        const { result, chatEl, height } = measure();
+        const { result, chatEl, styles } = decide();
 
         lastResult = result;
 
@@ -476,10 +537,10 @@
 
         compactChatEl = result.compact ? chatEl : null;
 
-        if (chatEl && height > 0) {
-            applyHeight(chatEl, height);
+        if (chatEl && Object.keys(styles).length > 0) {
+            applyStyles(chatEl, styles);
             fittedEl = chatEl;
-            fittedHeight = height;
+            fittedStyles = styles;
             watchSize(chatEl);
             watchChatStyle(chatEl);
             return;
@@ -488,7 +549,13 @@
         if (fittedEl) {
             release(fittedEl);
             fittedEl = null;
-            fittedHeight = 0;
+            fittedStyles = null;
+        }
+
+        // 測るときに覚えた元の値は、もう要らない
+        if (chatEl) {
+            restoreOriginal(chatEl);
+            originalStyles.delete(chatEl);
         }
 
         watchChatStyle(null);
@@ -550,15 +617,18 @@
     // YouTube がチャット枠のスタイルを書き直して、こちらの高さが消えたら付け直す。
     // 自分で付けた直後の変化（高さがこちらの値のまま）は無視する（無限ループ防止）
     const chatStyleObserver = new MutationObserver(() => {
-        if (!fittedEl) {
+        if (!fittedEl || !fittedStyles) {
             return;
         }
 
-        const height = fittedEl.style.getPropertyValue('height');
-        const priority = fittedEl.style.getPropertyPriority('height');
+        for (const prop of Object.keys(fittedStyles)) {
+            const value = fittedEl.style.getPropertyValue(prop);
+            const priority = fittedEl.style.getPropertyPriority(prop);
 
-        if (height !== fittedHeight + 'px' || priority !== 'important') {
-            scheduleUpdate(0);
+            if (value !== fittedStyles[prop] || priority !== 'important') {
+                scheduleUpdate(0);
+                return;
+            }
         }
     });
 
