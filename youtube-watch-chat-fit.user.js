@@ -358,6 +358,161 @@
     }
 
     // ============================================================
+    // 縦並びのときに上の帯を減らす
+    // ============================================================
+
+    // ページ側（ロゴ・検索の帯）の目印
+    const PAGE_COMPACT_ATTR = 'data-tm-chat-fit';
+
+    // チャットの iframe 側の目印（強調ワード・非表示リストもこれを見て位置を変える）
+    const CHAT_COMPACT_ATTR = 'data-tm-chat-compact';
+
+    const CHAT_STYLE_ID = 'tm-chat-fit-compact-style';
+
+    function injectPageStyle() {
+        if (document.getElementById('tm-chat-fit-page-style')) {
+            return;
+        }
+
+        const style = document.createElement('style');
+
+        style.id = 'tm-chat-fit-page-style';
+
+        // 上の帯は position: fixed で、本文は帯の高さぶん下げてある。
+        // 帯を消し、その下げ幅も 0 にする
+        style.textContent = `
+            html[${PAGE_COMPACT_ATTR}] #masthead-container,
+            html[${PAGE_COMPACT_ATTR}] ytd-masthead {
+                display: none !important;
+            }
+
+            html[${PAGE_COMPACT_ATTR}] ytd-app {
+                --ytd-masthead-height: 0px !important;
+                --ytd-toolbar-height: 0px !important;
+            }
+
+            html[${PAGE_COMPACT_ATTR}] ytd-page-manager,
+            html[${PAGE_COMPACT_ATTR}] #page-manager {
+                margin-top: 0 !important;
+            }
+        `;
+
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function setPageCompact(on) {
+        const root = document.documentElement;
+        const want = on && HIDE_MASTHEAD;
+
+        if (want === root.hasAttribute(PAGE_COMPACT_ATTR)) {
+            return;
+        }
+
+        if (want) {
+            injectPageStyle();
+            root.setAttribute(PAGE_COMPACT_ATTR, '');
+        } else {
+            root.removeAttribute(PAGE_COMPACT_ATTR);
+        }
+    }
+
+    // チャットの iframe（同じ www.youtube.com なので中を触れる）
+    function chatDocument(chatEl) {
+        const iframe = chatEl && chatEl.querySelector('iframe');
+
+        if (!iframe) {
+            return null;
+        }
+
+        watchIframeLoad(iframe);
+
+        try {
+            const doc = iframe.contentDocument;
+
+            return doc && doc.documentElement ? doc : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function injectChatStyle(doc) {
+        if (doc.getElementById(CHAT_STYLE_ID)) {
+            return;
+        }
+
+        const style = doc.createElement('style');
+
+        style.id = CHAT_STYLE_ID;
+
+        // 見出しは消さずに中身だけ見えなくし、ボタン用の細い帯として残す。
+        // ボタンのスクリプトが無ければ帯ごと消す
+        style.textContent = `
+            html[${CHAT_COMPACT_ATTR}] yt-live-chat-header-renderer {
+                display: block !important;
+                height: ${COMPACT_STRIP_HEIGHT}px !important;
+                min-height: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+            }
+
+            html[${CHAT_COMPACT_ATTR}] yt-live-chat-header-renderer > * {
+                visibility: hidden !important;
+            }
+
+            html[${CHAT_COMPACT_ATTR}]:not(:has(.tm-ychl-open, .tm-ychide-open)) yt-live-chat-header-renderer {
+                display: none !important;
+            }
+
+            html[${CHAT_COMPACT_ATTR}] yt-live-chat-ticker-renderer,
+            html[${CHAT_COMPACT_ATTR}] #ticker {
+                display: none !important;
+            }
+        `;
+
+        (doc.head || doc.documentElement).appendChild(style);
+    }
+
+    function setChatCompact(chatEl, on) {
+        const doc = chatDocument(chatEl);
+
+        if (!doc) {
+            return;
+        }
+
+        const root = doc.documentElement;
+        const want = on && COMPACT_CHAT_HEADER;
+
+        if (want) {
+            injectChatStyle(doc);
+        }
+
+        if (want === root.hasAttribute(CHAT_COMPACT_ATTR)) {
+            return;
+        }
+
+        root.toggleAttribute(CHAT_COMPACT_ATTR, want);
+
+        // 強調ワード・非表示リストのボタンに位置を測り直させる
+        try {
+            doc.defaultView.dispatchEvent(new Event('resize'));
+        } catch (e) {
+            // 何もしない（1秒ごとの見直しで追いつく）
+        }
+    }
+
+    // チャットの iframe が読み込み直されたら（配信の切替など）付け直す
+    const watchedIframes = new WeakSet();
+
+    function watchIframeLoad(iframe) {
+        if (watchedIframes.has(iframe)) {
+            return;
+        }
+
+        watchedIframes.add(iframe);
+        iframe.addEventListener('load', () => scheduleUpdate(0));
+    }
+
+    // ============================================================
     // 高さの計算
     // ============================================================
 
@@ -412,6 +567,8 @@
             fittedEl = null;
             fittedStyles = null;
         }
+
+        result.compact = false;
 
         if (document.fullscreenElement) {
             return none('全画面表示中のため何もしない', null);
