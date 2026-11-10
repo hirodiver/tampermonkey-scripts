@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube チャット高さ調整 v1.0.0
+// @name         YouTube チャット高さ調整 v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
-// @description  ウインドウが狭く、ライブチャットが映像の下に出る並びのとき、チャット欄を画面に収まる高さまで縮める。映像・流れるチャット・入力欄（スーパーチャット等のボタンを含む）が、ページをスクロールしなくても一画面に入る。もともと収まっているときと、チャットが映像の横にあるときは何もしない
+// @version      1.1.0
+// @description  ウインドウが狭く、ライブチャットが映像の下に出る並びのとき、上の YouTube ロゴ・検索の帯を隠し、チャット上部の見出しとスーパーチャットの帯を細い帯1本（強調ワード・非表示リストのボタンだけ）にし、チャット欄を画面に収まる高さまで縮める。映像・流れるチャット・入力欄（スーパーチャット等のボタンを含む）が、ページをスクロールしなくても一画面に入る。チャットが映像の横にある広い窓では何もしない
 // @match        https://www.youtube.com/*
 // @grant        none
 // @run-at       document-start
@@ -43,6 +43,17 @@
 
     // 変化を受けてから計算し直すまでの待ち時間（ms）
     const DEBOUNCE_MS = 80;
+
+    // 縦並びのとき、ページ上部の YouTube ロゴ・検索の帯を隠すか
+    const HIDE_MASTHEAD = true;
+
+    // 縦並びのとき、チャット上部の見出し（「チャット ∨」「⋮」「×」）と
+    // スーパーチャットの帯を隠すか。隠すと「⋮」「×」と上位チャットの切替は使えない
+    const COMPACT_CHAT_HEADER = true;
+
+    // 見出しを隠したとき、強調ワード・非表示リストのボタン用に残す細い帯の高さ（px）。
+    // どちらのスクリプトも入っていなければ帯も消す
+    const COMPACT_STRIP_HEIGHT = 40;
 
     // 書き換えるスタイル
     const STYLE_PROPS = [
@@ -172,8 +183,166 @@
     }
 
     // ============================================================
+    // 縦並びのときに上の帯を減らす
+    // ============================================================
+
+    // ページ側（ロゴ・検索の帯）の目印
+    const PAGE_COMPACT_ATTR = 'data-tm-chat-fit';
+
+    // チャットの iframe 側の目印（強調ワード・非表示リストもこれを見て位置を変える）
+    const CHAT_COMPACT_ATTR = 'data-tm-chat-compact';
+
+    const CHAT_STYLE_ID = 'tm-chat-fit-compact-style';
+
+    function injectPageStyle() {
+        if (document.getElementById('tm-chat-fit-page-style')) {
+            return;
+        }
+
+        const style = document.createElement('style');
+
+        style.id = 'tm-chat-fit-page-style';
+
+        // 上の帯は position: fixed で、本文は帯の高さぶん下げてある。
+        // 帯を消し、その下げ幅も 0 にする
+        style.textContent = `
+            html[${PAGE_COMPACT_ATTR}] #masthead-container,
+            html[${PAGE_COMPACT_ATTR}] ytd-masthead {
+                display: none !important;
+            }
+
+            html[${PAGE_COMPACT_ATTR}] ytd-app {
+                --ytd-masthead-height: 0px !important;
+                --ytd-toolbar-height: 0px !important;
+            }
+
+            html[${PAGE_COMPACT_ATTR}] ytd-page-manager,
+            html[${PAGE_COMPACT_ATTR}] #page-manager {
+                margin-top: 0 !important;
+            }
+        `;
+
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function setPageCompact(on) {
+        const root = document.documentElement;
+        const want = on && HIDE_MASTHEAD;
+
+        if (want === root.hasAttribute(PAGE_COMPACT_ATTR)) {
+            return;
+        }
+
+        if (want) {
+            injectPageStyle();
+            root.setAttribute(PAGE_COMPACT_ATTR, '');
+        } else {
+            root.removeAttribute(PAGE_COMPACT_ATTR);
+        }
+    }
+
+    // チャットの iframe（同じ www.youtube.com なので中を触れる）
+    function chatDocument(chatEl) {
+        const iframe = chatEl && chatEl.querySelector('iframe');
+
+        if (!iframe) {
+            return null;
+        }
+
+        watchIframeLoad(iframe);
+
+        try {
+            const doc = iframe.contentDocument;
+
+            return doc && doc.documentElement ? doc : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function injectChatStyle(doc) {
+        if (doc.getElementById(CHAT_STYLE_ID)) {
+            return;
+        }
+
+        const style = doc.createElement('style');
+
+        style.id = CHAT_STYLE_ID;
+
+        // 見出しは消さずに中身だけ見えなくし、ボタン用の細い帯として残す。
+        // ボタンのスクリプトが無ければ帯ごと消す
+        style.textContent = `
+            html[${CHAT_COMPACT_ATTR}] yt-live-chat-header-renderer {
+                display: block !important;
+                height: ${COMPACT_STRIP_HEIGHT}px !important;
+                min-height: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+            }
+
+            html[${CHAT_COMPACT_ATTR}] yt-live-chat-header-renderer > * {
+                visibility: hidden !important;
+            }
+
+            html[${CHAT_COMPACT_ATTR}]:not(:has(.tm-ychl-open, .tm-ychide-open)) yt-live-chat-header-renderer {
+                display: none !important;
+            }
+
+            html[${CHAT_COMPACT_ATTR}] yt-live-chat-ticker-renderer,
+            html[${CHAT_COMPACT_ATTR}] #ticker {
+                display: none !important;
+            }
+        `;
+
+        (doc.head || doc.documentElement).appendChild(style);
+    }
+
+    function setChatCompact(chatEl, on) {
+        const doc = chatDocument(chatEl);
+
+        if (!doc) {
+            return;
+        }
+
+        const root = doc.documentElement;
+        const want = on && COMPACT_CHAT_HEADER;
+
+        if (want) {
+            injectChatStyle(doc);
+        }
+
+        if (want === root.hasAttribute(CHAT_COMPACT_ATTR)) {
+            return;
+        }
+
+        root.toggleAttribute(CHAT_COMPACT_ATTR, want);
+
+        // 強調ワード・非表示リストのボタンに位置を測り直させる
+        try {
+            doc.defaultView.dispatchEvent(new Event('resize'));
+        } catch (e) {
+            // 何もしない（1秒ごとの見直しで追いつく）
+        }
+    }
+
+    // チャットの iframe が読み込み直されたら（配信の切替など）付け直す
+    const watchedIframes = new WeakSet();
+
+    function watchIframeLoad(iframe) {
+        if (watchedIframes.has(iframe)) {
+            return;
+        }
+
+        watchedIframes.add(iframe);
+        iframe.addEventListener('load', () => scheduleUpdate(0));
+    }
+
+    // ============================================================
     // 高さの計算
     // ============================================================
+
+    // 見出しを細くしているチャット枠
+    let compactChatEl = null;
 
     // 最後の判定結果（診断用）
     let lastResult = { state: 'まだ判定していない' };
@@ -188,6 +357,7 @@
             playerSelector: player.selector,
             viewportHeight: document.documentElement.clientHeight,
             scrollY: Math.round(window.scrollY),
+            playerTopInPage: null,
             chatTopInPage: null,
             naturalHeight: null,
             availableHeight: null,
@@ -200,6 +370,8 @@
             fittedEl = null;
             fittedHeight = 0;
         }
+
+        result.compact = false;
 
         if (document.fullscreenElement) {
             result.state = '全画面表示中のため何もしない';
@@ -216,6 +388,25 @@
             return { result, chatEl: chat.el, height: 0 };
         }
 
+        if (!player.el) {
+            result.state = '映像が見つからない';
+            return { result, chatEl: chat.el, height: 0 };
+        }
+
+        // 横並び（チャットが映像の右）なら、YouTube が画面に合わせているので触らない。
+        // 上の帯を隠しても映像とチャットは一緒に動くので、この判定は変わらない
+        const isBelowPlayer = chat.el.getBoundingClientRect().top
+            >= player.el.getBoundingClientRect().bottom - BELOW_TOLERANCE;
+
+        if (!isBelowPlayer) {
+            result.state = 'チャットは映像の横にある（何もしない）';
+            return { result, chatEl: chat.el, height: 0 };
+        }
+
+        // 上の帯を減らしてから、位置と高さを測る
+        result.compact = true;
+        setPageCompact(true);
+
         // YouTube 自身の高さを測る。同じ処理の中で戻すので画面には出ない
         if (fittedEl === chat.el) {
             restoreOriginal(chat.el);
@@ -227,21 +418,9 @@
 
         result.naturalHeight = naturalHeight;
         result.chatTopInPage = chatTopInPage;
-
-        if (!player.el) {
-            result.state = '映像が見つからない';
-            return { result, chatEl: chat.el, height: 0 };
-        }
-
-        const playerRect = player.el.getBoundingClientRect();
-
-        // 横並び（チャットが映像の右）なら、YouTube が画面に合わせているので触らない
-        const isBelowPlayer = chatRect.top >= playerRect.bottom - BELOW_TOLERANCE;
-
-        if (!isBelowPlayer) {
-            result.state = 'チャットは映像の横にある（何もしない）';
-            return { result, chatEl: chat.el, height: 0 };
-        }
+        result.playerTopInPage = Math.round(
+            player.el.getBoundingClientRect().top + window.scrollY
+        );
 
         const available = Math.floor(
             result.viewportHeight - chatTopInPage - BOTTOM_MARGIN
@@ -283,6 +462,19 @@
         const { result, chatEl, height } = measure();
 
         lastResult = result;
+
+        setPageCompact(result.compact);
+
+        if (chatEl) {
+            setChatCompact(chatEl, result.compact);
+        }
+
+        // 前の枠（作り直される前）の iframe にも目印が残らないようにする
+        if (compactChatEl && compactChatEl !== chatEl) {
+            setChatCompact(compactChatEl, false);
+        }
+
+        compactChatEl = result.compact ? chatEl : null;
 
         if (chatEl && height > 0) {
             applyHeight(chatEl, height);

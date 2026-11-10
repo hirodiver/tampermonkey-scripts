@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube チャット非表示 v1.8.1
+// @name         YouTube チャット非表示 v1.9.0
 // @namespace    https://www.youtube.com/
-// @version      1.8.1
+// @version      1.9.0
 // @description  ライブチャットで指定したユーザーの発言をブロックせずに非表示にする（基本は名前を残して本文だけ消す。一覧から「まるごと消す」に切り替え可・チャンネルID単位）
 // @match        https://www.youtube.com/live_chat*
 // @match        https://www.youtube.com/live_chat_replay*
@@ -85,6 +85,14 @@
     ].join(',');
     const OPEN_GAP = 6;
     const OPEN_FALLBACK_TOP = 56;
+
+    /*
+     * YouTube チャット高さ調整（youtube-watch-chat-fit.user.js）が、狭い窓で
+     * 見出し帯と上部の帯（スーパーチャットの帯）を細い帯1本にしているときの目印。
+     * このときボタンはその細い帯の中（上から COMPACT_TOP）に置く。
+     */
+    const COMPACT_ATTR = 'data-tm-chat-compact';
+    const COMPACT_TOP = 4;
     const OPEN_MAX_RATIO = 0.3;
     const HEADER_MAX_RATIO = 0.4;
 
@@ -641,6 +649,11 @@
             if (rect.bottom + OPEN_GAP > top) {
                 top = rect.bottom + OPEN_GAP;
             }
+        }
+
+        // 見出し帯が細い帯になっているときは、その帯の中に置く
+        if (document.documentElement.hasAttribute(COMPACT_ATTR)) {
+            top = COMPACT_TOP;
         }
 
         // 何かを読み違えても、画面の下の方へは行かせない
