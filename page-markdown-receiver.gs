@@ -1,8 +1,10 @@
 // ページ本文コピー用の受け口。経費処理とは別のApps Scriptプロジェクトに置く。
 // setupを一度実行して認証し、ウェブアプリとしてデプロイする。
 // 本文の画像は、ここから取りに行って Drive に保存する（外部URLへの接続の権限を使う）。
-// 成人向けのサイトのページと画像は保存しない。Cloudflare の家族向け DNS に問い合わせて判定し、
+// 成人向けのサイトの画像は保存しない。Cloudflare の家族向け DNS に問い合わせて判定し、
 // 判定できないときも保存しない（スクリプト側は、あとで送り直す）。
+// 成人向けのページは、スクリプトが「文章だけ」（textOnly）で送ってきたときだけ本文を保存する。
+// そのときも、未成年を示す語がある本文は保存しない（スクリプト側はコピーだけにする）。
 const ARCHIVE_FOLDER_ID = '1WFV1mV24vc2ZwXxBhS2EjhKMhgiRNVRl';
 // 公開中の版。GitHub Actions（deploy-gas-receiver.yml）が、更新のたびにコミットの番号へ書き換える
 const RECEIVER_VERSION = 'dev';
@@ -32,6 +34,33 @@ const SITE_CACHE_SECONDS = 6 * 60 * 60;
 // 成人向けとみなすドメインの末尾と語（ページ本文コピーの page-to-markdown.user.js と同じ）
 const ADULT_TLD = /\.(xxx|adult|porn|sex)$/i;
 const ADULT_HOST_WORDS = /porn|xxx|hentai|xvideos|xhamster|xnxx|redtube|youporn|nsfw|onlyfans|fanza|(^|\.)dmm\.co\.jp$/i;
+// 文章だけで送られた本文に、これがあれば保存しない（ページ本文コピーの page-to-markdown.user.js と同じ）。
+// 成人向けと判定したページでだけ見るので、ふつうの記事の「小学生」などでは断らない
+const MINOR_WORDS = new RegExp(
+    [
+        '児童',
+        '幼女',
+        '幼児',
+        '園児',
+        '少女',
+        'ロリ',
+        'ショタ',
+        '小学生',
+        '中学生',
+        '女子高生',
+        '男子高生',
+        '高校生',
+        '子供',
+        '子ども',
+        '(?<![A-Za-z])(JK|JC|JS|DC|DS)(?![A-Za-z])',
+        '(?<![0-9０-９])(1[0-7]|[1-9])歳',
+        'lolita',
+        'loli',
+        'shota',
+        'underage'
+    ].join('|'),
+    'i'
+);
 // 画像のリダイレクトをたどる回数の上限（行き先のサイトも1回ずつ確かめる）
 const IMAGE_REDIRECT_MAX = 3;
 
@@ -114,22 +143,34 @@ function doPost(event) {
             typeof input.capturedAt !== 'string' ||
             !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(input.capturedAt) ||
             !Number.isFinite(Date.parse(input.capturedAt)) ||
-            !validImageList(input.images)
+            !validImageList(input.images) ||
+            (input.textOnly !== undefined && typeof input.textOnly !== 'boolean') ||
+            (input.textOnly === true && Array.isArray(input.images) && input.images.length > 0)
         ) {
             return archiveResponse({ ok: false, message: '本文・タイトル・送信IDが不正です' });
         }
 
-        // 記事のサイトを確かめる。成人向け、または判定できないときは保存しない
-        const pageHost = hostOf(input.url);
-        const verdicts = siteVerdicts(
-            [pageHost].concat((input.images || []).map(image => hostOf(image.url)))
-        );
+        // 文章だけ（成人向けと判定したページ）。画像は無いので、サイトの判定は要らない。
+        // 未成年を示す語がある本文は保存しない
+        const textOnly = input.textOnly === true;
 
-        if (verdicts[pageHost] === 'adult') {
-            return archiveResponse({ ok: false, message: '成人向けのサイトと判定したので、保存しません' });
+        if (textOnly && MINOR_WORDS.test(input.title + '\n' + input.markdown)) {
+            return archiveResponse({ ok: false, message: '未成年を示す語があるので、保存しません（成人向けのページ）' });
         }
 
-        if (verdicts[pageHost] !== 'ok') {
+        // 記事のサイトを確かめる。成人向け、または判定できないときは保存しない
+        const pageHost = hostOf(input.url);
+        const verdicts = textOnly
+            ? {}
+            : siteVerdicts(
+                [pageHost].concat((input.images || []).map(image => hostOf(image.url)))
+            );
+
+        if (!textOnly && verdicts[pageHost] === 'adult') {
+            return archiveResponse({ ok: false, message: '成人向けのサイトと判定したので、保存しません（文章だけなら保存できます）' });
+        }
+
+        if (!textOnly && verdicts[pageHost] !== 'ok') {
             return archiveResponse({ ok: false, message: 'サイトの判定（家族向けDNS）に失敗しました。時間をおいて送り直してください' });
         }
 
@@ -181,6 +222,7 @@ function doPost(event) {
 
         return archiveResponse({
             ok: true,
+            ...(textOnly ? { textOnly: true } : {}),
             fileId: file.getId(),
             name: file.getName(),
             url: file.getUrl(),

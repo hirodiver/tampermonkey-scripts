@@ -417,28 +417,44 @@ async function main() {
         assert.equal('images' in payload, false);
     });
 
-    // ---- 成人向けのサイト（コピーだけにする） ----
+    // ---- 成人向けのサイト（文章だけ保存・コピーだけ） ----
     const hasButton = page => page.evaluate(() => Boolean(document.getElementById('tm-copy-text-host')));
     const buttonMode = page => page.evaluate(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode);
     const buttonColor = page => page.evaluate(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').style.background);
+    const waitMode = (page, mode) => page.waitForFunction(m => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === m, mode);
     const blockedSites = page => page.evaluate(() => window.sites['tm-copy-text-blocked-sites'] || {});
     const pressHotkey = page => page.keyboard.press('Alt+Shift+KeyC');
     const clipboardText = page => page.evaluate(() => navigator.clipboard.readText());
     const clearClipboard = page => page.evaluate(() => navigator.clipboard.writeText(''));
-    // コピーだけで、Drive には送っていないことを確かめる
-    async function assertCopyOnly(page, how = 'copy') {
-        await clearClipboard(page);
+    const lastPayload = page => page.evaluate(() => window.sent[window.sent.length - 1].payload);
+    const addMinorText = page => page.evaluate(() => document.querySelector('article').insertAdjacentHTML('beforeend', '<p>女子高生が出てくる話です。</p>'));
+    // 押して、文章だけ Drive に送ったことを確かめる
+    async function assertTextOnly(page, how = 'copy') {
         const before = await page.evaluate(() => window.sent.length);
         if (how === 'hotkey') {
             await pressHotkey(page);
-            await page.waitForFunction(() => navigator.clipboard.readText().then(text => text.length > 0));
+            await page.waitForFunction(n => window.sent.length > n, before);
+            await page.waitForFunction(() => /文章だけ保存/.test(document.getElementById('tm-copy-text-host').shadowRoot.querySelector('div').textContent));
         } else {
             await page.evaluate(() => window.__tmCopyText.copy());
         }
+        assert.equal(await page.evaluate(() => window.sent.length), before + 1);
+        const payload = await lastPayload(page);
+        assert.equal(payload.textOnly, true);
+        assert.equal('images' in payload, false);
+        assert.equal((await pendingKeys(page)).length, 0);
+        assert.match(await toast(page), /Driveに文章だけ保存し、コピーしました（成人向けと判定したので、画像は送っていません）/);
+        return payload;
+    }
+    // コピーだけで、Drive には送っていないことを確かめる
+    async function assertCopyOnly(page) {
+        await clearClipboard(page);
+        const before = await page.evaluate(() => window.sent.length);
+        await page.evaluate(() => window.__tmCopyText.copy());
         assert.match(await clipboardText(page), /本文のテストです。/);
         assert.equal(await page.evaluate(() => window.sent.length), before);
         assert.equal((await pendingKeys(page)).length, 0);
-        assert.match(await toast(page), /文字をコピーしました.*Driveには送っていません/);
+        assert.match(await toast(page), /文字をコピーしました.*未成年を示す語があるので、Driveには送っていません/);
     }
     await test('ふつうのサイトは家族向けDNSで確かめ、ふつうの色のボタンで保存する', async page => {
         await page.waitForFunction(() => window.dnsAsked.length === 1);
@@ -447,47 +463,72 @@ async function main() {
         assert.equal(await buttonMode(page), 'normal');
         await page.evaluate(() => window.__tmCopyText.copy());
         assert.equal(await page.evaluate(() => window.sent.length), 1);
+        assert.equal('textOnly' in await lastPayload(page), false);
         // 判定は控えて使い回す
         assert.equal(await page.evaluate(() => window.dnsAsked.length), 1);
         assert.equal(await page.evaluate(() => window.sites['tm-copy-text-site-checks']['example.com'].adult), false);
     });
-    await test('家族向けDNSが成人向けとしたサイトでは、ボタンを橙にしてコピーだけにし、除外の一覧に足す', async page => {
-        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'copy-only');
+    await test('家族向けDNSが成人向けとしたサイトでは、ボタンを黄にして文章だけ送り、除外の一覧に足す', async page => {
+        await waitMode(page, 'text-only');
         assert.notEqual(await buttonColor(page), 'rgb(31, 41, 51)');
         assert.equal((await blockedSites(page))['example.com'].reason, '家族向けDNSが成人向けと判定');
-        await assertCopyOnly(page, 'hotkey');
-        await assertCopyOnly(page);
+        await assertTextOnly(page, 'hotkey');
+        assert.match(await clipboardText(page), /本文のテストです。/);
         assert.equal(await page.evaluate(() => document.querySelectorAll('#tm-copy-text-host').length), 1);
     }, { dnsAdult: ['example.com'] });
-    await test('除外の一覧にあるサイトでは、問い合わせずに最初からコピーだけにする（下のホストも）', async page => {
+    await test('除外の一覧にあるサイトでは、問い合わせずに最初から文章だけにする（下のホストも）', async page => {
         await page.waitForTimeout(300);
-        assert.equal(await hasButton(page), true);
-        assert.equal(await buttonMode(page), 'copy-only');
+        assert.equal(await buttonMode(page), 'text-only');
         assert.equal(await page.evaluate(() => window.dnsAsked.length), 0);
-        await assertCopyOnly(page, 'hotkey');
-        assert.match(await toast(page), /手動で除外/);
+        await assertTextOnly(page);
+        assert.equal(await page.evaluate(() => window.dnsAsked.length), 0);
     }, { pageUrl: 'https://sub.blocked.example/a', sites: { 'tm-copy-text-blocked-sites': { 'blocked.example': { reason: '手動で除外', at: 1 } } } });
-    await test('ドメイン名の語や末尾で分かるサイトは、コピーだけにして一覧へ足す', async page => {
-        assert.equal(await buttonMode(page), 'copy-only');
+    await test('ドメイン名の語や末尾で分かるサイトは、文章だけにして一覧へ足す', async page => {
+        assert.equal(await buttonMode(page), 'text-only');
         assert.equal((await blockedSites(page))['free-porn.example'].reason, 'ドメイン名の語');
         assert.equal(await page.evaluate(() => window.dnsAsked.length), 0);
-        await assertCopyOnly(page);
+        await assertTextOnly(page);
     }, { pageUrl: 'https://www.free-porn.example/a' });
-    await test('.xxx のサイトもコピーだけにする', async page => {
-        assert.equal(await buttonMode(page), 'copy-only');
+    await test('.xxx のサイトも文章だけにする', async page => {
+        assert.equal(await buttonMode(page), 'text-only');
         assert.equal((await blockedSites(page))['site.xxx'].reason, 'ドメインの末尾');
     }, { pageUrl: 'https://site.xxx/a' });
-    await test('タイトルの語があるページは、そのページだけコピーだけにする（サイトは除外しない）', async page => {
-        assert.equal(await buttonMode(page), 'copy-only');
-        assert.deepEqual(await blockedSites(page), {});
-        await assertCopyOnly(page);
-        assert.match(await toast(page), /タイトルの語/);
+    await test('タイトルの語があるページは、そのページだけ文章だけにする（サイトは除外しない）', async page => {
+        assert.equal(await buttonMode(page), 'text-only');
+        await assertTextOnly(page);
         assert.deepEqual(await blockedSites(page), {});
     }, { title: '【R-18】作品' });
-    await test('年齢区分の meta があるページもコピーだけにする', async page => {
+    await test('年齢区分の meta があるページも文章だけにする', async page => {
+        assert.equal(await buttonMode(page), 'text-only');
+        await assertTextOnly(page);
+    }, { head: '<meta name="rating" content="RTA-5042-1996-1400-1577-RTA">' });
+    await test('文章だけのときは、本文の画像のURLを外し、画像の一覧を送らない（コピーには残す）', async page => {
+        await page.evaluate(() => {
+            document.querySelector('article').insertAdjacentHTML('beforeend', '<p><img src="/img/big.png" alt="図" width="800" height="400"></p>');
+        });
+        const payload = await assertTextOnly(page);
+        assert.match(payload.markdown, /\[画像1: 図\]/);
+        assert.doesNotMatch(payload.markdown, /big\.png/);
+        assert.match(await clipboardText(page), /!\[画像1: 図\]\(https:\/\/example\.com\/img\/big\.png\)/);
+    }, { title: '【R-18】作品' });
+    await test('成人向けで未成年を示す語があるページは、ボタンを橙にしてコピーだけにする', async page => {
         assert.equal(await buttonMode(page), 'copy-only');
         await assertCopyOnly(page);
-    }, { head: '<meta name="rating" content="RTA-5042-1996-1400-1577-RTA">' });
+        assert.deepEqual(await blockedSites(page), {});
+    }, { title: '【R-18】女子高生もの' });
+    await test('除外したサイトでも、本文に未成年を示す語があればコピーだけにする', async page => {
+        await addMinorText(page);
+        await page.evaluate(() => { document.title = '別の記事'; });
+        await waitMode(page, 'copy-only');
+        await assertCopyOnly(page);
+    }, { pageUrl: 'https://blocked.example/a', sites: { 'tm-copy-text-blocked-sites': { 'blocked.example': { reason: '手動で除外', at: 1 } } } });
+    await test('ふつうのページでは、未成年を示す語があっても画像ごと保存する', async page => {
+        await addMinorText(page);
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent.length), 1);
+        assert.equal('textOnly' in await lastPayload(page), false);
+        assert.equal(await buttonMode(page), 'normal');
+    }, { title: '小学生の算数の教え方' });
     await test('カタカナ語の一部の「アダルト」「エロ」では判定しない', async page => {
         assert.equal(await buttonMode(page), 'normal');
         for (const title of ['ヒエログリフ入門', 'エロージョンの対策', 'アダルトラーニングの実践', 'PR-180の仕様']) {
@@ -497,53 +538,79 @@ async function main() {
         }
         for (const title of ['エロ漫画のまとめ', 'アダルト動画', 'エロゲの話']) {
             await page.evaluate(t => { document.title = t; }, title);
-            await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'copy-only');
+            await waitMode(page, 'text-only');
             await page.evaluate(() => { document.title = '普通の記事'; });
-            await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'normal');
+            await waitMode(page, 'normal');
         }
     }, { title: 'アダルトチルドレンと向き合う｜note' });
     await test('SPA で別の記事に移ったら、ページ単位の判定をやり直す', async page => {
-        assert.equal(await buttonMode(page), 'copy-only');
+        assert.equal(await buttonMode(page), 'text-only');
         await page.evaluate(() => { history.pushState({}, '', '/n/normal'); document.title = '普通の記事｜note'; });
-        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'normal');
+        await waitMode(page, 'normal');
         await page.evaluate(() => window.__tmCopyText.copy());
-        assert.equal(await page.evaluate(() => window.sent.length), 1);
-        // 成人向けの記事に移ったらコピーだけになり、サイト全体は除外しない
+        assert.equal('textOnly' in await lastPayload(page), false);
+        // 成人向けの記事に移ったら文章だけになり、サイト全体は除外しない
         await page.evaluate(() => { history.pushState({}, '', '/n/adult'); document.title = '【R-18】作品｜note'; });
-        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'copy-only');
-        await assertCopyOnly(page, 'hotkey');
+        await waitMode(page, 'text-only');
+        await assertTextOnly(page, 'hotkey');
         assert.deepEqual(await blockedSites(page), {});
+        await page.evaluate(() => { history.pushState({}, '', '/n/minor'); document.title = '【R-18】JKもの｜note'; });
+        await waitMode(page, 'copy-only');
         await page.evaluate(() => { history.pushState({}, '', '/n/next'); document.title = '次の記事｜note'; });
-        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').shadowRoot.querySelector('button').dataset.mode === 'normal');
+        await waitMode(page, 'normal');
     }, { title: '【R-18】作品' });
-    await test('押したあとに成人向けと分かったら、Driveへ送らず控えも消し、コピーだけにする', async page => {
-        await page.evaluate(() => { window.__tmCopyText.copy().then(() => { window.done = true; }); });
+    await test('押したあとに成人向けと分かったら、画像を外して文章だけ送り、ボタンを黄にする', async page => {
+        await page.evaluate(() => {
+            document.querySelector('article').insertAdjacentHTML('beforeend', '<p><img src="/img/big.png" alt="図" width="800" height="400"></p>');
+            window.__tmCopyText.copy().then(() => { window.done = true; });
+        });
         await page.waitForFunction(() => Object.keys(window.store).some(key => key.startsWith('tm-copy-text-pending:')));
         await page.evaluate(() => { window.dnsAdult = ['example.com']; window.answerDns(window.dnsAsked[0]); });
         await page.waitForFunction(() => window.done);
-        assert.equal(await page.evaluate(() => window.sent.length), 0);
+        assert.equal(await page.evaluate(() => window.sent.length), 1);
+        const payload = await lastPayload(page);
+        assert.equal(payload.textOnly, true);
+        assert.equal('images' in payload, false);
+        assert.doesNotMatch(payload.markdown, /big\.png/);
         assert.equal((await pendingKeys(page)).length, 0);
-        assert.match(await toast(page), /成人向けのサイトと判定したので、Driveには保存しません。このサイトでは以後コピーだけにします/);
+        assert.match(await toast(page), /文章だけ保存/);
         assert.ok((await blockedSites(page))['example.com']);
-        assert.equal(await buttonMode(page), 'copy-only');
-        assert.match(await clipboardText(page), /本文のテストです。/);
+        assert.equal(await buttonMode(page), 'text-only');
     }, { dnsMode: 'hold' });
-    await test('受け口が成人向けと断ったら、控えを消してサイトを除外し、コピーだけにする', async page => {
+    await test('古い受け口に成人向けと断られたら、控えを消してサイトを除外し、黄にする', async page => {
         await page.evaluate(() => { window.respond = () => ({ ok: false, message: '成人向けのサイトと判定したので、保存しません' }); });
         await page.evaluate(() => window.__tmCopyText.copy());
         assert.equal(await page.evaluate(() => window.sent.length), 1);
         assert.equal((await pendingKeys(page)).length, 0);
         assert.equal((await blockedSites(page))['example.com'].reason, '受け口が成人向けと判定');
         assert.match(await toast(page), /成人向け/);
-        assert.equal(await buttonMode(page), 'copy-only');
-        await assertCopyOnly(page);
+        assert.equal(await buttonMode(page), 'text-only');
     });
-    await test('除外したサイトの控えは送らずに消す', async page => {
+    await test('受け口に未成年を示す語で断られたら、控えを消すがサイトは除外しない', async page => {
+        await page.evaluate(() => { window.respond = () => ({ ok: false, message: '未成年を示す語があるので、保存しません（成人向けのページ）' }); });
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent.length), 1);
+        assert.equal((await pendingKeys(page)).length, 0);
+        assert.deepEqual(await blockedSites(page), {});
+        assert.match(await toast(page), /コピーはしましたが、未成年を示す語があるので、Driveには保存しません/);
+    }, { title: '【R-18】作品' });
+    await test('除外したサイトの控えは、画像を外して文章だけ送り直す', async page => {
+        await page.waitForFunction(() => window.sent.length === 1, null, { timeout: 5000 });
+        const payload = await lastPayload(page);
+        assert.equal(payload.textOnly, true);
+        assert.equal('images' in payload, false);
+        assert.equal(payload.markdown, '# 記事\n\n[画像1: 図]\n');
+        await page.waitForFunction(() => !Object.keys(window.store).some(key => key.startsWith('tm-copy-text-pending:')), null, { timeout: 5000 });
+    }, {
+        store: mapStore(leftBehind, value => ({ url: 'https://adult.example/x', markdown: '# 記事\n\n![画像1: 図](https://adult.example/a.png)\n', images: [{ n: 1, url: 'https://adult.example/a.png', alt: '図' }], lastTriedAt: value.lastTriedAt - 20000 })),
+        sites: { 'tm-copy-text-blocked-sites': { 'adult.example': { reason: '手動で除外', at: 1 } } }
+    });
+    await test('除外したサイトの控えに未成年を示す語があれば、送らずに消す', async page => {
         await page.waitForFunction(() => !Object.keys(window.store).some(key => key.startsWith('tm-copy-text-pending:')), null, { timeout: 5000 });
         assert.equal(await page.evaluate(() => window.sent.length), 0);
-        assert.match(await toast(page), /成人向けと判定したサイトの控えを1件、保存せずに消しました/);
+        assert.match(await toast(page), /成人向けのため保存できない控えを1件、送らずに消しました/);
     }, {
-        store: mapStore(leftBehind, value => ({ url: 'https://adult.example/x', lastTriedAt: value.lastTriedAt - 20000 })),
+        store: mapStore(leftBehind, value => ({ url: 'https://adult.example/x', markdown: '# ロリ\n\n本文\n', lastTriedAt: value.lastTriedAt - 20000 })),
         sites: { 'tm-copy-text-blocked-sites': { 'adult.example': { reason: '手動で除外', at: 1 } } }
     });
     await test('X の控えは画像の一覧を送らない', async page => {
@@ -561,9 +628,10 @@ async function main() {
         const payload = await page.evaluate(() => window.sent[0].payload);
         assert.deepEqual(payload.images.map(image => image.url), ['https://example.com/img/ok.png']);
     });
-    await test('メニューでサイトを除外するとコピーだけになり、一覧から外せる', async page => {
-        await page.evaluate(() => { window.confirm = () => true; window.alert = text => { window.alerted = text; }; window.menus['このサイトを除外'](); });
-        assert.equal(await buttonMode(page), 'copy-only');
+    await test('メニューでサイトを除外すると文章だけになり、一覧から外せる', async page => {
+        await page.evaluate(() => { window.confirm = text => { window.confirmText = text; return true; }; window.alert = text => { window.alerted = text; }; window.menus['このサイトを除外'](); });
+        assert.match(await page.evaluate(() => window.confirmText), /文章だけ保存/);
+        assert.equal(await buttonMode(page), 'text-only');
         assert.equal((await blockedSites(page))['example.com'].reason, '手動で除外');
         await page.evaluate(() => { window.prompt = text => { window.promptText = text; return '1'; }; window.menus['除外したサイトを一覧・解除'](); });
         assert.match(await page.evaluate(() => window.promptText), /1\. example\.com（手動で除外）/);
@@ -583,12 +651,12 @@ async function main() {
     }, { dnsMode: 'error' });
     await test('メニュー「ボタンの色・保存の判定を確認」は、サイトの除外なら理由と解除の場所を出す', async page => {
         await page.evaluate(() => { window.alert = text => { window.alerted = text; }; window.menus['ボタンの色・保存の判定を確認'](); });
-        assert.match(await page.evaluate(() => window.alerted), /blocked\.example.*手動で除外[\s\S]*コピーだけ[\s\S]*除外したサイトを一覧・解除/);
+        assert.match(await page.evaluate(() => window.alerted), /blocked\.example.*手動で除外[\s\S]*黄[\s\S]*文章だけ[\s\S]*除外したサイトを一覧・解除/);
     }, { pageUrl: 'https://blocked.example/a', sites: { 'tm-copy-text-blocked-sites': { 'blocked.example': { reason: '手動で除外', at: 1 } } } });
     await test('メニュー「ボタンの色・保存の判定を確認」は、ページ単位の判定なら理由とタイトルを出す', async page => {
         await page.evaluate(() => { window.alert = text => { window.alerted = text; }; window.menus['ボタンの色・保存の判定を確認'](); });
-        assert.match(await page.evaluate(() => window.alerted), /タイトルの語[\s\S]*【R-18】作品/);
-    }, { title: '【R-18】作品' });
+        assert.match(await page.evaluate(() => window.alerted), /タイトルの語[\s\S]*【R-18】ロリもの[\s\S]*橙[\s\S]*コピーだけ/);
+    }, { title: '【R-18】ロリもの' });
     await test('メニュー「ボタンの色・保存の判定を確認」は、判定していなければ位置を初期に戻せる', async page => {
         await page.evaluate(() => { localStorage.setItem('tm-copy-text-position', JSON.stringify({ x: 0.1, y: 0.9 })); window.confirm = text => { window.confirmText = text; return true; }; window.menus['ボタンの色・保存の判定を確認'](); });
         assert.match(await page.evaluate(() => window.confirmText), /判定していません/);
@@ -840,6 +908,40 @@ async function main() {
         const imageFolder = imageFolders.get(r.name.replace(/\.md$/, '') + '_画像');
         // 相対の転送先（/d.jpg）も同じサイトとして解決する
         assert.deepEqual([...imageFolder.saved], ['03.jpg', '04.jpg', '05.jpg']);
+    });
+    check('文章だけ（textOnly）なら、成人向けのサイトでも問い合わせずに本文を保存する', () => {
+        const before = creations;
+        const asked = dnsAsked.length;
+        const r = send({ ...input, requestId: 'f5000000-1234-4234-8234-123456789abc', url: 'https://adult.test/a', textOnly: true });
+        assert.equal(r.ok, true);
+        assert.equal(r.textOnly, true);
+        assert.equal(creations, before + 1);
+        assert.equal(dnsAsked.length, asked);
+        assert.equal(send({ ...input, requestId: 'f5100000-1234-4234-8234-123456789abc', url: 'https://site.xxx/a', textOnly: true }).ok, true);
+    });
+    check('判定できないサイトでも、文章だけなら保存する', () => {
+        dnsDown = true;
+        const r = send({ ...input, requestId: 'f5200000-1234-4234-8234-123456789abc', url: 'https://unknown-site2.test/a', textOnly: true });
+        dnsDown = false;
+        assert.equal(r.ok, true);
+    });
+    check('文章だけでも、未成年を示す語があれば保存しない', () => {
+        const before = creations;
+        for (const change of [{ markdown: '# 記事\n\n女子高生の話\n' }, { title: 'JKもの' }, { markdown: '# 記事\n\n15歳の\n' }]) {
+            const r = send({ ...input, requestId: 'f5300000-1234-4234-8234-123456789abc', url: 'https://adult.test/a', textOnly: true, ...change });
+            assert.equal(r.ok, false);
+            assert.match(r.message, /未成年を示す語/);
+        }
+        // 18歳未満の注意書き・ふつうの送信は断らない
+        assert.equal(send({ ...input, requestId: 'f5400000-1234-4234-8234-123456789abc', url: 'https://adult.test/a', textOnly: true, markdown: '# 記事\n\n18歳未満の方は閲覧できません\n' }).ok, true);
+        assert.equal(send({ ...input, requestId: 'f5500000-1234-4234-8234-123456789abc', markdown: '# 小学生の算数\n' }).ok, true);
+        assert.equal(creations, before + 2);
+    });
+    check('文章だけに画像の一覧が付いていたら受け付けない', () => {
+        const r = send({ ...withImages, requestId: 'f5600000-1234-4234-8234-123456789abc', textOnly: true });
+        assert.equal(r.ok, false);
+        assert.match(r.message, /不正/);
+        assert.equal(send({ ...input, requestId: 'f5700000-1234-4234-8234-123456789abc', textOnly: 'yes' }).ok, false);
     });
     check('doGet は版だけを返し、check=site で成人向けの判定の確認も返す', () => {
         assert.deepEqual(JSON.parse(JSON.stringify(sandbox.doGet({ parameter: {} }))), { ok: true, version: 'dev' });
