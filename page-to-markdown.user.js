@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.8.0
+// @name         ページ本文コピー v1.9.0
 // @namespace    local.hiro.tools
-// @version      1.8.0
-// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのサイトではコピーだけして、Driveには保存しない（ボタンの色が変わる）。
+// @version      1.9.0
+// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのページは画像を除いて文章だけDriveに保存し、未成年を示す語があればコピーだけにする（ボタンの色が変わる）。
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -41,12 +41,13 @@
  *   - window.__tmCopyText.pending() で、未保存の控えが表で出る
  *
  * 成人向けのサイト
- *   - 次のどれかに当たるサイトでは、ボタンを橙にして、コピーだけする（Drive には送らない）
+ *   - 次のどれかに当たるサイトでは、ボタンを黄にして、文章だけ Drive に送る（画像は送らない）。
+ *     本文に未成年を示す語があれば、ボタンを橙にして、コピーだけする（Drive には送らない）
  *     ・ドメイン名（.xxx などの末尾、porn などの語）
  *     ・Cloudflare の家族向け DNS（1.1.1.3 と同じ判定）が成人向けとしたサイト
  *     ・ページの年齢区分の meta、タイトルの「R-18」「18禁」など（そのページだけ）
  *   - 判定したサイトは除外の一覧に自動で足す。手で足す・外すのはメニューから
- *   - 受け口（GAS）も同じ判定をして、成人向けのページと画像は保存しない
+ *   - 受け口（GAS）も同じ判定をして、成人向けの画像は保存しない。文章だけの本文も、未成年を示す語があれば断る
  *   - X（旧Twitter）の画像は、成人向けかを見分けられないので Drive に送らない
  */
 
@@ -143,6 +144,37 @@
         'i'
     );
 
+    // 成人向けと判定したページで、本文にこれがあれば Drive に送らずコピーだけにする。
+    // 受け口（page-markdown-receiver.gs）と同じ。ふつうのページでは見ない
+    const MINOR_WORDS = new RegExp(
+        [
+            '児童',
+            '幼女',
+            '幼児',
+            '園児',
+            '少女',
+            'ロリ',
+            'ショタ',
+            '小学生',
+            '中学生',
+            '女子高生',
+            '男子高生',
+            '高校生',
+            '子供',
+            '子ども',
+            '(?<![A-Za-z])(JK|JC|JS|DC|DS)(?![A-Za-z])',
+            '(?<![0-9０-９])(1[0-7]|[1-9])歳',
+            'lolita',
+            'loli',
+            'shota',
+            'underage'
+        ].join('|'),
+        'i'
+    );
+
+    // ボタンの色を決めるとき、ページの文字をこの長さまで見る
+    const MINOR_SCAN_CHARS = 300000;
+
     // ページの切り替え（タイトル・URL の変化）を待ってから、ページ単位の判定をやり直す（ms）
     const PAGE_CHECK_DEBOUNCE_MS = 300;
     const ADULT_RATING = /adult|mature|restricted|RTA-5042-1996-1400-1577-RTA/i;
@@ -190,9 +222,10 @@
     // ボタンの透明度（ふだん）
     const IDLE_OPACITY = '0.5';
 
-    // ボタンの色。成人向けと判定したページでは、コピーだけになることを色で示す
+    // ボタンの色。成人向けと判定したページでは、Drive に送るものが減ることを色で示す
     const BUTTON_COLOR = '#1f2933';
-    const COPY_ONLY_COLOR = '#b45309';
+    const TEXT_ONLY_COLOR = '#a16207';   // 黄: 文章だけ保存（画像は送らない）
+    const COPY_ONLY_COLOR = '#c2410c';   // 橙: コピーだけ（Drive に送らない）
 
     // 本文コンテナの候補（上から順に試す。狭いものが先）
     const BODY_SELECTORS = [
@@ -2355,23 +2388,45 @@
     let buttonEl = null;
 
 
-    // 成人向けと判定したページでは、ボタンを橙にして、コピーだけになることを示す
+    // 今のページの段階。'normal'（画像も保存）・'text-only'（文章だけ）・'copy-only'（コピーだけ）
+    function pageMode() {
+
+        if (!uiBlocked()) {
+            return 'normal';
+        }
+
+        const text =
+            (document.title || '') + '\n' +
+            ((document.body && document.body.textContent) || '').slice(0, MINOR_SCAN_CHARS);
+
+        return hasMinorWords(text) ? 'copy-only' : 'text-only';
+    }
+
+
+    // 成人向けと判定したページでは、ボタンの色で Drive に送るものを示す
     function applyButtonMode() {
 
         if (!buttonEl) {
             return;
         }
 
-        const copyOnly = uiBlocked();
+        const mode = pageMode();
 
-        buttonEl.style.background = copyOnly ? COPY_ONLY_COLOR : BUTTON_COLOR;
+        buttonEl.style.background =
+            mode === 'copy-only'
+                ? COPY_ONLY_COLOR
+                : mode === 'text-only'
+                    ? TEXT_ONLY_COLOR
+                    : BUTTON_COLOR;
 
         buttonEl.title =
-            copyOnly
-                ? '成人向けと判定したページ: コピーだけ（Driveには保存しない）（Alt+Shift+C）／ドラッグで移動'
-                : '本文をコピー・設定済みならDrive保存（Alt+Shift+C）／ドラッグで移動';
+            mode === 'copy-only'
+                ? '成人向け・未成年を示す語あり: コピーだけ（Driveには保存しない）（Alt+Shift+C）／ドラッグで移動'
+                : mode === 'text-only'
+                    ? '成人向けと判定したページ: コピーし、Driveには文章だけ保存（画像は送らない）（Alt+Shift+C）／ドラッグで移動'
+                    : '本文をコピー・設定済みならDrive保存（Alt+Shift+C）／ドラッグで移動';
 
-        buttonEl.dataset.mode = copyOnly ? 'copy-only' : 'normal';
+        buttonEl.dataset.mode = mode;
     }
     let toastEl = null;
 
@@ -2592,10 +2647,10 @@
     // 成人向けのサイトの除外
     // ============================================================
 
-    // 除外したサイトでは true。コピーだけして、Drive には送らない
+    // 除外したサイトでは true。Drive には文章だけ送る（画像は送らない）
     let siteBlocked = false;
 
-    // タイトルの語・年齢区分の meta で除外したページでは true（コピーだけにする）。
+    // タイトルの語・年齢区分の meta で除外したページでは true（文章だけ送る）。
     // note などの SPA は記事を移っても読み込み直さないので、ページが変わるたびに判定し直す
     let pageBlocked = false;
 
@@ -2928,19 +2983,9 @@
     }
 
 
-    function adultError() {
-
-        const error = new Error('成人向けのサイトと判定したので、保存しません');
-
-        error.adult = true;
-
-        return error;
-    }
-
-
-    // コピーだけにする（ボタンは残し、色を変える）。
+    // 成人向けとして扱う（ボタンは残し、色を変える。Drive には文章だけ、またはコピーだけ）。
     // pageOnly: タイトル・meta による判定。サイト全体は除外せず、別のページに移れば戻る
-    function setCopyOnly(pageOnly = false) {
+    function markAdult(pageOnly = false) {
 
         if (pageOnly) {
             pageBlocked = true;
@@ -2952,19 +2997,68 @@
     }
 
 
-    // 成人向けと判定したページで、コピーだけにする理由。ふつうのページは空文字
+    // 成人向けと判定したページの理由。ふつうのページは空文字
     function copyOnlyReason() {
 
         return localBlockReason(location.hostname) || currentPageRuleReason();
     }
 
 
-    // 受け口に成人向けと断られた控えを消し、サイトを除外の一覧に足す
-    function dropAdultPending(record) {
+    function hasMinorWords(text) {
+
+        return MINOR_WORDS.test(String(text || ''));
+    }
+
+
+    // 画像の URL を本文から外す（「![画像1: alt](URL)」→「[画像1: alt]」）
+    function stripImageLinks(markdown) {
+
+        return String(markdown).replace(
+            /!\[(画像\d+(?:: [^\]\n]*)?)\]\([^)\s]*\)/g,
+            '[$1]'
+        );
+    }
+
+
+    // 成人向けのページの送信を、文章だけにする（同じ控えからは毎回同じ中身になる）
+    function toTextOnly(upload) {
+
+        if (upload.textOnly) {
+            return upload;
+        }
+
+        return {
+            ...upload,
+            textOnly: true,
+            images: [],
+            markdown: stripImageLinks(upload.markdown)
+        };
+    }
+
+
+    function minorError() {
+
+        const error = new Error('未成年を示す語があるので、Driveには保存しません');
+
+        error.adult = true;
+        error.minor = true;
+
+        return error;
+    }
+
+
+    /*
+     * 受け口に断られた控えを消す。
+     * 成人向けのサイトと断られたら、サイトを除外の一覧に足す。
+     * 未成年を示す語で断られたときは、そのページの中身の問題なので、サイトは除外しない
+     */
+    function dropAdultPending(record, error = {}) {
 
         removePending(record.requestId);
 
-        blockSite(hostOf(record.url), '受け口が成人向けと判定');
+        if (!error.minor) {
+            blockSite(hostOf(record.url), '受け口が成人向けと判定');
+        }
 
         updateBadge();
     }
@@ -2993,7 +3087,7 @@
                 return;
             }
 
-            setCopyOnly();
+            markAdult();
         });
     }
 
@@ -3008,7 +3102,7 @@
 
         const ok = confirm(
             '「' + host + '」を除外しますか？\n\n' +
-            'このサイトではコピーだけにして、Driveには保存しません（ボタンが橙になります）。' +
+            'このサイトでは画像を送らず、Driveには文章だけ保存します（ボタンが黄になります。未成年を示す語があればコピーだけ）。' +
             '外すときはメニュー「除外したサイトを一覧・解除」から。'
         );
 
@@ -3018,7 +3112,7 @@
 
         blockSite(host, '手動で除外');
 
-        setCopyOnly();
+        markAdult();
 
         alert('「' + host + '」を除外しました');
     }
@@ -3026,8 +3120,16 @@
 
     /*
      * ボタンの色・保存の判定をメニューから確かめる。
-     * 橙のボタン（コピーだけ）なら理由を出し、ふつうの色ならボタンを初期位置に戻せる
+     * 黄・橙のボタンなら理由を出し、ふつうの色ならボタンを初期位置に戻せる
      */
+    function describeMode() {
+
+        return pageMode() === 'copy-only'
+            ? 'ボタンは橙です。本文に未成年を示す語があるので、コピーだけして Drive には保存しません。'
+            : 'ボタンは黄です。コピーし、Drive には画像を除いた文章だけ保存します。';
+    }
+
+
     function explainButton() {
 
         const host = normalizeHost(location.hostname);
@@ -3038,7 +3140,7 @@
 
             alert(
                 '「' + host + '」は成人向けのサイトと判定しています（' + siteReason + '）。\n' +
-                'ボタンは橙になり、コピーだけして Drive には保存しません。\n\n' +
+                describeMode() + '\n\n' +
                 '判定を外すときはメニュー「除外したサイトを一覧・解除」から。'
             );
 
@@ -3050,7 +3152,7 @@
             alert(
                 'このページは成人向けと判定しています（' + pageReason + '）。\n' +
                 'タイトル: ' + (document.title || '（なし）') + '\n\n' +
-                'ボタンは橙になり、コピーだけして Drive には保存しません。' +
+                describeMode() + '\n' +
                 '別のページに移れば判定し直します。'
             );
 
@@ -3266,7 +3368,9 @@
     }
 
 
-    async function sendToDrive(config, upload) {
+    async function sendToDrive(config, original) {
+
+        let upload = original;
 
         if (!isReceiverUrl(config.url) || !/^[a-f0-9]{64}$/.test(config.token || '')) {
             throw new Error('Drive保存の設定をやり直してください');
@@ -3276,9 +3380,18 @@
             throw new Error('本文が保存上限（50万文字）を超えています');
         }
 
-        // 送る直前に、記事のサイトを確かめる。判定できなければ受け口の判定に任せる
-        if (await siteVerdict(hostOf(upload.url)) === 'adult') {
-            throw adultError();
+        // 送る直前に、記事のサイトを確かめる。成人向けなら文章だけにする。
+        // 判定できなければ受け口の判定に任せる
+        if (
+            !upload.textOnly &&
+            await siteVerdict(hostOf(upload.url)) === 'adult'
+        ) {
+            upload = toTextOnly(upload);
+        }
+
+        // 文章だけでも、未成年を示す語があれば送らない
+        if (upload.textOnly && hasMinorWords(upload.title + '\n' + upload.markdown)) {
+            throw minorError();
         }
 
         // 控えの管理用の項目は送らない
@@ -3291,10 +3404,14 @@
             token: config.token
         };
 
+        if (upload.textOnly) {
+            payload.textOnly = true;
+        }
+
         // 画像があるときだけ一覧を付ける（v1.5.0 以前の控えには無い）
         // 除外したサイトの画像は送らない（ほかの配信元は受け口が確かめる）
         const images =
-            Array.isArray(upload.images) && !X_HOSTS.test(hostOf(upload.url))
+            !upload.textOnly && Array.isArray(upload.images) && !X_HOSTS.test(hostOf(upload.url))
                 ? upload.images
                     .filter(image => !localBlockReason(hostOf(image.url)))
                     .slice(0, IMAGE_MAX)
@@ -3335,7 +3452,13 @@
                         typeof data === 'object';
 
                     if (answered && data.ok && data.fileId) {
-                        resolve(data);
+
+                        // 送る直前に文章だけにしたか（押したときは成人向けと分かっていなかった）
+                        resolve({
+                            ...data,
+                            textOnly: Boolean(upload.textOnly),
+                            becameTextOnly: Boolean(upload.textOnly && !original.textOnly)
+                        });
                         return;
                     }
 
@@ -3378,6 +3501,7 @@
     /*
      * 受け口（page-markdown-receiver.gs）の断り方を4つに分ける。
      * - adult:       成人向けのサイト。控えも消し、サイトを除外の一覧に足す
+     *                （minor: 未成年を示す語。控えは消すが、サイトは除外しない）
      * - duplicateId: 同じ送信IDで別の中身が保存済み。新しいIDを付ければ保存できる
      * - rejected:    中身が受け付けられない。何度送っても同じなので、自動では送り直さない
      * - それ以外:    混雑・一時的な失敗・トークン違い。待って送り直す
@@ -3386,7 +3510,10 @@
 
         const error = new Error(message.slice(0, 200) || 'Drive保存に失敗しました');
 
-        if (/成人向けのサイトと判定/.test(message)) {
+        if (/未成年を示す語/.test(message)) {
+            error.adult = true;
+            error.minor = true;
+        } else if (/成人向けのサイトと判定/.test(message)) {
             error.adult = true;
         } else if (/送信IDが重複/.test(message)) {
             error.duplicateId = true;
@@ -3585,13 +3712,6 @@
                     continue;
                 }
 
-                // 除外したサイトの控えは送らずに消す
-                if (localBlockReason(hostOf(record.url))) {
-                    removePending(record.requestId);
-                    droppedNow++;
-                    continue;
-                }
-
                 if (record.rejected && !options.includeRejected) {
                     continue;
                 }
@@ -3603,9 +3723,10 @@
                     continue;
                 }
 
-                // 試したことを先に書き、他のタブが同時に送らないようにする
+                // 試したことを先に書き、他のタブが同時に送らないようにする。
+                // 除外したサイトの控えは、文章だけにして送る
                 const claimed = {
-                    ...record,
+                    ...(localBlockReason(hostOf(record.url)) ? toTextOnly(record) : record),
                     attempts: (record.attempts || 1) + 1,
                     lastTriedAt: Date.now()
                 };
@@ -3625,7 +3746,7 @@
                     lastError = error.message || '保存に失敗しました';
 
                     if (error.adult) {
-                        dropAdultPending(claimed);
+                        dropAdultPending(claimed, error);
                         droppedNow++;
                         continue;
                     }
@@ -3703,7 +3824,7 @@
         } catch (error) {
 
             if (error.adult) {
-                dropAdultPending(fresh);
+                dropAdultPending(fresh, error);
                 return { saved: false, error };
             }
 
@@ -3726,7 +3847,7 @@
 
         if (report.droppedNow) {
             showToast(
-                '成人向けと判定したサイトの控えを' + report.droppedNow + '件、保存せずに消しました' +
+                '成人向けのため保存できない控えを' + report.droppedNow + '件、送らずに消しました' +
                 (report.saved ? '。ほかの' + report.saved + '件は保存しました' : ''),
                 true
             );
@@ -3897,11 +4018,11 @@
 
     async function copyPage() {
 
-        // 成人向けのサイト・ページでは、コピーだけして Drive には送らない
+        // 成人向けのサイト・ページでは、Drive には文章だけ送る（未成年を示す語があればコピーだけ）
         const adultReason = copyOnlyReason();
 
         if (adultReason) {
-            setCopyOnly(!localBlockReason(location.hostname));
+            markAdult(!localBlockReason(location.hostname));
         }
 
         if (saving) {
@@ -3935,7 +4056,10 @@
 
         // ユーザー操作の直後にコピーを開始する（iOSの権限判定対策）
         const copying = writeClipboard(result.text);
-        const config = adultReason ? null : readDriveConfig();
+        const minor =
+            Boolean(adultReason) &&
+            hasMinorWords((result.title || '') + '\n' + result.text);
+        const config = minor ? null : readDriveConfig();
 
         if (config) {
 
@@ -3943,7 +4067,10 @@
 
             let settled = false;
 
-            const upload = prepareUpload(result);
+            const upload =
+                adultReason
+                    ? toTextOnly(prepareUpload(result))
+                    : prepareUpload(result);
 
             // 上限を超えた本文は控えても送れないので、控えない
             const kept =
@@ -3983,26 +4110,52 @@
 
                 if (!driveOk && stored.reason.adult) {
 
-                    dropAdultPending(upload);
+                    dropAdultPending(upload, stored.reason);
 
                     lastUpload = null;
 
-                    showToast(
-                        (copyOk ? 'コピーはしましたが、' : '') +
-                        '成人向けのサイトと判定したので、Driveには保存しません。このサイトでは以後コピーだけにします',
-                        true
-                    );
+                    if (stored.reason.minor) {
 
-                    setCopyOnly();
+                        showToast(
+                            (copyOk ? 'コピーはしましたが、' : '') +
+                            '未成年を示す語があるので、Driveには保存しません',
+                            true
+                        );
+
+                        applyButtonMode();
+
+                    } else {
+
+                        // 文章だけの保存に対応していない、古い受け口に断られた
+                        showToast(
+                            (copyOk ? 'コピーはしましたが、' : '') +
+                            '成人向けのサイトと判定したので、Driveには保存しません',
+                            true
+                        );
+
+                        markAdult();
+                    }
 
                 } else if (driveOk) {
                     removePending(upload.requestId);
 
+                    if (stored.value.becameTextOnly) {
+                        markAdult();
+                    }
+
                     const imageNote = describeSavedImages(stored.value);
 
-                    showToast((copyOk
-                        ? 'Driveに保存し、コピーしました'
-                        : 'Driveに保存しました。コピーは失敗しました') + imageNote, !copyOk);
+                    showToast(
+                        stored.value.textOnly
+                            ? (copyOk
+                                ? 'Driveに文章だけ保存し、コピーしました'
+                                : 'Driveに文章だけ保存しました。コピーは失敗しました') +
+                              '（成人向けと判定したので、画像は送っていません）'
+                            : (copyOk
+                                ? 'Driveに保存し、コピーしました'
+                                : 'Driveに保存しました。コピーは失敗しました') + imageNote,
+                        !copyOk
+                    );
                 } else if (stored.reason.duplicateId) {
 
                     // 同じIDで別の中身が保存済み。新しいIDで送り直す
@@ -4016,7 +4169,7 @@
                     }
 
                     if (!outcome.saved && outcome.error.adult) {
-                        setCopyOnly();
+                        markAdult();
                     }
 
                     showToast(
@@ -4072,8 +4225,8 @@
             result.chars.toLocaleString() +
             '文字をコピーしました（' + label + '）';
 
-        if (adultReason) {
-            message += '。成人向けと判定したので、Driveには送っていません（' + adultReason + '）';
+        if (minor) {
+            message += '。成人向けで未成年を示す語があるので、Driveには送っていません（' + adultReason + '）';
         }
 
         if (result.chars > WARN_CHARS) {
@@ -4499,7 +4652,7 @@
 
     buildUi();
 
-    // 初めてのサイトは家族向け DNS に問い合わせ、成人向けならボタンを橙にしてコピーだけにする
+    // 初めてのサイトは家族向け DNS に問い合わせ、成人向けならボタンの色を変えて文章だけ送る
     checkCurrentSite();
 
     // 前のページで届かなかった保存があれば、待ち時間のあとで送り直す
