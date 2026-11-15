@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X 16進デコード v1.0.0
+// @name         X 16進デコード v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.1.0
 // @description  X 上で UTF-8 の16進数文字列をドラッグして選択すると、デコードした文字列を選択位置の下に表示する
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -27,8 +27,11 @@
  *   - % 付き（URL形式） %68%74%74%70
  *   - 0x 付き           0x68 0x74
  *
- * 選択範囲に16進数以外の文字が混ざっているとき（投稿全体を選んだときなど）は、
- * その中の16進数の連続（8文字以上）を探して、それぞれデコードする。
+ * ドラッグの始点・終点がずれても読めるようにしている。
+ *   - 足りないとき（先頭や末尾の数文字を選び損ねたとき）:
+ *     選択に重なる16進数のまとまりを、本文から前後に伸ばして丸ごと読む。
+ *   - はみ出したとき（前後の日本語や投稿全体まで選んだとき）:
+ *     選択に含まれる16進数のまとまり（8文字以上）を探して、それぞれ読む。
  *
  * UTF-8 として正しくないバイト列や、制御文字を含む結果は出さない。
  * 数字だけの選択（日付など）で誤ってパネルが出るのを防ぐため。
@@ -62,6 +65,17 @@
 
     // パネルの id
     const PANEL_ID = 'tm-x-hex-decode-panel';
+
+    // 選択の前後を補うときに見る本文の範囲（近いものから順に試す）
+    const CONTAINER_SELECTORS = [
+        '[data-testid="tweetText"]',        // 投稿本文
+        '[data-testid="UserDescription"]',  // プロフィール文
+        'div',
+        'p',
+        'li',
+        'pre',
+        'td'
+    ];
 
     // ============================================================
     // デコード
@@ -112,45 +126,163 @@
         return text;
     }
 
-    // 選択文字列からデコード結果の一覧を作る
+    // 文中の16進数のまとまりを探す
+    // 戻り値: [{ start, end, hex }]（start / end は text 内の位置）
+    //
+    //   - 区切りなし・\x 付き・% 付き・0x 付きは、1つの連続として拾う
+    //   - 「E3 81 82」のような2桁ずつの区切りは、隣り合うものをつなげる
+    function findHexGroups(text) {
+        const runPattern = /(?:\\x|%|0x|[0-9a-fA-F])+/gi;
+        const groups = [];
+        let current = null;
+        let match;
+
+        while ((match = runPattern.exec(text)) !== null) {
+            const run = {
+                start: match.index,
+                end: match.index + match[0].length,
+                hex: stripSeparators(match[0])
+            };
+
+            if (run.hex === '') {
+                continue;
+            }
+
+            const gap = current ? text.slice(current.end, run.start) : '';
+            const joinable = current
+                && current.lastRunLength === 2
+                && run.hex.length === 2
+                && /^(?:[ :\-]|, ?)$/.test(gap);
+
+            if (joinable) {
+                current.end = run.end;
+                current.hex += run.hex;
+                current.lastRunLength = run.hex.length;
+                continue;
+            }
+
+            current = {
+                start: run.start,
+                end: run.end,
+                hex: run.hex,
+                lastRunLength: run.hex.length
+            };
+            groups.push(current);
+        }
+
+        return groups;
+    }
+
+    // まとまり1つを読む。奇数桁なら前後どちらかの1文字を落として試す
+    // （英単語の a〜f が16進数にくっついている場合など）
+    function decodeGroup(hex) {
+        if (hex.length % 2 === 0) {
+            const text = decodeHexString(hex);
+            return text === null ? null : { hex: hex, text: text };
+        }
+
+        const candidates = [
+            hex.slice(1),
+            hex.slice(0, -1)
+        ];
+
+        for (const candidate of candidates) {
+            const text = decodeHexString(candidate);
+
+            if (text !== null) {
+                return { hex: candidate, text: text };
+            }
+        }
+
+        return null;
+    }
+
+    // text のうち selStart〜selEnd が選ばれているとして、デコード結果の一覧を作る
+    // 選択に少しでも重なる16進数のまとまりは、選択の外にはみ出した部分も含めて丸ごと読む。
+    // ドラッグの始点・終点が数文字ずれても、正しい区切りで読めるようにするため。
     // 戻り値: [{ hex, text }]
-    function decodeSelection(raw) {
-        if (!raw || raw.length > MAX_SELECTION_LENGTH) {
+    function decodeInText(text, selStart, selEnd) {
+        if (!text || text.length > MAX_SELECTION_LENGTH) {
             return [];
         }
 
-        // 1. 選択全体が16進数（区切り付きを含む）なら、それを丸ごと読む
-        const whole = stripSeparators(raw.trim());
-
-        if (whole.length >= MIN_WHOLE_HEX_LENGTH) {
-            const text = decodeHexString(whole);
-
-            if (text !== null) {
-                return [{ hex: whole, text: text }];
-            }
+        // 選択の前後の空白は数えない
+        while (selStart < selEnd && /\s/.test(text[selStart])) {
+            selStart++;
         }
 
-        // 2. 文中の16進数の連続を拾う
+        while (selEnd > selStart && /\s/.test(text[selEnd - 1])) {
+            selEnd--;
+        }
+
+        if (selStart >= selEnd) {
+            return [];
+        }
+
         const results = [];
-        const pattern = new RegExp('[0-9a-fA-F]{' + MIN_EMBEDDED_HEX_LENGTH + ',}', 'g');
-        let match;
 
-        while ((match = pattern.exec(raw)) !== null) {
-            let hex = match[0];
+        for (const group of findHexGroups(text)) {
+            const overlaps = group.start < selEnd && group.end > selStart;
 
-            // 奇数桁なら末尾1文字を落として試す
-            if (hex.length % 2 !== 0) {
-                hex = hex.slice(0, -1);
+            if (!overlaps) {
+                continue;
             }
 
-            const text = decodeHexString(hex);
+            // 選択がまとまりの中に収まっている（16進数だけを選んだ）なら短くても読む。
+            // 文章ごと選んだときは、偶然16進数に見える短い語を拾わないよう長さを求める
+            const selectionInside = selStart >= group.start && selEnd <= group.end;
+            const minLength = selectionInside
+                ? MIN_WHOLE_HEX_LENGTH
+                : MIN_EMBEDDED_HEX_LENGTH;
 
-            if (text !== null) {
-                results.push({ hex: hex, text: text });
+            if (group.hex.length < minLength) {
+                continue;
+            }
+
+            const result = decodeGroup(group.hex);
+
+            if (result !== null) {
+                results.push(result);
             }
         }
 
         return results;
+    }
+
+    // 文字列だけを受け取って読む（診断用）
+    function decodeSelection(raw) {
+        return decodeInText(String(raw), 0, String(raw).length);
+    }
+
+    // 選択範囲を囲む本文を取り、選択の前後に続く16進数も含めて読む
+    function decodeAroundSelection(selection) {
+        const range = selection.getRangeAt(0);
+        let element = range.commonAncestorContainer;
+
+        if (element.nodeType !== Node.ELEMENT_NODE) {
+            element = element.parentElement;
+        }
+
+        if (!element) {
+            return decodeSelection(selection.toString());
+        }
+
+        const container = element.closest(CONTAINER_SELECTORS.join(', ')) || element;
+        const text = container.textContent || '';
+
+        if (text.length > MAX_SELECTION_LENGTH) {
+            return decodeSelection(selection.toString());
+        }
+
+        // 本文の先頭から選択の始点までの文字数を数えて、選択の位置を出す
+        const before = document.createRange();
+        before.setStart(container, 0);
+        before.setEnd(range.startContainer, range.startOffset);
+
+        const selStart = before.toString().length;
+        const selEnd = selStart + range.toString().length;
+
+        return decodeInText(text, selStart, selEnd);
     }
 
     // ============================================================
@@ -387,7 +519,7 @@
 
         lastSelection = raw;
 
-        const results = decodeSelection(raw);
+        const results = decodeAroundSelection(selection);
 
         if (results.length === 0) {
             removePanel();
@@ -449,7 +581,12 @@
         dump: function () {
             const selection = window.getSelection();
             const raw = selection ? selection.toString() : '';
-            const results = decodeSelection(raw);
+            const hasSelection = selection
+                && selection.rangeCount > 0
+                && !selection.isCollapsed;
+            const results = hasSelection
+                ? decodeAroundSelection(selection)
+                : [];
             const rows = results.length > 0
                 ? results.map(function (r) {
                     return { 選択: raw.slice(0, 80), '16進': r.hex.slice(0, 80), 結果: r.text };

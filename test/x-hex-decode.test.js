@@ -35,6 +35,9 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>x-mock</title>
 <article><div data-testid="tweetText"><span id="plain">ふつうの投稿です</span></div></article>
 <article><div data-testid="tweetText"><span id="date">20261115</span></div></article>
 <article><div data-testid="tweetText"><span id="badUtf8">ffffffff</span></div></article>
+<article><div data-testid="tweetText"><span id="inline">これ68656c6c6f20776f726c64です</span></div></article>
+<article><div data-testid="tweetText"><span id="wordAttached">cafe 68656c6c6f20776f726c64e</span></div></article>
+<article><div data-testid="tweetText"><span id="twoHex">1つめ 68656c6c6f 2つめ e38182e38184</span></div></article>
 </body>`;
 
 const results = [];
@@ -137,6 +140,78 @@ function check(name, cond, extra) {
 
   await selectAll('badUtf8');
   check('対象外: UTF-8 として不正なバイト列では出ない', (await panelTexts()).length === 0);
+
+  // --- 範囲がぴったりでない選択 ---
+  // 要素内の文字位置 start〜end を選ぶ
+  async function selectPart(id, start, end) {
+    await page.mouse.click(5, 880);
+    await page.evaluate(([id, start, end]) => {
+      const node = document.getElementById(id).firstChild;
+      const len = node.data.length;
+      const range = document.createRange();
+      range.setStart(node, start < 0 ? len + start : start);
+      range.setEnd(node, end <= 0 ? len + end : end);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }, [id, start, end]);
+    await page.waitForTimeout(500);
+  }
+
+  await selectPart('urlHex', 1, 0);
+  texts = await panelTexts();
+  check('足りない: 先頭1文字を選び損ねても URL 全体が出る', texts[0] === URL_TEXT, texts);
+
+  await selectPart('urlHex', 3, -5);
+  texts = await panelTexts();
+  check('足りない: 先頭3文字・末尾5文字が欠けても URL 全体が出る', texts[0] === URL_TEXT, texts);
+
+  await selectPart('urlHex', 40, 42);
+  texts = await panelTexts();
+  check('足りない: 途中の2文字だけ選んでも全体が出る', texts[0] === URL_TEXT, texts);
+
+  await selectPart('jaHex', 1, -1);
+  texts = await panelTexts();
+  check('足りない: 短い日本語でも両端が欠けて読める', texts[0] === 'あいう', texts);
+
+  await selectPart('spaced', 1, -1);
+  texts = await panelTexts();
+  check('足りない: 空白区切りの両端が欠けても全体が出る', texts[0] === 'あい', texts);
+
+  await selectPart('inline', 1, -1);
+  texts = await panelTexts();
+  check('はみ出し: 前後の日本語ごと選んでも16進数の部分だけ読む', texts.length === 1 && texts[0] === 'hello world', texts);
+
+  await selectPart('inline', 4, 9);
+  texts = await panelTexts();
+  check('足りない: 日本語にくっついた16進数の一部だけ選んでも全体が出る', texts[0] === 'hello world', texts);
+
+  await selectPart('wordAttached', 5, -1);
+  texts = await panelTexts();
+  check('奇数桁: 末尾に英字がくっついても読める', texts[0] === 'hello world', texts);
+
+  await selectPart('twoHex', 0, 0);
+  texts = await panelTexts();
+  check('複数: 1つの投稿に2つあればそれぞれ出す', texts.length === 2 && texts[0] === 'hello' && texts[1] === 'あい', texts);
+
+  await selectPart('twoHex', 6, 8);
+  texts = await panelTexts();
+  check('複数: 一方だけに触れたらそれだけ出す', texts.length === 1 && texts[0] === 'hello', texts);
+
+  // 実際のマウスで、両端を内側に寄せてドラッグする
+  {
+    const box = await page.locator('#urlHex').boundingBox();
+    await page.mouse.click(5, 880);
+    await page.mouse.move(box.x + 25, box.y + 9);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 60, box.y + box.height - 6, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(500);
+    const partial = await page.evaluate(() => window.getSelection().toString());
+    texts = await panelTexts();
+    check('ドラッグ: 両端を内側に外したドラッグでも URL 全体が出る',
+      partial.length < URL_HEX.length && texts[0] === URL_TEXT, { partial: partial.length, texts });
+  }
 
   // --- 診断 ---
   check('診断: decode() が使える', await page.evaluate((h) =>
