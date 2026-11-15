@@ -14,6 +14,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `x-bottom-bar-opaque.user.js` | X 下部メニュー不透明化 | x.com / twitter.com |
 | `x-account-switcher.user.js` | X アカウント切替 | x.com / twitter.com |
 | `x-tab-account.user.js` | X タブ別アカウント | x.com / twitter.com |
+| `x-hex-decode.user.js` | X 16進デコード | x.com / twitter.com |
 | `youtube-full-dates-jst.user.js` | YouTube Full Dates (JST) | www.youtube.com |
 | `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
 | `youtube-hide-chat-users.user.js` | YouTube チャット非表示 | www.youtube.com/live_chat |
@@ -54,6 +55,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-bottom-bar-opaque.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-account-switcher.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-tab-account.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/x-hex-decode.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-full-dates-jst.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-upcoming-stream-list.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-hide-chat-users.user.js
@@ -947,6 +949,28 @@ NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 
 ヘッドレスChromium上でXのカード構造を模したDOMにスクリプトを流し込み、検出・URL解決・ボタン設置を確認する（70項目、Playwright が必要）。
 ただしXの実DOMやiOSのUniversal Linkの挙動は再現していないため、**実機確認の代わりにはならない**。
+
+## X 16進デコード について（ファイル: `x-hex-decode.user.js`）
+
+X 上で UTF-8 の16進数文字列をドラッグして選択すると、デコードした文字列を選択範囲の下にパネルで出す。
+URL ならパネルに「開く」が付く。「コピー」でデコード結果をクリップボードに入れられる。
+
+- 例: `68747470733a2f2f782e636f6d2f...` → `https://x.com/...`
+- 区切りなし・空白区切り・`\x` 付き・`%` 付き・`0x` 付きを受け付ける
+- 投稿全体を選んだときは、文中の16進数の連続（8文字以上）を拾ってデコードする
+- UTF-8 として不正なバイト列や、制御文字を含む結果は出さない（日付などの数字で誤って出ないように）
+- 閉じ方: パネルの外をクリック / Esc / 別の文字列を選択
+- 診断: コンソールで `window.__tmHexDecode.dump()`（いまの選択の判定）、`window.__tmHexDecode.decode('6869')`（任意の文字列を試す）
+
+### 検証
+
+```bash
+node --check x-hex-decode.user.js
+NODE_PATH=$(npm root -g) node test/x-hex-decode.test.js
+```
+
+模擬DOM上でマウスのドラッグ選択を行い、デコード結果・区切り付きの形式・対象外の選択・閉じ方・診断を確認する（17項目）。
+X の実DOMは再現していないため、実機確認の代わりにはならない。
 
 ## X スペース帯非表示 について（ファイル: `x-hide-spaces-bar.user.js`）
 
