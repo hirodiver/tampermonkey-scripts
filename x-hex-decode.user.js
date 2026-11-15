@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X 16進デコード v1.0.0
+// @name         X 16進デコード v1.1.0
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.1.0
 // @description  X 上で UTF-8 の16進数文字列をドラッグして選択すると、デコードした文字列を選択位置の下に表示する
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -29,6 +29,9 @@
  *
  * 選択範囲に16進数以外の文字が混ざっているとき（投稿全体を選んだときなど）は、
  * その中の16進数の連続（8文字以上）を探して、それぞれデコードする。
+ *
+ * ドラッグの端が16進数の途中で止まっていても（先頭や末尾の数文字を取りこぼしても）、
+ * その16進数の端まで選択を広げて読む。選んだ範囲そのものは変えない。
  *
  * UTF-8 として正しくないバイト列や、制御文字を含む結果は出さない。
  * 数字だけの選択（日付など）で誤ってパネルが出るのを防ぐため。
@@ -136,21 +139,99 @@
         let match;
 
         while ((match = pattern.exec(raw)) !== null) {
-            let hex = match[0];
+            // 奇数桁なら、末尾1文字を落とす → 先頭1文字を落とす の順に試す
+            const candidates = match[0].length % 2 === 0
+                ? [match[0]]
+                : [match[0].slice(0, -1), match[0].slice(1)];
 
-            // 奇数桁なら末尾1文字を落として試す
-            if (hex.length % 2 !== 0) {
-                hex = hex.slice(0, -1);
-            }
+            for (const hex of candidates) {
+                const text = decodeHexString(hex);
 
-            const text = decodeHexString(hex);
-
-            if (text !== null) {
-                results.push({ hex: hex, text: text });
+                if (text !== null) {
+                    results.push({ hex: hex, text: text });
+                    break;
+                }
             }
         }
 
         return results;
+    }
+
+    // ============================================================
+    // 選択範囲の補正（ドラッグの端のずれを吸収する）
+    // ============================================================
+
+    // 16進数のかたまり。\x・%・0x の前置きと、空白・コロン・ハイフン区切りを含める
+    const HEX_TOKEN_SOURCE =
+        '(?:\\\\x|%|0x)?[0-9a-fA-F]+' +
+        '(?:[ :\\-]?(?:\\\\x|%|0x)?[0-9a-fA-F]+)*';
+
+    // text の offset が16進数のかたまりの内側（端を除く）にあれば、そのかたまりを返す
+    function findHexTokenAround(text, offset) {
+        const pattern = new RegExp(HEX_TOKEN_SOURCE, 'g');
+        let match;
+
+        while ((match = pattern.exec(text)) !== null) {
+            const start = match.index;
+            const end = start + match[0].length;
+
+            if (start < offset && offset < end) {
+                return { start: start, end: end };
+            }
+
+            if (start >= offset) {
+                break;
+            }
+        }
+
+        return null;
+    }
+
+    // 選択範囲の両端を、16進数のかたまりの端まで広げた Range を返す
+    function expandRangeToHex(range) {
+        const expanded = range.cloneRange();
+
+        if (range.startContainer.nodeType === Node.TEXT_NODE) {
+            const token = findHexTokenAround(range.startContainer.data, range.startOffset);
+
+            if (token) {
+                expanded.setStart(range.startContainer, token.start);
+            }
+        }
+
+        if (range.endContainer.nodeType === Node.TEXT_NODE) {
+            const token = findHexTokenAround(range.endContainer.data, range.endOffset);
+
+            if (token) {
+                expanded.setEnd(range.endContainer, token.end);
+            }
+        }
+
+        return expanded;
+    }
+
+    // 選択からデコード結果を作る。広げた範囲で読めなければ、選んだ範囲そのままで読む
+    // 戻り値: { raw, expandedText, results, rect }
+    function analyzeSelection(selection) {
+        const range = selection.getRangeAt(0);
+        const raw = selection.toString();
+        const expanded = expandRangeToHex(range);
+        const expandedText = expanded.toString();
+
+        let results = decodeSelection(expandedText);
+        let rect = expanded.getBoundingClientRect();
+
+        if (results.length === 0 && expandedText !== raw) {
+            results = decodeSelection(raw);
+            rect = range.getBoundingClientRect();
+        }
+
+        return {
+            raw: raw,
+            expandedText: expandedText,
+            results: results,
+            rect: rect
+        };
     }
 
     // ============================================================
@@ -379,23 +460,20 @@
             return;
         }
 
-        const raw = selection.toString();
+        const analysis = analyzeSelection(selection);
 
-        if (raw === lastSelection && document.getElementById(PANEL_ID)) {
+        if (analysis.expandedText === lastSelection && document.getElementById(PANEL_ID)) {
             return;
         }
 
-        lastSelection = raw;
+        lastSelection = analysis.expandedText;
 
-        const results = decodeSelection(raw);
-
-        if (results.length === 0) {
+        if (analysis.results.length === 0) {
             removePanel();
             return;
         }
 
-        const rect = selection.getRangeAt(0).getBoundingClientRect();
-        showPanel(results, rect);
+        showPanel(analysis.results, analysis.rect);
     }
 
     function scheduleDecode(delay) {
@@ -448,13 +526,16 @@
         },
         dump: function () {
             const selection = window.getSelection();
-            const raw = selection ? selection.toString() : '';
-            const results = decodeSelection(raw);
-            const rows = results.length > 0
-                ? results.map(function (r) {
-                    return { 選択: raw.slice(0, 80), '16進': r.hex.slice(0, 80), 結果: r.text };
+            const analysis = selection && selection.rangeCount > 0
+                ? analyzeSelection(selection)
+                : { raw: '', expandedText: '', results: [] };
+            const raw = analysis.raw;
+            const wide = analysis.expandedText.slice(0, 80);
+            const rows = analysis.results.length > 0
+                ? analysis.results.map(function (r) {
+                    return { 選択: raw.slice(0, 80), 補正後: wide, '16進': r.hex.slice(0, 80), 結果: r.text };
                 })
-                : [{ 選択: raw.slice(0, 80), '16進': '', 結果: '（デコードできる16進数が無い）' }];
+                : [{ 選択: raw.slice(0, 80), 補正後: wide, '16進': '', 結果: '（デコードできる16進数が無い）' }];
             console.table(rows);
             return rows;
         }

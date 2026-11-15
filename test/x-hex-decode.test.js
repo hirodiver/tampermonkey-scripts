@@ -32,6 +32,8 @@ const HTML = `<!doctype html><meta charset="utf-8"><title>x-mock</title>
 <article><div data-testid="tweetText"><span id="spaced">E3 81 82 E3 81 84</span></div></article>
 <article><div data-testid="tweetText"><span id="escaped">\\xe3\\x81\\x82</span></div></article>
 <article><div data-testid="tweetText"><span id="mixed">これを読んで 68656c6c6f20776f726c64 だって</span></div></article>
+<article><div data-testid="tweetText"><span id="inText">見て ${URL_HEX} だよ</span></div></article>
+<article><div data-testid="tweetText"><span id="spacedText">答え: E3 81 82 E3 81 84 です</span></div></article>
 <article><div data-testid="tweetText"><span id="plain">ふつうの投稿です</span></div></article>
 <article><div data-testid="tweetText"><span id="date">20261115</span></div></article>
 <article><div data-testid="tweetText"><span id="badUtf8">ffffffff</span></div></article>
@@ -71,6 +73,21 @@ function check(name, cond, extra) {
       sel.removeAllRanges();
       sel.addRange(range);
     }, id);
+    await page.waitForTimeout(500);
+  }
+
+  // 要素内の文字位置 start〜end を選択する（ドラッグの端がずれた状態を作る）
+  async function selectPart(id, start, end) {
+    await page.mouse.click(5, 880);
+    await page.evaluate(([id, start, end]) => {
+      const node = document.getElementById(id).firstChild;
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, end < 0 ? node.data.length + end : end);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }, [id, start, end]);
     await page.waitForTimeout(500);
   }
 
@@ -137,6 +154,52 @@ function check(name, cond, extra) {
 
   await selectAll('badUtf8');
   check('対象外: UTF-8 として不正なバイト列では出ない', (await panelTexts()).length === 0);
+
+  // --- ドラッグの端がずれた選択 ---
+  const L = URL_HEX.length;
+  const partials = [
+    ['先頭1字の取りこぼし', 1, L],
+    ['先頭3字の取りこぼし', 3, L],
+    ['末尾1字の取りこぼし', 0, L - 1],
+    ['末尾2字の取りこぼし', 0, L - 2],
+    ['両端の取りこぼし', 5, L - 7],
+    ['真ん中だけ', 30, 40],
+  ];
+  for (const [name, start, end] of partials) {
+    await selectPart('urlHex', start, end);
+    texts = await panelTexts();
+    check('ずれ: ' + name + 'でも全体を読む', texts.length === 1 && texts[0] === URL_TEXT, texts);
+  }
+
+  // 文中: 前の文字から16進数の途中まで / 16進数の途中から後ろの文字まで
+  await selectPart('inText', 0, 3 + 20);
+  texts = await panelTexts();
+  check('ずれ(文中): 前の文字〜途中までで全体を読む', texts.length === 1 && texts[0] === URL_TEXT, texts);
+  await selectPart('inText', 3 + 10, -1);
+  texts = await panelTexts();
+  check('ずれ(文中): 途中〜後ろの文字までで全体を読む', texts.length === 1 && texts[0] === URL_TEXT, texts);
+
+  // 空白区切りの途中から
+  await selectPart('spacedText', 6, 13);
+  texts = await panelTexts();
+  check('ずれ(空白区切り): 81 82 E3 の部分選択でも「あい」', texts[0] === 'あい', texts);
+
+  // 実際のマウス操作: 先頭を数文字分あけてドラッグ
+  {
+    const box = await page.locator('#urlHex').boundingBox();
+    await page.mouse.click(5, 880);
+    await page.mouse.move(box.x + 25, box.y + 9);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 40, box.y + box.height - 4, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(500);
+    const s2 = await page.evaluate(() => window.getSelection().toString());
+    texts = await panelTexts();
+    check('ずれ(マウス): 先頭と末尾を外したドラッグでも全体を読む',
+      s2 !== URL_HEX && texts.length === 1 && texts[0] === URL_TEXT, { s2, texts });
+    check('ずれ(マウス): 選んだ範囲そのものは変えない',
+      (await page.evaluate(() => window.getSelection().toString())) === s2);
+  }
 
   // --- 診断 ---
   check('診断: decode() が使える', await page.evaluate((h) =>
