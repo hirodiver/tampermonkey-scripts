@@ -668,31 +668,45 @@ async function main() {
         const host = document.getElementById('tm-copy-text-host');
         return host.style.visibility === 'hidden' && host.style.pointerEvents === 'none';
     });
-    await test('X のタイムラインでは、ボタンを灰にしてコピーだけにする', async page => {
+    await test('X のタイムラインでは、ボタンを隠し、Alt+Shift+C はコピーだけにする', async page => {
         assert.equal(await buttonMode(page), 'no-save');
+        assert.equal(await isHidden(page), true);
         await clearClipboard(page);
-        await page.evaluate(() => window.__tmCopyText.copy());
+        await pressHotkey(page);
+        await page.waitForFunction(() => /文字をコピーしました/.test(document.getElementById('tm-copy-text-host').shadowRoot.querySelector('div').textContent));
         assert.match(await clipboardText(page), /本文のテストです。/);
         assert.equal(await page.evaluate(() => window.sent.length), 0);
         assert.equal((await pendingKeys(page)).length, 0);
-        assert.match(await toast(page), /文字をコピーしました.*X はポストのページだけ Drive に保存します/);
+        assert.match(await toast(page), /X はポストのページだけ Drive に保存します/);
+        await page.evaluate(() => { window.alert = text => { window.alerted = text; }; window.menus['ボタンの色・保存の判定を確認'](); });
+        assert.match(await page.evaluate(() => window.alerted), /ボタンを隠しています。Drive には保存しません/);
     }, { pageUrl: 'https://x.com/home' });
-    await test('X のプロフィール・検索でも保存しない', async page => {
-        for (const path of ['/someone', '/search?q=test', '/someone/with_replies']) {
+    await test('X のリプライ・リポストや引用の一覧・リスト・検索でも、隠して保存しない', async page => {
+        for (const path of [
+            '/someone', '/someone/with_replies', '/search?q=test', '/i/lists/123',
+            '/someone/status/1234567890/retweets', '/someone/status/1234567890/quotes', '/someone/status/1234567890/likes'
+        ]) {
             await page.evaluate(p => { history.pushState({}, '', p); document.title = p; }, path);
             await waitMode(page, 'no-save');
+            assert.equal(await isHidden(page), true, path);
             await page.evaluate(() => window.__tmCopyText.copy());
             assert.equal(await page.evaluate(() => window.sent.length), 0, path);
         }
     }, { pageUrl: 'https://x.com/home' });
-    await test('X のポストのページでは保存する（タイムラインから移っても）', async page => {
+    await test('X のポストのページではボタンを出して保存する（タイムラインから移っても・写真を開いても）', async page => {
         await page.evaluate(() => { history.pushState({}, '', '/someone/status/1234567890'); document.title = 'ポスト'; });
         await waitMode(page, 'normal');
+        assert.equal(await isHidden(page), false);
         await page.evaluate(() => window.__tmCopyText.copy());
         assert.equal(await page.evaluate(() => window.sent.length), 1);
         assert.equal(await page.evaluate(() => window.sent[0].payload.url), 'https://x.com/someone/status/1234567890');
+        await page.evaluate(() => { history.pushState({}, '', '/someone/status/1234567890/photo/1'); document.title = '写真'; });
+        await page.waitForTimeout(500);
+        assert.equal(await buttonMode(page), 'normal');
+        assert.equal(await isHidden(page), false);
         await page.evaluate(() => { history.pushState({}, '', '/home'); document.title = 'ホーム'; });
         await waitMode(page, 'no-save');
+        assert.equal(await isHidden(page), true);
     }, { pageUrl: 'https://x.com/home' });
     await test('メニューでボタンを隠せる。隠しても Alt+Shift+C は使え、トーストは出る', async page => {
         assert.equal(await isHidden(page), false);

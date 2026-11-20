@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.10.0
+// @name         ページ本文コピー v1.11.0
 // @namespace    local.hiro.tools
-// @version      1.10.0
-// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのページは画像を除いて文章だけDriveに保存し、未成年を示す語があればコピーだけにする（ボタンの色が変わる）。X はポストのページだけ保存する。指定したページではボタンを隠す。
+// @version      1.11.0
+// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのページは画像を除いて文章だけDriveに保存し、未成年を示す語があればコピーだけにする（ボタンの色が変わる）。X はポストのページだけ保存し、ポストが並ぶだけのページではボタンを隠す。指定したページでもボタンを隠す。
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -37,7 +37,8 @@
  *
  * X（旧Twitter）
  *   - Drive に保存するのは、ポストのページ（/status/<ID>）だけ。
- *     タイムライン・プロフィール・検索などではコピーだけする（ボタンは灰）
+ *     タイムライン・リプライ・リポストや引用の一覧・リスト・検索など、ポストが並ぶだけのページでは
+ *     ボタンを隠し、Drive にも保存しない（Alt+Shift+C のコピーは使える）
  *
  * ボタンを隠すページ
  *   - Tampermonkey のメニュー「このページでボタンを隠す」で足す。* で前方一致などにできる
@@ -234,7 +235,11 @@
     const BUTTON_COLOR = '#1f2933';
     const TEXT_ONLY_COLOR = '#a16207';   // 黄: 文章だけ保存（画像は送らない）
     const COPY_ONLY_COLOR = '#c2410c';   // 橙: コピーだけ（Drive に送らない）
-    const NO_SAVE_COLOR = '#6b7280';     // 灰: X のタイムラインなど、保存しないページ
+    const NO_SAVE_COLOR = '#6b7280';     // 灰: X のタイムラインなど、保存しないページ（隠さない設定のとき）
+
+    // X のポストが並ぶだけのページ（タイムライン・リプライ・リポストの一覧・リストなど）で、ボタンを隠す。
+    // false にすると、ボタンを灰にして残す（どちらでも Drive には保存しない）
+    const HIDE_ON_X_LISTS = true;
 
     // ボタンを隠すページの一覧（Tampermonkey の保存領域。メニューで足す・外す）。
     // 値は URL の型の配列。* は任意の文字列（例: https://example.com/admin/*）
@@ -1846,10 +1851,20 @@
     }
 
 
-    // X のポストのページ以外（タイムライン・プロフィール・検索など）では、Drive に保存しない
+    /*
+     * X のポストのページか。/<ユーザー>/status/<ID>（写真・動画を開いた /photo/1 なども含む）だけ。
+     * /status/<ID>/retweets・/quotes・/likes などは、関係のないポストが並ぶ一覧なので含めない
+     */
+    function isXPostPage() {
+
+        return /^\/(?:[^/]+|i\/web)\/status(?:es)?\/\d+(?:\/(?:photo|video)\/\d+)?\/?$/.test(location.pathname);
+    }
+
+
+    // X のポストのページ以外（タイムライン・リプライ・リスト・検索など）では、Drive に保存しない
     function xNoSave() {
 
-        return isXPage() && !currentStatusId();
+        return isXPage() && !isXPostPage();
     }
 
 
@@ -2533,7 +2548,7 @@
             return;
         }
 
-        const hidden = Boolean(matchedHiddenPattern());
+        const hidden = Boolean(matchedHiddenPattern() || xListHidden());
 
         hostEl.style.visibility = hidden ? 'hidden' : 'visible';
         hostEl.style.pointerEvents = hidden ? 'none' : 'auto';
@@ -2542,6 +2557,13 @@
         if (toastEl) {
             toastEl.style.visibility = 'visible';
         }
+    }
+
+
+    // X のポストが並ぶだけのページで、ボタンを隠すか
+    function xListHidden() {
+
+        return HIDE_ON_X_LISTS && xNoSave();
     }
 
 
@@ -3358,8 +3380,10 @@
         if (xNoSave()) {
 
             alert(
-                'X のポストのページではないので、ボタンは灰です。コピーだけして Drive には保存しません。\n' +
-                'ポストを開く（URL が /status/ の付くページ）と保存します。'
+                'X のポストのページではない（ポストが並ぶだけのページ）ので、' +
+                (xListHidden() ? 'ボタンを隠しています。' : 'ボタンは灰です。') +
+                'Drive には保存しません。Alt+Shift+C のコピーは使えます。\n' +
+                'ポストを開く（URL が /<ユーザー>/status/<ID> のページ）と保存します。'
             );
 
             return;
