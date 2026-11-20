@@ -31,7 +31,7 @@ async function main() {
                 // 除外の一覧・判定の控えは sites に入る
                 window.sites = options.sites ? JSON.parse(JSON.stringify(options.sites)) : {};
                 const configKey = 'tm-copy-text-drive-config';
-                const area = key => /^tm-copy-text-(blocked-sites|allowed-sites|site-checks)$/.test(key) ? window.sites : window.store;
+                const area = key => /^tm-copy-text-(blocked-sites|allowed-sites|site-checks|hidden-pages)$/.test(key) ? window.sites : window.store;
                 window.GM_getValue = (key, fallback) => key === configKey
                     ? window.settings
                     : (key in area(key) ? JSON.parse(JSON.stringify(area(key)[key])) : fallback);
@@ -86,7 +86,7 @@ async function main() {
     await test('初期表示・診断で送信しない', async page => {
         await page.evaluate(() => window.__tmCopyText.extract());
         assert.equal(await page.evaluate(() => window.sent.length), 0);
-        assert.equal(await page.evaluate(() => Object.keys(window.menus).length), 7);
+        assert.equal(await page.evaluate(() => Object.keys(window.menus).length), 9);
     });
     await test('ボタンで保存とコピー・限定URLと匿名送信', async page => {
         await page.locator('#tm-copy-text-host button').click();
@@ -663,6 +663,71 @@ async function main() {
         assert.equal(await page.evaluate(() => localStorage.getItem('tm-copy-text-position')), null);
         assert.equal(await hasButton(page), true);
     });
+    // ---- X のタイムライン・ボタンを隠すページ ----
+    const isHidden = page => page.evaluate(() => {
+        const host = document.getElementById('tm-copy-text-host');
+        return host.style.visibility === 'hidden' && host.style.pointerEvents === 'none';
+    });
+    await test('X のタイムラインでは、ボタンを灰にしてコピーだけにする', async page => {
+        assert.equal(await buttonMode(page), 'no-save');
+        await clearClipboard(page);
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.match(await clipboardText(page), /本文のテストです。/);
+        assert.equal(await page.evaluate(() => window.sent.length), 0);
+        assert.equal((await pendingKeys(page)).length, 0);
+        assert.match(await toast(page), /文字をコピーしました.*X はポストのページだけ Drive に保存します/);
+    }, { pageUrl: 'https://x.com/home' });
+    await test('X のプロフィール・検索でも保存しない', async page => {
+        for (const path of ['/someone', '/search?q=test', '/someone/with_replies']) {
+            await page.evaluate(p => { history.pushState({}, '', p); document.title = p; }, path);
+            await waitMode(page, 'no-save');
+            await page.evaluate(() => window.__tmCopyText.copy());
+            assert.equal(await page.evaluate(() => window.sent.length), 0, path);
+        }
+    }, { pageUrl: 'https://x.com/home' });
+    await test('X のポストのページでは保存する（タイムラインから移っても）', async page => {
+        await page.evaluate(() => { history.pushState({}, '', '/someone/status/1234567890'); document.title = 'ポスト'; });
+        await waitMode(page, 'normal');
+        await page.evaluate(() => window.__tmCopyText.copy());
+        assert.equal(await page.evaluate(() => window.sent.length), 1);
+        assert.equal(await page.evaluate(() => window.sent[0].payload.url), 'https://x.com/someone/status/1234567890');
+        await page.evaluate(() => { history.pushState({}, '', '/home'); document.title = 'ホーム'; });
+        await waitMode(page, 'no-save');
+    }, { pageUrl: 'https://x.com/home' });
+    await test('メニューでボタンを隠せる。隠しても Alt+Shift+C は使え、トーストは出る', async page => {
+        assert.equal(await isHidden(page), false);
+        await page.evaluate(() => { window.prompt = (text, value) => { window.promptText = text; window.promptValue = value; return value; }; window.alert = text => { window.alerted = text; }; window.menus['このページでボタンを隠す'](); });
+        assert.equal(await page.evaluate(() => window.promptValue), 'https://example.com/article');
+        assert.deepEqual(await page.evaluate(() => window.sites['tm-copy-text-hidden-pages']), ['https://example.com/article']);
+        assert.equal(await isHidden(page), true);
+        // ボタンの下のページを押せる
+        assert.equal(await page.evaluate(() => {
+            const rect = document.getElementById('tm-copy-text-host').getBoundingClientRect();
+            return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2).id;
+        }) !== 'tm-copy-text-host', true);
+        await pressHotkey(page);
+        await page.waitForFunction(() => window.sent.length === 1);
+        await page.waitForFunction(() => /Driveに保存し、コピーしました/.test(document.getElementById('tm-copy-text-host').shadowRoot.querySelector('div').textContent));
+        assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('tm-copy-text-host').shadowRoot.querySelector('div')).visibility), 'visible');
+        // サイトの再描画で消えても、隠したまま作り直す
+        await page.evaluate(() => document.getElementById('tm-copy-text-host').remove());
+        await page.waitForFunction(() => Boolean(document.getElementById('tm-copy-text-host')));
+        assert.equal(await isHidden(page), true);
+        // 一覧から外すと戻る
+        await page.evaluate(() => { window.prompt = text => { window.promptText = text; return '1'; }; window.menus['ボタンを隠したページを一覧・解除'](); });
+        assert.match(await page.evaluate(() => window.promptText), /1\. https:\/\/example\.com\/article/);
+        assert.deepEqual(await page.evaluate(() => window.sites['tm-copy-text-hidden-pages']), []);
+        assert.equal(await isHidden(page), false);
+    });
+    await test('* を使った型で隠し、SPA で当たらないページに移れば戻る', async page => {
+        assert.equal(await isHidden(page), true);
+        await page.evaluate(() => { history.pushState({}, '', '/other'); document.title = '別のページ'; });
+        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').style.visibility === 'visible');
+        await page.evaluate(() => { history.pushState({}, '', '/art/2?x=1'); document.title = '記事2'; });
+        await page.waitForFunction(() => document.getElementById('tm-copy-text-host').style.visibility === 'hidden');
+        await page.evaluate(() => { window.alert = text => { window.alerted = text; }; window.menus['ボタンの色・保存の判定を確認'](); });
+        assert.match(await page.evaluate(() => window.alerted), /ボタンを隠しています（「https:\/\/example\.com\/art\*」）/);
+    }, { sites: { 'tm-copy-text-hidden-pages': ['https://example.com/art*'] } });
     await browser.close();
 
     // GASのサービス境界をモック化し、認証・作成・再送・例外時ロック解放を確認する。

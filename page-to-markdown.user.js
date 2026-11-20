@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         ページ本文コピー v1.9.0
+// @name         ページ本文コピー v1.10.0
 // @namespace    local.hiro.tools
-// @version      1.9.0
-// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのページは画像を除いて文章だけDriveに保存し、未成年を示す語があればコピーだけにする（ボタンの色が変わる）。
+// @version      1.10.0
+// @description  ページ本文や選択範囲をMarkdownでコピーし、設定済みならGoogle Driveにも保存する。届かなかった保存は控えて送り直す。成人向けのページは画像を除いて文章だけDriveに保存し、未成年を示す語があればコピーだけにする（ボタンの色が変わる）。X はポストのページだけ保存する。指定したページではボタンを隠す。
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -34,6 +34,14 @@
  *   - 控えが残っていると、ボタン右上に件数が出る。次にページを開いたとき・
  *     次に保存が成功したときに自動で送り直す
  *   - 手動で送るときは、Tampermonkey のメニュー「未保存を一覧・再送」
+ *
+ * X（旧Twitter）
+ *   - Drive に保存するのは、ポストのページ（/status/<ID>）だけ。
+ *     タイムライン・プロフィール・検索などではコピーだけする（ボタンは灰）
+ *
+ * ボタンを隠すページ
+ *   - Tampermonkey のメニュー「このページでボタンを隠す」で足す。* で前方一致などにできる
+ *   - 隠したページでも Alt+Shift+C は使える。外すのはメニュー「ボタンを隠したページを一覧・解除」
  *
  * 外したとき
  *   - DevTools コンソールで window.__tmCopyText.dump() を実行すると、
@@ -226,6 +234,11 @@
     const BUTTON_COLOR = '#1f2933';
     const TEXT_ONLY_COLOR = '#a16207';   // 黄: 文章だけ保存（画像は送らない）
     const COPY_ONLY_COLOR = '#c2410c';   // 橙: コピーだけ（Drive に送らない）
+    const NO_SAVE_COLOR = '#6b7280';     // 灰: X のタイムラインなど、保存しないページ
+
+    // ボタンを隠すページの一覧（Tampermonkey の保存領域。メニューで足す・外す）。
+    // 値は URL の型の配列。* は任意の文字列（例: https://example.com/admin/*）
+    const HIDDEN_PAGES_KEY = 'tm-copy-text-hidden-pages';
 
     // 本文コンテナの候補（上から順に試す。狭いものが先）
     const BODY_SELECTORS = [
@@ -1833,6 +1846,13 @@
     }
 
 
+    // X のポストのページ以外（タイムライン・プロフィール・検索など）では、Drive に保存しない
+    function xNoSave() {
+
+        return isXPage() && !currentStatusId();
+    }
+
+
     function compactText(text) {
 
         return (text || '').replace(/\s+/g, '');
@@ -2235,8 +2255,15 @@
                         xHeader = converted.meta;
 
                         const label = postLabel(converted.meta);
+                        // 画像（アイコンなど）だけの行は飛ばし、文字のある最初の行を使う
                         const lead =
-                            converted.text.split('\n')[0].slice(0, 40);
+                            (converted.text
+                                .replace(/!\[[^\]\n]*\]\([^)\s]*\)/g, '')
+                                .replace(/\[画像[^\]\n]*\]/g, '')
+                                .split('\n')
+                                .map(line => line.trim())
+                                .find(Boolean) || '')
+                                .slice(0, 40);
 
                         xTitle =
                             (label ? label + ' ' : '') + lead;
@@ -2392,7 +2419,7 @@
     function pageMode() {
 
         if (!uiBlocked()) {
-            return 'normal';
+            return xNoSave() ? 'no-save' : 'normal';
         }
 
         const text =
@@ -2412,21 +2439,177 @@
 
         const mode = pageMode();
 
-        buttonEl.style.background =
-            mode === 'copy-only'
-                ? COPY_ONLY_COLOR
-                : mode === 'text-only'
-                    ? TEXT_ONLY_COLOR
-                    : BUTTON_COLOR;
+        buttonEl.style.background = {
+            'copy-only': COPY_ONLY_COLOR,
+            'text-only': TEXT_ONLY_COLOR,
+            'no-save': NO_SAVE_COLOR
+        }[mode] || BUTTON_COLOR;
 
-        buttonEl.title =
-            mode === 'copy-only'
-                ? '成人向け・未成年を示す語あり: コピーだけ（Driveには保存しない）（Alt+Shift+C）／ドラッグで移動'
-                : mode === 'text-only'
-                    ? '成人向けと判定したページ: コピーし、Driveには文章だけ保存（画像は送らない）（Alt+Shift+C）／ドラッグで移動'
-                    : '本文をコピー・設定済みならDrive保存（Alt+Shift+C）／ドラッグで移動';
+        buttonEl.title = {
+            'copy-only': '成人向け・未成年を示す語あり: コピーだけ（Driveには保存しない）',
+            'text-only': '成人向けと判定したページ: コピーし、Driveには文章だけ保存（画像は送らない）',
+            'no-save': 'X のポストのページではないので、コピーだけ（Driveには保存しない）'
+        }[mode] || '本文をコピー・設定済みならDrive保存';
+
+        buttonEl.title += '（Alt+Shift+C）／ドラッグで移動';
 
         buttonEl.dataset.mode = mode;
+
+        applyHidden();
+    }
+
+
+    // ============================================================
+    // ボタンを隠すページ
+    // ============================================================
+
+    // 照らし合わせる URL（# より後は見ない）
+    function pageUrlForMatch() {
+
+        return location.origin + location.pathname + location.search;
+    }
+
+
+    function readHiddenPages() {
+
+        if (typeof GM_getValue !== 'function') {
+            return [];
+        }
+
+        const value = GM_getValue(HIDDEN_PAGES_KEY, []);
+
+        return Array.isArray(value)
+            ? value.filter(item => typeof item === 'string' && item.trim())
+            : [];
+    }
+
+
+    function writeHiddenPages(patterns) {
+
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(HIDDEN_PAGES_KEY, patterns);
+        }
+    }
+
+
+    // * だけを特別扱いする型を、正規表現にする
+    function hiddenPatternToRegExp(pattern) {
+
+        const body =
+            pattern
+                .trim()
+                .split('*')
+                .map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+                .join('.*');
+
+        return new RegExp('^' + body + '$', 'i');
+    }
+
+
+    // 今のページに当たる型。無ければ空文字
+    function matchedHiddenPattern() {
+
+        const url = pageUrlForMatch();
+
+        return readHiddenPages().find(pattern => {
+
+            try {
+                return hiddenPatternToRegExp(pattern).test(url);
+            } catch (error) {
+                return false;
+            }
+
+        }) || '';
+    }
+
+
+    /*
+     * 隠すページでは、ボタンと件数を見えなくし、押せなくする。
+     * トーストは出す（Alt+Shift+C の結果を知らせるため）ので、要素そのものは残す
+     */
+    function applyHidden() {
+
+        if (!hostEl) {
+            return;
+        }
+
+        const hidden = Boolean(matchedHiddenPattern());
+
+        hostEl.style.visibility = hidden ? 'hidden' : 'visible';
+        hostEl.style.pointerEvents = hidden ? 'none' : 'auto';
+        hostEl.dataset.hidden = hidden ? 'true' : 'false';
+
+        if (toastEl) {
+            toastEl.style.visibility = 'visible';
+        }
+    }
+
+
+    function hidePageFromMenu() {
+
+        const answer = prompt(
+            'ボタンを隠すページの URL を入力してください。\n' +
+            '* は任意の文字列です（例: 末尾を「/*」にすると、その下のページすべて）。\n' +
+            '隠しても Alt+Shift+C は使えます。',
+            pageUrlForMatch()
+        );
+
+        if (answer === null || !answer.trim()) {
+            return;
+        }
+
+        const pattern = answer.trim();
+        const patterns = readHiddenPages();
+
+        if (!patterns.includes(pattern)) {
+            patterns.push(pattern);
+            writeHiddenPages(patterns);
+        }
+
+        applyHidden();
+
+        alert(
+            '「' + pattern + '」でボタンを隠します。\n' +
+            (matchedHiddenPattern() ? '' : '（このページは当たらないので、ボタンは残ります）\n') +
+            '外すときはメニュー「ボタンを隠したページを一覧・解除」から。'
+        );
+    }
+
+
+    function unhidePageFromMenu() {
+
+        const patterns = readHiddenPages();
+
+        if (!patterns.length) {
+            alert('ボタンを隠したページはありません');
+            return;
+        }
+
+        const answer = prompt(
+            'ボタンを隠したページ ' + patterns.length + '件\n\n' +
+            patterns.map((pattern, index) => (index + 1) + '. ' + pattern).join('\n') +
+            '\n\n外す番号を入力（外さないならキャンセル）',
+            ''
+        );
+
+        if (answer === null || !answer.trim()) {
+            return;
+        }
+
+        const index = Number(answer.trim()) - 1;
+
+        if (!patterns[index]) {
+            alert('番号が一覧にありません');
+            return;
+        }
+
+        const [removed] = patterns.splice(index, 1);
+
+        writeHiddenPages(patterns);
+
+        applyHidden();
+
+        alert('「' + removed + '」を外しました');
     }
     let toastEl = null;
 
@@ -3154,6 +3337,29 @@
                 'タイトル: ' + (document.title || '（なし）') + '\n\n' +
                 describeMode() + '\n' +
                 '別のページに移れば判定し直します。'
+            );
+
+            return;
+        }
+
+        const hiddenBy = matchedHiddenPattern();
+
+        if (hiddenBy) {
+
+            alert(
+                'このページではボタンを隠しています（「' + hiddenBy + '」）。\n' +
+                'Alt+Shift+C は使えます。\n\n' +
+                '外すときはメニュー「ボタンを隠したページを一覧・解除」から。'
+            );
+
+            return;
+        }
+
+        if (xNoSave()) {
+
+            alert(
+                'X のポストのページではないので、ボタンは灰です。コピーだけして Drive には保存しません。\n' +
+                'ポストを開く（URL が /status/ の付くページ）と保存します。'
             );
 
             return;
@@ -4059,7 +4265,8 @@
         const minor =
             Boolean(adultReason) &&
             hasMinorWords((result.title || '') + '\n' + result.text);
-        const config = minor ? null : readDriveConfig();
+        const xSkip = xNoSave();
+        const config = minor || xSkip ? null : readDriveConfig();
 
         if (config) {
 
@@ -4227,6 +4434,8 @@
 
         if (minor) {
             message += '。成人向けで未成年を示す語があるので、Driveには送っていません（' + adultReason + '）';
+        } else if (xSkip && readDriveConfig()) {
+            message += '。X はポストのページだけ Drive に保存します';
         }
 
         if (result.chars > WARN_CHARS) {
@@ -4643,6 +4852,8 @@
         GM_registerMenuCommand('このサイトを除外', blockFromMenu);
         GM_registerMenuCommand('除外したサイトを一覧・解除', unblockFromMenu);
         GM_registerMenuCommand('ボタンの色・保存の判定を確認', explainButton);
+        GM_registerMenuCommand('このページでボタンを隠す', hidePageFromMenu);
+        GM_registerMenuCommand('ボタンを隠したページを一覧・解除', unhidePageFromMenu);
     }
 
     // 成人向けと分かっているサイト・ページでは、ボタンを作らない
