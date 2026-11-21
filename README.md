@@ -737,6 +737,8 @@ NODE_PATH=$(npm root -g) node test/youtube-watch-chat-fit.test.js
 
 ## YouTube 音量ブースト について（ファイル: `youtube-volume-boost.user.js`）
 
+> Twitch 版（`twitch-volume-boost.user.js`）と対になっている。片方を直したら、もう片方にも同じ直しを入れるかを提案する（CLAUDE.md「対になっているスクリプト」）。
+
 YouTube の音量を **100% より上（最大 600%）** まで上げる。Chrome 拡張「Volume Master」と同じく
 Web Audio で音を増幅する。
 
@@ -849,6 +851,8 @@ NODE_PATH=$(npm root -g) node test/youtube-volume-boost.test.js
 YouTube の実DOMとは異なるため、**実機確認の代わりにはならない**。
 
 ## Twitch Volume Boost について（ファイル: `twitch-volume-boost.user.js`）
+
+> YouTube 版（`youtube-volume-boost.user.js`）と対になっている。片方を直したら、もう片方にも同じ直しを入れるかを提案する（CLAUDE.md「対になっているスクリプト」）。
 
 Twitch の音量を **100% より上（最大 600%）** まで上げる。v1.1.0 から、見た目と操作を
 [YouTube 音量ブースト](#youtube-音量ブースト-についてファイル-youtube-volume-boostuserjs) に揃えた。
