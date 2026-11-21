@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.12.2
+// @name         X アカウント切替 v1.13.0
 // @namespace    local.hiro.tools
-// @version      1.12.2
+// @version      1.13.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -86,6 +86,15 @@
  *   （矢印は太い線のまま 18px）。
  *   v1.12.2 から、つまみはスクロールで濃さを変えず、いつも薄いまま（TAB_OPACITY）にする
  *
+ * ■ 投稿画面からも切り替えられる・書きかけの文を戻す（v1.13.0）
+ *   投稿画面（/compose/post）には左上のアイコンも下のタブも無く、X の切替メニューを
+ *   開けないため、押しても何も起きなかった。投稿画面でアイコンを押したときは、
+ *     1. 書きかけの文を sessionStorage に取っておく
+ *     2. ホーム（/home）を開き直し、起動時に続きの切替を行う
+ *     3. 切替後（X が読み込み直した後）に投稿画面を開き、取っておいた文を入れ直す
+ *   画像・返信先・引用は戻せない（文だけ）。入れ直せなかったときは、
+ *   トーストの「文をコピー」でコピーできるようにする
+ *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
  *   「アバターと @ハンドルを持つ、押せる要素」「アカウント追加・ログアウトの
@@ -107,7 +116,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.12.2';
+    const VERSION = '1.13.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -343,6 +352,49 @@
 
     // 切替を押した印を有効とみなす期間（ミリ秒）。これより古い印は捨てる
     const AFTER_SWITCH_MAX_AGE_MS = 60 * 1000;
+
+    /*
+     * 投稿画面（v1.13.0）。ここでは X の切替メニューを開けないので、
+     * ホームを開き直してから切り替え、終わったら投稿画面へ戻る
+     */
+    const COMPOSE_PATH_PATTERNS = [
+        /^\/compose\/(post|tweet)\/?$/
+    ];
+
+    // 切替後に開き直す投稿画面
+    const COMPOSE_PATH = '/compose/post';
+
+    // 投稿画面からの切替で、ホームを開き直した後に続きの切替を行う印（タブ単位）
+    const SESSION_PENDING_SWITCH = 'tm-x-switch-pending';
+
+    // 投稿画面で書きかけだった文（タブ単位）
+    const SESSION_COMPOSE_DRAFT = 'tm-x-switch-draft';
+
+    // 書きかけの文を入れ直す期限（ミリ秒）
+    const COMPOSE_DRAFT_MAX_AGE_MS = 10 * 60 * 1000;
+
+    // 開き直したホームで、X の切替メニューを開くボタン等が描かれるまで待つ上限（ミリ秒）
+    const PENDING_SWITCH_WAIT_MS = 8000;
+
+    // 投稿画面の入力欄が描かれるまで待つ上限（ミリ秒）
+    const COMPOSE_EDITOR_WAIT_MS = 8000;
+
+    /*
+     * 投稿画面の入力欄（上から順に試す）。スレッドで複数あるときは全部読む。
+     * X は Draft.js の contenteditable で、testid は tweetTextarea_0, _1, …
+     */
+    const COMPOSE_EDITOR_SELECTORS = [
+        '[data-testid^="tweetTextarea_"][contenteditable="true"]',
+        '[data-testid^="tweetTextarea_"] [contenteditable="true"]',
+        '[role="textbox"][contenteditable="true"]'
+    ];
+
+    // 投稿画面を開くリンク（投稿ボタン・サイドの「ポストする」）
+    const COMPOSE_LINK_SELECTORS = [
+        'a[data-testid="SideNav_NewTweet_Button"]',
+        'a[data-testid="FloatingActionButtons_Tweet_Button"]',
+        'a[href="/compose/post"]'
+    ];
 
     // ホームで「フォロー中」タブが出るまで待つ上限（ミリ秒）
     const FOLLOWING_TAB_WAIT_MS = 6000;
@@ -2253,7 +2305,7 @@
     // 切替
     // ============================================================
 
-    async function switchTo(account) {
+    async function switchTo(account, options) {
 
         const handle = normalizeHandle(account.screenName);
 
@@ -2289,9 +2341,23 @@
         log('切替開始', '@' + account.screenName);
 
 
+        if (isComposePage()) {
+
+            leaveComposeToSwitch(handle);
+
+            return;
+        }
+
+
         const startPath = location.pathname + location.search;
 
-        const returnTo = postPathOf(location.pathname);
+        /*
+         * 投稿画面から来た切替（ホームを開き直して続けている）なら、投稿画面へ戻る
+         */
+        const returnTo =
+            options && options.fromCompose ?
+                COMPOSE_PATH :
+                postPathOf(location.pathname);
 
         writeJson(sessionStorage, SESSION_AFTER_SWITCH, {
             handle,
@@ -2363,6 +2429,19 @@
             leaveTemporaryPages(startPath);
 
 
+            /*
+             * 投稿画面から来ていたら、切り替えられなくても投稿画面と書きかけの文は戻す
+             */
+            if (options && options.fromCompose) {
+
+                finishSwitch('切り替えられませんでした。投稿画面へ戻ります');
+
+                reopenCompose();
+
+                return;
+            }
+
+
             finishSwitch(
                 '切り替えられませんでした。X の切替メニューを一度開くと、一覧を覚え直します'
             );
@@ -2389,7 +2468,13 @@
                     finishSwitch('切り替えました');
 
 
-                    if (returnTo) {
+                    if (returnTo === COMPOSE_PATH) {
+
+                        sessionStorage.removeItem(SESSION_AFTER_SWITCH);
+
+                        reopenCompose();
+
+                    } else if (returnTo) {
 
                         /*
                          * 個別ポストから切り替えた: ホームへ移っていれば履歴で戻る
@@ -2428,6 +2513,14 @@
                 leaveTemporaryPages(startPath);
 
                 finishSwitch('切替を確認できませんでした');
+
+
+                /*
+                 * 投稿画面から来ていたら、投稿画面と書きかけの文は戻す
+                 */
+                if (returnTo === COMPOSE_PATH) {
+                    reopenCompose();
+                }
             }, RELOAD_TIMEOUT_MS);
     }
 
@@ -2557,6 +2650,335 @@
     }
 
 
+    // ============================================================
+    // 投稿画面からの切替（v1.13.0）
+    // ============================================================
+
+    function isComposePage() {
+
+        return COMPOSE_PATH_PATTERNS.some(pattern => pattern.test(location.pathname));
+    }
+
+
+    // 投稿画面の入力欄（見えているもの）。スレッドなら上から順に複数
+    function composeEditors() {
+
+        for (const selector of COMPOSE_EDITOR_SELECTORS) {
+
+            const found =
+                [...document.querySelectorAll(selector)]
+                    .filter(element =>
+                        !element.closest(`#${ROOT_ID}, #${PANEL_ID}`) &&
+                        isVisible(element)
+                    );
+
+            if (found.length) {
+                return found;
+            }
+        }
+
+
+        return [];
+    }
+
+
+    function editorText(element) {
+
+        return (element.innerText || element.textContent || '')
+            .replace(/\u200b/g, '')
+            .replace(/\s+$/, '');
+    }
+
+
+    /*
+     * 投稿画面では X の切替メニューを開けないので、書きかけの文を取っておき、
+     * ホームを開き直してから続き（resumePendingSwitch）で切り替える
+     */
+    function leaveComposeToSwitch(handle) {
+
+        const text =
+            composeEditors()
+                .map(editorText)
+                .filter(Boolean)
+                .join('\n\n');
+
+
+        if (text) {
+
+            writeJson(sessionStorage, SESSION_COMPOSE_DRAFT, {
+                text,
+                at: Date.now()
+            });
+
+        } else {
+
+            sessionStorage.removeItem(SESSION_COMPOSE_DRAFT);
+        }
+
+
+        writeJson(sessionStorage, SESSION_PENDING_SWITCH, {
+            handle,
+            at: Date.now()
+        });
+
+
+        log(
+            '投稿画面なので、ホームを開き直してから切り替える',
+            '書きかけ: ' + (text ? text.length + '文字' : 'なし')
+        );
+
+
+        location.assign('/home');
+    }
+
+
+    /*
+     * 起動時: 投稿画面からの切替の続き。ホームの描画を待ってから切り替える
+     */
+    async function resumePendingSwitch() {
+
+        const pending = readJson(sessionStorage, SESSION_PENDING_SWITCH, null);
+
+        if (!pending) {
+            return;
+        }
+
+
+        sessionStorage.removeItem(SESSION_PENDING_SWITCH);
+
+
+        if (
+            !pending.handle ||
+            Date.now() - (pending.at || 0) > AFTER_SWITCH_MAX_AGE_MS ||
+            isComposePage()
+        ) {
+            return;
+        }
+
+
+        log('投稿画面からの切替を続ける', '@' + pending.handle);
+
+
+        /*
+         * 開き直した直後は、切替メニューを開くボタンも左上のアイコンもまだ無いことがある
+         */
+        await waitFor(
+            () => {
+                const menuOpener = queryFirst(MENU_OPENER_SELECTORS);
+
+                if (menuOpener && isVisible(menuOpener)) {
+                    return menuOpener;
+                }
+
+
+                const drawerOpener = findDrawerOpener();
+
+                return drawerOpener && isVisible(drawerOpener) ? drawerOpener : null;
+            },
+            PENDING_SWITCH_WAIT_MS
+        );
+
+
+        const account =
+            loadAccounts().find(a => normalizeHandle(a.screenName) === pending.handle) ||
+            { screenName: pending.handle };
+
+
+        /*
+         * 開き直したら、もう切り替わっていた（X 側で済んでいた）ときは投稿画面へ戻るだけ
+         */
+        if (currentHandle() === pending.handle) {
+
+            reopenCompose();
+
+            return;
+        }
+
+
+        switchTo(account, { fromCompose: true });
+    }
+
+
+    /*
+     * 投稿画面を開く。投稿ボタン等のリンクがあれば押し（読み込み直さない）、
+     * 無ければ /compose/post を開き直す。書きかけの文は開いた先で入れ直す
+     */
+    async function reopenCompose() {
+
+        if (isComposePage()) {
+
+            restoreDraftIfCompose();
+
+            return;
+        }
+
+
+        const link =
+            await waitFor(
+                () => COMPOSE_LINK_SELECTORS
+                    .flatMap(selector => [...document.querySelectorAll(selector)])
+                    .find(element =>
+                        isVisible(element) &&
+                        !element.closest(`#${ROOT_ID}, #${PANEL_ID}`)
+                    ),
+                MENU_WAIT_MS
+            );
+
+
+        if (link) {
+
+            log('投稿画面を開く', describe(link));
+
+            link.click();
+
+
+            if (await waitFor(() => isComposePage() || null, MENU_WAIT_MS)) {
+
+                restoreDraftIfCompose();
+
+                return;
+            }
+        }
+
+
+        log('投稿画面を開き直す', location.pathname);
+
+        location.assign(COMPOSE_PATH);
+    }
+
+
+    /*
+     * 投稿画面に居て、取っておいた書きかけの文があれば入れ直す。
+     * 入力欄に既に文があるとき（X が下書きを戻した等）は重ねて入れない
+     */
+    async function restoreDraftIfCompose() {
+
+        const draft = readJson(sessionStorage, SESSION_COMPOSE_DRAFT, null);
+
+        if (!draft || !isComposePage()) {
+            return;
+        }
+
+
+        sessionStorage.removeItem(SESSION_COMPOSE_DRAFT);
+
+
+        if (!draft.text || Date.now() - (draft.at || 0) > COMPOSE_DRAFT_MAX_AGE_MS) {
+            return;
+        }
+
+
+        const editor =
+            await waitFor(
+                () => composeEditors()[0] || null,
+                COMPOSE_EDITOR_WAIT_MS
+            );
+
+
+        if (!editor) {
+
+            log('投稿画面の入力欄が見つからない');
+
+            offerDraftCopy(draft.text);
+
+            return;
+        }
+
+
+        if (editorText(editor)) {
+
+            log('入力欄に文があるので、書きかけの文は入れない');
+
+            return;
+        }
+
+
+        insertIntoEditor(editor, draft.text);
+
+
+        /*
+         * X（Draft.js）が反映するのを少し待って確かめる
+         */
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+
+        if (editorText(editor).replace(/\s+/g, '') === draft.text.replace(/\s+/g, '')) {
+
+            log('書きかけの文を入れ直した', draft.text.length + '文字');
+
+            toast('書きかけの文を戻しました（画像・返信先は戻せません）');
+
+        } else {
+
+            log('書きかけの文を入れ直せない', '入力欄: ' + editorText(editor).length + '文字');
+
+            offerDraftCopy(draft.text);
+        }
+    }
+
+
+    /*
+     * 入力欄に文を入れる。X の入力欄（Draft.js）は値を直接書き換えても反映しないので、
+     * 打ち込んだのと同じ insertText を使う。効かなければ貼り付けとして渡す
+     */
+    function insertIntoEditor(editor, text) {
+
+        editor.focus();
+
+
+        let inserted = false;
+
+        try {
+            inserted = document.execCommand('insertText', false, text);
+        } catch (error) {
+            inserted = false;
+        }
+
+
+        if (inserted && editorText(editor)) {
+            return;
+        }
+
+
+        try {
+
+            const data = new DataTransfer();
+
+            data.setData('text/plain', text);
+
+            editor.dispatchEvent(
+                new ClipboardEvent('paste', {
+                    clipboardData: data,
+                    bubbles: true,
+                    cancelable: true
+                })
+            );
+
+        } catch (error) {
+
+            log('貼り付けとしても渡せない', error.message);
+        }
+    }
+
+
+    // 入れ直せなかったときは、押せばコピーできるトーストを出す（押した操作の中でコピーする）
+    function offerDraftCopy(text) {
+
+        toast(
+            '書きかけの文を戻せませんでした',
+            {
+                label: '文をコピー',
+                onClick: () => {
+
+                    navigator.clipboard?.writeText(text)
+                        .then(() => toast('コピーしました。入力欄に貼り付けてください'))
+                        .catch(() => toast('コピーできませんでした'));
+                }
+            }
+        );
+    }
+
+
     /*
      * 起動時: 切替を押した直後（X が読み込み直した）なら、
      * 元のポストへ戻る。ポスト以外から切り替えていれば、ホームの「フォロー中」を開く
@@ -2573,6 +2995,18 @@
         if (Date.now() - (pending.at || 0) > AFTER_SWITCH_MAX_AGE_MS) {
 
             sessionStorage.removeItem(SESSION_AFTER_SWITCH);
+
+            return;
+        }
+
+
+        if (pending.returnTo === COMPOSE_PATH) {
+
+            sessionStorage.removeItem(SESSION_AFTER_SWITCH);
+
+            log('切替後、投稿画面へ戻る', location.pathname);
+
+            reopenCompose();
 
             return;
         }
@@ -4992,6 +5426,10 @@
         harvest();
 
         render(true);
+
+        resumePendingSwitch();
+
+        restoreDraftIfCompose();
 
         startObserver();
 
