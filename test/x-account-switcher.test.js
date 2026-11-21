@@ -261,8 +261,8 @@ const toastText = (page) =>
     await page.waitForTimeout(500);
     check('現在のアカウントを押しても切替は始まらない', !(await dockButtons(page)).some((b) => b.disabled) &&
       await page.evaluate(() => !events.some((e) => e.startsWith('switch:') || e === 'open-menu')), await page.evaluate(() => events.slice()));
-    check('現在のアカウントを押すと「更新」「大きく」「小さく」が出る（v1.10.0）',
-      JSON.stringify(await toolLabels(page)) === JSON.stringify(['更新', '大きく', '小さく', 'しまう']), await toolLabels(page));
+    check('現在のアカウントを押すと「更新」「大きく」「小さく」「自由」が出る（v1.10.0・v1.12.0）',
+      JSON.stringify(await toolLabels(page)) === JSON.stringify(['更新', '大きく', '小さく', '自由', 'しまう']), await toolLabels(page));
     await clickDock(page, 'alice');
     await page.waitForTimeout(100);
     check('現在のアカウントをもう一度押すと引っ込む', JSON.stringify(await toolLabels(page)) === '["しまう"]', await toolLabels(page));
@@ -447,13 +447,27 @@ const toastText = (page) =>
     check('操作: 位置を覚える', await page.evaluate(() => localStorage.getItem('tm-x-switch-position') === '"right-top"'));
     check('操作: アイコンの上から引っぱっても切り替えない', await page.evaluate(() =>
       !events.some((e) => e.startsWith('switch:') || e === 'open-menu')), await page.evaluate(() => events.slice()));
-    check('操作: 引っぱった後は位置のずれを残さない', await page.evaluate(() =>
-      !document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').style.transform));
+    check('操作: 引っぱった後は位置のずれを残さない', await page.evaluate(() => {
+      const d = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock');
+      return !d.style.transform && !d.style.translate;
+    }));
     check('操作: 引っぱっても一覧は変わらない', beforeDrag === await page.evaluate(() => JSON.stringify(window.__tmXSwitch.accounts())));
 
-    // 画面の真ん中あたりで離しても、一番近い隅に寄せる（中心より左・下 → 左下）
+    // 画面を縦に3つに分けた真ん中の段で離すと「中」に置く（v1.12.0）
+    const dockRect = () => page.evaluate(() => {
+      const r = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.dock').getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, cy: r.top + r.height / 2 };
+    });
     await drag('.dock .tuck', { x: 560, y: 520 });
-    check('操作: 真ん中寄りで離しても一番近い隅（左下）に寄せる', /left-bottom/.test(await dockClass()), await dockClass());
+    check('操作: 真ん中の段で離すと左中に置く（v1.12.0）', /left-middle/.test(await dockClass()), await dockClass());
+    {
+      const r = await dockRect();
+      check('操作: 左中は左端に付き、縦の真ん中に来る', Math.round(r.left) === 10 && Math.abs(r.cy - 400) <= 1, r);
+    }
+    await drag('.dock .tuck', { x: 1200, y: 380 });
+    check('操作: 中に置いたドックを引っぱっても動かせる（右中へ）', /right-middle/.test(await dockClass()), await dockClass());
+    await drag('.dock .tuck', { x: 560, y: 700 });
+    check('操作: 下の段で離すと一番近い隅（左下）に寄せる', /left-bottom/.test(await dockClass()), await dockClass());
     await drag('.dock .tuck', { x: 1250, y: 30 });
     check('操作: 引っぱった後に「しまう」は押されない', !/tucked/.test(await dockClass()), await dockClass());
 
@@ -468,7 +482,11 @@ const toastText = (page) =>
         tabShown: getComputedStyle(tab).display !== 'none',
         tabRight: Math.round(window.innerWidth - r.right),
         tabTop: Math.round(r.top),
-        tabText: tab.textContent
+        tabText: tab.dataset.arrow === 'left' ? '‹' : tab.dataset.arrow === 'right' ? '›' : '',
+        tabWidth: Math.round(r.width),
+        tabHeight: Math.round(r.height),
+        arrowWidth: Math.round(tab.querySelector('svg')?.getBoundingClientRect().width || 0),
+        arrowPoints: tab.querySelector('polyline')?.getAttribute('points') || ''
       };
     });
 
@@ -499,6 +517,9 @@ const toastText = (page) =>
     tuck = await tuckState();
     check('しまう: ドックが消え、つまみだけ残る', !tuck.dockShown && tuck.tabShown, tuck);
     check('しまう: つまみは画面の端（右上に置いていれば右端・上寄り）に付く', tuck.tabRight === 0 && tuck.tabTop < 200 && tuck.tabText === '‹', tuck);
+    check('しまう: つまみは 34×88px、矢印は 22px の太い線（v1.12.0）',
+      tuck.tabWidth === 34 && tuck.tabHeight === 88 && tuck.arrowWidth === 22, tuck);
+    check('しまう: 右に置いたつまみの矢印は左向き', tuck.arrowPoints === '15,4 7,12 15,20', tuck);
     check('しまう: 戻し方をトーストで知らせる', (await toastText(page)).includes('つまみ'), await toastText(page));
     check('しまう: 端末に覚える（再読み込み・別タブでも続く）', await page.evaluate(() => localStorage.getItem('tm-x-switch-tucked') === 'true'));
 
@@ -536,9 +557,93 @@ const toastText = (page) =>
     await tuckClick();
     tuck = await tuckState();
     check('しまう: 左下に置いていれば左端・下寄りに付く', !tuck.dockShown && tuck.tabText === '›' && tuck.tabTop > 400, tuck);
+    check('しまう: 左に置いたつまみの矢印は右向き', tuck.arrowPoints === '9,4 17,12 9,20', tuck);
     check('しまう: 左端にぴったり付く', await page.evaluate(() =>
       Math.round(document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tab').getBoundingClientRect().left) === 0));
     await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tab').click());
+
+    // 中に置いてしまうと、つまみも縦の真ん中に付く
+    await drag('.dock .tuck', { x: 30, y: 400 });
+    await tuckClick();
+    tuck = await tuckState();
+    check('しまう: 左中に置いていれば、つまみも縦の真ん中', tuck.tabShown && Math.abs(tuck.tabTop + tuck.tabHeight / 2 - 400) <= 1, tuck);
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tab').click());
+
+    // ---- 置き方「自由」（v1.12.0）
+    {
+      const clickCurrent = () => page.evaluate(() =>
+        document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av.current').click());
+      const placeButton = () => page.evaluate(() => {
+        const b = document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .place');
+        return { text: b.textContent, hidden: b.hidden };
+      });
+      check('自由: ふだんは置き方のボタンを出さない', (await placeButton()).hidden, await placeButton());
+      await clickCurrent();
+      await page.waitForTimeout(100);
+      check('自由: 現在のアカウントを押すと「自由」が出る（6か所のとき）', (await placeButton()).text === '自由' && !(await placeButton()).hidden, await placeButton());
+      const before = await dockRect();
+      await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .place').click());
+      await page.waitForTimeout(100);
+      check('自由: 押すと置き方を覚える', await page.evaluate(() => localStorage.getItem('tm-x-switch-place-mode') === '"free"'));
+      check('自由: ボタンは「6か所」に変わる（押すと戻せる）', (await placeButton()).text === '6か所', await placeButton());
+      check('自由: 知らせる', /自由に置きます/.test(await toastText(page)), await toastText(page));
+      check('自由: 切り替えただけではドックは動かない', /left-free/.test(await dockClass()) && Math.abs((await dockRect()).cy - before.cy) <= 2,
+        { before, after: await dockRect(), cls: await dockClass() });
+      await clickCurrent();
+      await page.waitForTimeout(100);
+
+      await drag('.dock', { x: 1200, y: 250 });
+      let r = await dockRect();
+      check('自由: 右側の、離した高さにそのまま置く', /right-free/.test(await dockClass()) && Math.round(1280 - r.right) === 10 && Math.abs(r.cy - 250) <= 3, { r, cls: await dockClass() });
+      check('自由: 高さを画面に対する割合で覚える', await page.evaluate(() => {
+        const v = JSON.parse(localStorage.getItem('tm-x-switch-free-spot'));
+        return v.side === 'right' && Math.abs(v.y - 250 / 800) < 0.01;
+      }), await page.evaluate(() => localStorage.getItem('tm-x-switch-free-spot')));
+
+      await drag('.dock', { x: 40, y: 560 });
+      r = await dockRect();
+      check('自由: 左側の別の高さへも動かせる', /left-free/.test(await dockClass()) && Math.round(r.left) === 10 && Math.abs(r.cy - 560) <= 3, r);
+
+      await drag('.dock', { x: 40, y: 799 });
+      r = await dockRect();
+      check('自由: 画面の下端で離しても、はみ出さない', r.bottom <= 800 - 10 + 0.5 && r.top >= 0, r);
+      await drag('.dock', { x: 40, y: 1 });
+      r = await dockRect();
+      check('自由: 画面の上端で離しても、はみ出さない', Math.round(r.top) === 10, r);
+
+      await drag('.dock', { x: 1200, y: 300 });
+      await page.setViewportSize({ width: 1280, height: 600 });
+      await page.waitForTimeout(400);
+      r = await dockRect();
+      check('自由: 画面の高さが変わっても、同じ割合の高さに置き直す', Math.abs(r.cy - 600 * 300 / 800) <= 3, r);
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.waitForTimeout(400);
+
+      await tuckClick();
+      tuck = await tuckState();
+      check('自由: しまうと、つまみはドックがあった高さに付く', tuck.tabShown && tuck.tabRight === 0 && Math.abs(tuck.tabTop + tuck.tabHeight / 2 - 300) <= 3, tuck);
+      await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tab').click());
+      r = await dockRect();
+      check('自由: 戻したドックも同じ高さ', Math.abs(r.cy - 300) <= 3, r);
+
+      // 大きさを変えても中心の高さは保つ
+      await clickCurrent();
+      await page.waitForTimeout(100);
+      await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .smaller').click());
+      await page.waitForTimeout(100);
+      r = await dockRect();
+      check('自由: 大きさや出すボタンが変わっても、中心の高さを保つ', Math.abs(r.cy - 300) <= 3, r);
+
+      // 6か所へ戻すと、いまの場所から一番近い所（右中）に置く
+      await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .place').click());
+      await page.waitForTimeout(100);
+      check('自由: 「6か所」を押すと、いまの場所から一番近い所（右中）に置く', /right-middle/.test(await dockClass()) &&
+        await page.evaluate(() => localStorage.getItem('tm-x-switch-place-mode') === '"snap"'), await dockClass());
+      check('自由: 6か所に戻すと知らせる', /6か所/.test(await toastText(page)), await toastText(page));
+      await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.tools .bigger').click());
+      await clickCurrent();
+      await page.waitForTimeout(100);
+    }
 
     await page.evaluate(SCRIPT);
     await page.waitForTimeout(400);
@@ -1222,6 +1327,35 @@ const toastText = (page) =>
       await page.close();
     }
 
+    // --- 自由（v1.12.0）: 下の端で離しても、投稿ボタン・下のタブには重ねない
+    {
+      const page = await bootBottom(lift(390, 664), { position: 'right-bottom' });
+      await page.evaluate(() => {
+        localStorage.setItem('tm-x-switch-place-mode', '"free"');
+        localStorage.setItem('tm-x-switch-free-spot', JSON.stringify({ side: 'right', y: 1 }));
+        document.body.append(document.createElement('i'));
+      });
+      await page.waitForTimeout(400);
+      let r = await rects(page);
+      check('自由（iPhone）: 一番下に置いても、投稿ボタン・下のタブと重ならない', !overlaps(r.dock, r.fab) && !overlaps(r.dock, r.bar), r);
+      await page.evaluate(() => {
+        localStorage.setItem('tm-x-switch-free-spot', JSON.stringify({ side: 'right', y: 0.4 }));
+        document.body.append(document.createElement('i'));
+      });
+      await page.waitForTimeout(400);
+      r = await rects(page);
+      check('自由（iPhone）: 覚えた高さ（画面の 40%）に中心を置く', Math.abs((r.dock.top + r.dock.bottom) / 2 - 664 * 0.4) <= 3, r);
+      await page.evaluate(() => {
+        localStorage.setItem('tm-x-switch-tucked', 'true');
+        localStorage.setItem('tm-x-switch-free-spot', JSON.stringify({ side: 'right', y: 1 }));
+        document.body.append(document.createElement('i'));
+      });
+      await page.waitForTimeout(400);
+      r = await rects(page);
+      check('自由（iPhone）: しまったときのつまみも投稿ボタンと重ならない', r.tab && r.tab.width > 0 && !overlaps(r.tab, r.fab), r);
+      await page.close();
+    }
+
     // --- 投稿ボタンが後から出ても、その上へずらす
     {
       const page = await bootBottom(lift(390, 664), { position: 'right-bottom', fab: false });
@@ -1303,7 +1437,7 @@ const toastText = (page) =>
       await tapDock(page, '.av.current');
       s = await sizes(page);
       check('操作: 現在のアカウントを押すと「しまう」の上に「更新」「大きく」「小さく」が出る',
-        JSON.stringify(s.labels) === JSON.stringify(['更新', '大きく', '小さく', 'しまう']), s.labels);
+        JSON.stringify(s.labels) === JSON.stringify(['更新', '大きく', '小さく', '自由', 'しまう']), s.labels);
       check('操作: 押した現在のアカウントに「開いている」印（aria-expanded）が付く', await page.evaluate(() =>
         document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av.current').getAttribute('aria-expanded') === 'true'));
 
@@ -1313,7 +1447,7 @@ const toastText = (page) =>
       s = await sizes(page);
       check('大きさ: 「小さく」を2回押すとアイコン 36px・幅 48px になる', s.avWidth === 36 && Math.round(s.dockWidth) === 48, s);
       check('大きさ: 36px なら左に置いても右端が X の本文（左端から 65px 前後）の手前', s.dockRight <= 58.5, s);
-      check('大きさ: 大きさを変えている間は「大きく」「小さく」を出したまま', JSON.stringify(s.labels) === JSON.stringify(['更新', '大きく', '小さく', 'しまう']), s.labels);
+      check('大きさ: 大きさを変えている間は「大きく」「小さく」を出したまま', JSON.stringify(s.labels) === JSON.stringify(['更新', '大きく', '小さく', '自由', 'しまう']), s.labels);
       check('大きさ: 変えても下端の位置は動かない', s.dockBottom === bottomBefore, { before: bottomBefore, after: s.dockBottom });
       check('大きさ: 端末に覚える', await page.evaluate(() => localStorage.getItem('tm-x-switch-size') === '36'));
 
