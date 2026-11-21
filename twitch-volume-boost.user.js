@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Twitch Volume Boost v1.0.0
+// @name         Twitch Volume Boost v1.0.1
 // @namespace    local.hiro.tools
-// @version      1.0.0
+// @version      1.0.1
 // @description  Twitchの音量を100%超（最大500%）に増幅する。プレイヤー上のホバーで出るスライダー、Alt+↑/↓/0、Tampermonkeyメニューで操作する
 // @match        https://www.twitch.tv/*
 // @run-at       document-idle
@@ -433,11 +433,28 @@
         });
     }
 
+    // 診断。コンソールの表示をコピーしても中身が落ちないよう、文字（JSON）で出す
     function dump() {
-        const rows = [...document.querySelectorAll('video')].map((v) => {
+        const describe = (el) => {
+            if (!el) {
+                return null;
+            }
+
+            const cls = [...el.classList].filter((c) => !c.startsWith('tvb-')).join('.');
+            const target = el.getAttribute('data-a-target');
+            return el.tagName.toLowerCase() +
+                (cls ? `.${cls}` : '') +
+                (target ? `[data-a-target="${target}"]` : '');
+        };
+
+        const videos = [...document.querySelectorAll('video')].map((v) => {
             const entry = hooked.get(v);
             const ui = uiMap.get(v);
-            const c = findContainer(v);
+            const ancestors = [];
+            for (let el = v.parentElement, i = 0; el && el !== document.body && i < 6; el = el.parentElement, i++) {
+                ancestors.push(describe(el));
+            }
+
             return {
                 size: `${v.clientWidth}x${v.clientHeight}`,
                 src: (v.currentSrc || '').slice(0, 40),
@@ -445,13 +462,26 @@
                 volume: v.volume,
                 muted: v.muted,
                 hooked: entry ? (entry.gain ? 'yes' : `no (${entry.reason})`) : 'not yet',
-                container: c ? `${c.tagName.toLowerCase()}.${[...c.classList].join('.')}` : null,
-                matchedSelector: CONTAINER_SELECTORS.find((s) => v.closest(s)) || '(大きさで推定)',
-                ui: ui ? (ui.root.isConnected ? 'shown' : 'detached') : 'none',
+                gain: entry && entry.gain ? Number((entry.gain.gain.value * LIMITER_MAKEUP).toFixed(2)) : null,
+                matchedSelector: CONTAINER_SELECTORS.find((sel) => v.closest(sel)) || '(大きさで推定)',
+                container: describe(findContainer(v)),
+                ui: ui ? (ui.root.isConnected ? `shown in ${describe(ui.root.parentElement)}` : 'detached') : 'none',
+                ancestors,
             };
         });
-        console.log(LOG, { boost, context: ctx ? ctx.state : 'none', fullscreen: !!document.fullscreenElement });
-        console.table(rows);
+
+        const report = {
+            script: `Twitch Volume Boost ${GM_info && GM_info.script ? GM_info.script.version : ''}`.trim(),
+            url: location.pathname,
+            boost,
+            context: ctx ? ctx.state : 'none',
+            userActivated: !!(navigator.userActivation && navigator.userActivation.hasBeenActive),
+            fullscreen: describe(document.fullscreenElement || null),
+            videos,
+        };
+
+        console.log(`${LOG} 診断\n${JSON.stringify(report, null, 2)}`);
+        return report;
     }
 
     // ユーザー操作で AudioContext を起こす（自動再生ポリシー対策）
