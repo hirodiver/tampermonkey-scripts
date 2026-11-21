@@ -1239,13 +1239,15 @@ const toastText = (page) =>
         });
       });
       check('薄くする: 最初は濃い', (await dockOpacity()).dock === 1, await dockOpacity());
+      check('薄くする: しまったときのつまみは、ドックが濃いときも薄いまま（0.5。v1.12.2）', (await dockOpacity()).tab === 0.5, await dockOpacity());
       await page.evaluate(() => window.scrollBy(0, 300));
       await page.waitForTimeout(200);
       check('薄くする: タイムラインを下へ送ると、投稿ボタンと同じ濃さ（0.5）になる', (await dockOpacity()).dock === 0.5, await dockOpacity());
-      check('薄くする: しまったときのつまみも同じ濃さ', (await dockOpacity()).tab === 0.5, await dockOpacity());
+      check('薄くする: しまったときのつまみは薄いまま変わらない（0.5）', (await dockOpacity()).tab === 0.5, await dockOpacity());
       await page.evaluate(() => window.scrollBy(0, -100));
       await page.waitForTimeout(200);
       check('薄くする: 上へ戻すと濃く戻る', (await dockOpacity()).dock === 1, await dockOpacity());
+      check('薄くする: 上へ戻してもつまみは薄いまま（0.5）', (await dockOpacity()).tab === 0.5, await dockOpacity());
       // 投稿ボタンが極端に薄くなっても、読める濃さは残す
       await page.evaluate(() => { window.fabDim = 0.05; window.scrollBy(0, 50); });
       await page.waitForTimeout(200);
