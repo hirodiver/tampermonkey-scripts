@@ -1576,6 +1576,142 @@ const toastText = (page) =>
     }
   }
 
+  // ==========================================================
+  // 投稿画面からの切替（v1.13.0）
+  // ==========================================================
+  //
+  // 投稿画面には左上のアイコンも下のタブも無く、X の切替メニューを開けない。
+  // 書きかけの文を取っておき、ホームを開き直して切り替え、投稿画面へ戻って文を入れ直す
+  {
+    const page = await newPage(browser, { width: 390, height: 844 });
+    const ACCOUNTS = JSON.stringify([
+      { screenName: 'alice', name: 'Alice', avatar: '' },
+      { screenName: 'bob', name: 'Bob', avatar: '' }
+    ]);
+
+    // 投稿画面。入力欄は Draft.js を模した contenteditable
+    const setupCompose = (text) => {
+      const editor = h('div', {
+        'data-testid': 'tweetTextarea_0', role: 'textbox', contenteditable: 'true',
+        style: 'min-height:40px;width:300px;white-space:pre-wrap'
+      });
+      if (text) editor.append(text);
+      document.getElementById('react-root').append(
+        h('div', { role: 'dialog', 'aria-modal': 'true' },
+          h('div', { 'aria-label': '閉じる', role: 'button' }, '×'), editor));
+    };
+
+    // ホーム（デスクトップ同様の切替ボタンと、投稿画面を開くリンク）
+    const setupHome = (current) => {
+      window.applyCurrent = (handle) => {
+        document.getElementById('profileLink').setAttribute('href', '/' + handle);
+        document.getElementById('switcher').replaceChildren(avatar(handle), h('span', {}, '@' + handle));
+      };
+      window.openAccountMenu = () => {
+        events.push('open-menu');
+        closeAll();
+        const cur = document.getElementById('profileLink').getAttribute('href').slice(1);
+        layers.append(h('div', { role: 'menu' },
+          ...['alice', 'bob'].map((hd) => hd === cur ?
+            h('div', {}, avatar(hd), h('span', {}, '@' + hd)) :
+            userCell(hd, hd, () => switchedTo(hd))),
+          h('a', { href: '/i/flow/login', role: 'menuitem' }, '既存のアカウントを追加')));
+      };
+      const root = document.getElementById('react-root');
+      // 切替ボタンは読み込み直した直後には無く、少し遅れて描かれる
+      setTimeout(() => root.append(
+        h('a', { 'data-testid': 'AppTabBar_Profile_Link', href: '/' + current, id: 'profileLink' }, 'プロフィール'),
+        h('div', {
+          role: 'button', 'data-testid': 'SideNav_AccountSwitcher_Button', id: 'switcher',
+          style: 'position:fixed;left:10px;bottom:10px;width:220px;height:50px',
+          onclick: () => window.openAccountMenu()
+        }, avatar(current), h('span', {}, '@' + current)),
+        h('a', { 'data-testid': 'SideNav_NewTweet_Button', href: '/compose/post', onclick: (e) => {
+          e.preventDefault();
+          events.push('open-compose');
+          history.pushState(null, '', '/compose/post');
+          window.setupCompose('');
+        } }, 'ポストする')), 500);
+    };
+
+    const boot = async (url, setup, arg, session) => {
+      await page.goto(url);
+      await page.evaluate(fixtures);
+      await page.evaluate(({ accounts, session }) => {
+        localStorage.setItem('tm-x-switch-accounts', accounts);
+        for (const [k, v] of Object.entries(session || {})) sessionStorage.setItem(k, JSON.stringify(v));
+      }, { accounts: ACCOUNTS, session });
+      await page.evaluate(`window.setupCompose = ${setupCompose.toString()}`);
+      await page.evaluate(`(${setup.toString()})(${JSON.stringify(arg)})`);
+      await page.evaluate(SCRIPT).catch(() => {});
+    };
+
+    const DRAFT = '書きかけの投稿です\n2行目';
+
+    // 1. 投稿画面で bob を押す → 文を取っておき、ホームを開き直す
+    await boot('https://x.com/compose/post', setupCompose, DRAFT, { 'tm-x-switch-current': 'alice' });
+    await page.waitForTimeout(400);
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av[data-handle="bob"]').click());
+    await page.waitForURL('https://x.com/home', { timeout: 3000 }).catch(() => {});
+    check('投稿画面: アイコンを押すとホームを開き直す', page.url() === 'https://x.com/home', page.url());
+    const session = await page.evaluate(() => ({
+      pending: JSON.parse(sessionStorage.getItem('tm-x-switch-pending') || 'null'),
+      draft: JSON.parse(sessionStorage.getItem('tm-x-switch-draft') || 'null')
+    }));
+    check('投稿画面: 切替先を印に残す', session.pending?.handle === 'bob', session);
+    check('投稿画面: 書きかけの文を取っておく（改行も）', session.draft?.text === DRAFT, session);
+
+    // 2. 開き直したホームで、切替ボタンが描かれるのを待って切り替え、投稿画面を開いて文を戻す
+    await page.evaluate(fixtures);
+    await page.evaluate(`window.setupCompose = ${setupCompose.toString()}`);
+    await page.evaluate(`(${setupHome.toString()})("alice")`);
+    await page.evaluate(SCRIPT).catch(() => {});
+    await page.waitForTimeout(2500);
+    const ev = await page.evaluate(() => events.slice());
+    check('投稿画面: ホームで続きの切替を行う（メニューを開いて bob を押す）', ev.includes('open-menu') && ev.includes('switch:bob'), ev);
+    check('投稿画面: 切替後、投稿画面を開く', ev.includes('open-compose') && page.url() === 'https://x.com/compose/post', { ev, url: page.url() });
+    check('投稿画面: 書きかけの文を入力欄に戻す', await page.evaluate(() =>
+      document.querySelector('[data-testid="tweetTextarea_0"]')?.innerText.trim()) === DRAFT,
+      await page.evaluate(() => document.querySelector('[data-testid="tweetTextarea_0"]')?.innerText));
+    check('投稿画面: 戻したことを知らせる', /書きかけの文を戻しました/.test(await toastText(page)), await toastText(page));
+    check('投稿画面: 印と取っておいた文を消す', await page.evaluate(() =>
+      ['tm-x-switch-pending', 'tm-x-switch-draft', 'tm-x-switch-after'].every((k) => sessionStorage.getItem(k) === null)));
+
+    // 3. X が切替後に読み込み直した（投稿画面へのリンクが無い）→ /compose/post を開き直して文を戻す
+    await boot('https://x.com/home', () => {}, null, {
+      'tm-x-switch-after': { handle: 'bob', returnTo: '/compose/post', at: Date.now() },
+      'tm-x-switch-draft': { text: DRAFT, at: Date.now() }
+    });
+    await page.waitForURL('https://x.com/compose/post', { timeout: 3000 }).catch(() => {});
+    check('投稿画面（読み込み直し）: 切替後に投稿画面を開き直す', page.url() === 'https://x.com/compose/post', page.url());
+    await page.evaluate(fixtures);
+    await page.evaluate(`window.setupCompose = ${setupCompose.toString()}`);
+    // 入力欄は少し遅れて描かれる
+    await page.evaluate(() => setTimeout(() => window.setupCompose(''), 300));
+    await page.evaluate(SCRIPT).catch(() => {});
+    await page.waitForTimeout(1200);
+    check('投稿画面（読み込み直し）: 開き直した投稿画面に文を戻す', await page.evaluate(() =>
+      document.querySelector('[data-testid="tweetTextarea_0"]')?.innerText.trim()) === DRAFT);
+
+    // 4. 入力欄に既に文がある（X が下書きを戻した等）なら重ねない
+    await boot('https://x.com/compose/post', setupCompose, 'Xが戻した文', {
+      'tm-x-switch-draft': { text: DRAFT, at: Date.now() }
+    });
+    await page.waitForTimeout(800);
+    check('投稿画面: 入力欄に文があれば重ねて入れない', await page.evaluate(() =>
+      document.querySelector('[data-testid="tweetTextarea_0"]').innerText.trim()) === 'Xが戻した文');
+
+    // 5. 書きかけが無ければ、文は取っておかない
+    await boot('https://x.com/compose/post', setupCompose, '', { 'tm-x-switch-current': 'alice' });
+    await page.waitForTimeout(400);
+    await page.evaluate(() => document.getElementById('tm-x-switch-root').shadowRoot.querySelector('.av[data-handle="bob"]').click());
+    await page.waitForURL('https://x.com/home', { timeout: 3000 }).catch(() => {});
+    check('投稿画面: 空のまま押しても、ホームを開き直して切替に進む', page.url() === 'https://x.com/home' &&
+      await page.evaluate(() => sessionStorage.getItem('tm-x-switch-draft') === null && !!sessionStorage.getItem('tm-x-switch-pending')));
+
+    await page.close();
+  }
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
