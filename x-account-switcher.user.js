@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.12.1
+// @name         X アカウント切替 v1.12.2
 // @namespace    local.hiro.tools
-// @version      1.12.1
+// @version      1.12.2
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -83,7 +83,8 @@
  *   しまったときのつまみは 24×56px で、矢印（文字の ‹ ›）も細くて見えにくかったため、
  *   34×88px にし、矢印は太い線の図形（SVG）で描くようにした。
  *   v1.12.1 で、iPhone で並べた他のつまみより大きく邪魔だったため 26×68px に縮めた
- *   （矢印は太い線のまま 18px）
+ *   （矢印は太い線のまま 18px）。
+ *   v1.12.2 から、つまみはスクロールで濃さを変えず、いつも薄いまま（TAB_OPACITY）にする
  *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
@@ -106,7 +107,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.12.1';
+    const VERSION = '1.12.2';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -182,6 +183,12 @@
     const TAB_ARROW_PX = 18;
 
     const TAB_ARROW_STROKE = 3.25;
+
+    /*
+     * つまみの濃さ（v1.12.2）。スクロールに合わせて変えず、いつもこの薄さにする。
+     * ドックが薄くなったときの濃さ（X の投稿ボタンに合わせた 0.5 前後）と同じくらい
+     */
+    const TAB_OPACITY = 0.5;
 
     /*
      * 下の隅に置くときの高さ（モバイル幅だけ。v1.6.0）。
@@ -3213,7 +3220,8 @@
 .tool:active { background: rgba(244, 244, 245, 0.14); color: #f4f4f5; }
 .dock { touch-action: none; cursor: grab; -webkit-user-select: none; user-select: none; }
 .dock img { -webkit-user-drag: none; }
-.dock, .tab { opacity: var(--tm-fade, 1); }
+.dock { opacity: var(--tm-fade, 1); }
+.tab { opacity: ${TAB_OPACITY}; }
 .dock.dragging { cursor: grabbing; opacity: 0.85; }
 .dock.dragging .av:active { transform: none; }
 .toast {
