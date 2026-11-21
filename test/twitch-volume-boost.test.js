@@ -90,6 +90,7 @@ const PAGE_HELPERS = `
   window.GM_setValue = (k, v) => { store[k] = v; };
   window.GM_addValueChangeListener = () => {};
   window.GM_registerMenuCommand = (name, fn) => { window.__menu[name] = fn; };
+  window.GM_info = { script: { version: 'test' } };
   window.GM_addStyle = (css) => { const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); };
   window.__store = store;
 `;
@@ -292,16 +293,19 @@ const state = (page) =>
   // 診断
   const diag = await page.evaluate(() => {
     const out = [];
-    const orig = console.table;
-    console.table = (rows) => out.push(rows);
+    const orig = console.log;
+    console.log = (...a) => out.push(a.join(' '));
     window.__tmTwitchVolumeBoost.dump();
-    console.table = orig;
+    console.log = orig;
     window.__tmTwitchVolumeBoost.set(2);
-    return { rows: out[0], label: document.querySelector('.tvb-label').textContent };
+    const text = out.find((x) => x.includes('診断')) || '';
+    const parsed = JSON.parse(text.slice(text.indexOf('{')));
+    return { rows: parsed.videos, report: parsed, label: document.querySelector('.tvb-label').textContent };
   });
   const mainRow = diag.rows && diag.rows.find((r) => r.size === '640x360');
-  check('__tmTwitchVolumeBoost.dump() が video ごとの状態を出す',
-    mainRow && mainRow.hooked === 'yes' && mainRow.matchedSelector === '.video-player__container', diag.rows);
+  check('__tmTwitchVolumeBoost.dump() が video ごとの状態を文字（JSON）で出す',
+    mainRow && mainRow.hooked === 'yes' && mainRow.matchedSelector === '.video-player__container' &&
+    typeof mainRow.gain === 'number' && mainRow.ancestors[0].startsWith('div.video-player__container'), diag.rows);
   check('__tmTwitchVolumeBoost.set(2) で ×2.00', diag.label === '×2.00', diag.label);
   await page.evaluate(() => window.__tmTwitchVolumeBoost.set(1.5));
 
