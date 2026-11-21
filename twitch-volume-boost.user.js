@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Twitch Volume Boost v1.0.1
+// @name         Twitch Volume Boost v1.0.2
 // @namespace    local.hiro.tools
-// @version      1.0.1
+// @version      1.0.2
 // @description  Twitchの音量を100%超（最大500%）に増幅する。プレイヤー上のホバーで出るスライダー、Alt+↑/↓/0、Tampermonkeyメニューで操作する
 // @match        https://www.twitch.tv/*
 // @run-at       document-idle
@@ -30,7 +30,9 @@
   * - AudioContext が動いている（running）
   *   ブラウザの自動再生ポリシーで、ユーザー操作の前は suspended のまま始まる。
   *   この状態でつなぐと、操作するまで配信が無音になる
-  * - video が MSE（blob: URL）で再生している
+  * - video が MSE で再生している（srcObject、または blob: URL）
+  *   現行の Twitch（Amazon IVS Player）は、ワーカーの MediaSource を srcObject で渡すため、
+  *   src / currentSrc は空になる（v1.0.1 まではこれを読み込み前と見なし、つながなかった）。
   *   別オリジンの直接URL（iOS Safari のネイティブHLS等）をつなぐと、
   *   CORSの制限で無音になる。対象外として何もしない
   */
@@ -108,8 +110,25 @@
     // ============================================================
     // 音声経路
     // ============================================================
-    function isMse(video) {
-        return (video.currentSrc || video.src || '').startsWith('blob:');
+    // 再生している中身の種類。'srcObject:<型>' / 'blob' / 'url' / 'none'
+    function sourceKind(video) {
+        if (video.srcObject) {
+            const name = video.srcObject.constructor && video.srcObject.constructor.name;
+            return `srcObject:${name || '不明'}`;
+        }
+
+        const src = video.currentSrc || video.src || '';
+
+        if (!src) {
+            return 'none';
+        }
+
+        return src.startsWith('blob:') ? 'blob' : 'url';
+    }
+
+    // つないでも無音にならない（CORS の制限を受けない）か
+    function isSafeSource(kind) {
+        return kind === 'blob' || kind.startsWith('srcObject:');
     }
 
     function hook(video) {
@@ -136,12 +155,14 @@
             return;
         }
 
-        if (!isMse(video)) {
-            if (video.currentSrc) {
+        const kind = sourceKind(video);
+
+        if (!isSafeSource(kind)) {
+            if (kind === 'url') {
                 // 再生対象が決まっていて MSE ではない。つなぐと無音になりうるので触らない
                 hooked.set(video, { gain: null, reason: `対象外のsrc: ${video.currentSrc.slice(0, 40)}` });
             }
-            return; // currentSrc が空ならまだ読み込み前。loadstart で判定し直す
+            return; // まだ読み込み前。loadstart で判定し直す
         }
 
         try {
@@ -457,6 +478,7 @@
 
             return {
                 size: `${v.clientWidth}x${v.clientHeight}`,
+                source: sourceKind(v),
                 src: (v.currentSrc || '').slice(0, 40),
                 paused: v.paused,
                 volume: v.volume,

@@ -865,8 +865,12 @@ YouTube 音量ブーストとは別に作ったもので、見た目・操作キ
   一度 `createMediaElementSource` でつなぐと元に戻せず、以後の音はすべて AudioContext を通る。
   ブラウザの自動再生ポリシーで AudioContext は操作前 `suspended` のまま始まるため、
   その状態でつなぐと操作するまで配信が無音になる。操作（クリック・キー）を待ってからつなぐ
-- **`blob:`（MSE）で再生している video だけをつなぐ。** 別オリジンの直接URL
+- **MSE で再生している video（`srcObject` か `blob:`）だけをつなぐ。** 別オリジンの直接URL
   （iOS Safari のネイティブHLS等）をつなぐと CORS の制限で無音になるので、触らない
+- **現行の Twitch は `src` が空で、`srcObject` で再生している**（実機の診断で確認、2026-11）。
+  Amazon IVS Player がワーカーの MediaSource を `srcObject` で渡すため。
+  v1.0.0〜v1.0.1 は `blob:` だけを見ていて、これを「読み込み前」と見なし、**一度もつながず増幅されなかった**。
+  v1.0.2 で `srcObject` があればつなぐようにした。診断の `source` に種類（`srcObject:MediaSourceHandle` 等）が出る
 - `DynamicsCompressor` は仕様上、自動でメイクアップゲイン（この設定で約+1.7dB＝約1.22倍）を足す。
   そのままだと表示「×2.00」で実際は約2.44倍になるため、GainNode 側で打ち消している
 - プレイヤーの入れ物は `.video-player__container` → `[data-a-target="video-player"]` →
@@ -892,13 +896,13 @@ node --check twitch-volume-boost.user.js
 NODE_PATH=$(npm root -g) node test/twitch-volume-boost.test.js
 ```
 
-Twitch のプレイヤーを模したページで40項目を確認する。増幅は AnalyserNode で実際の振幅を測る
+Twitch のプレイヤーを模したページで42項目を確認する。増幅は AnalyserNode で実際の振幅を測る
 （×2.00 で2倍、×3.00 で3倍、×5.00 でもリミッターで1.0を超えない）。
 自動再生ポリシー下で操作前に経路へつながないこと（新ヘッドレスで実際の Chrome と同じ制限をかける）、
 ホバー表示、Alt+↑↓0（mac の Option+0 を含む）、チャット欄では効かない、
 スライダーのクリックがプレイヤー（一時停止）へ伝わらない、メニュー、
 プレイヤーの作り直し・video の付け替え、クラス名の無い入れ物、フルスクリーン、
-`blob:` でない src をつながない、診断関数、など。
+`blob:` でない src をつながない、`src` が空で `srcObject` 再生の video（現行 Twitch）をつなぐ、診断関数、など。
 
 Twitch の実DOMや実際の配信は再現していないため、**実機確認の代わりにはならない**。
 
