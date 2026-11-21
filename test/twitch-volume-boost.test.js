@@ -4,15 +4,16 @@ const path = require('path');
 
 // twitch-volume-boost.user.js の検証用ハーネス。
 //
-// Twitch のプレイヤーの入れ物を模したDOMへスクリプトを流し込み、
-// ヘッドレスChromiumで次を確認する。
-//   - 増幅（AnalyserNode で実際の振幅を測る）
-//   - 自動再生ポリシー下で、操作前に経路へつながず無音にしないこと
-//   - ホバーでスライダーが出る / Alt+↑↓0 / プレイヤーの作り直し / フルスクリーン
+// Twitch のプレイヤー（操作バー・ミュートボタン・音量バー）を模したDOMに
+// 正弦波の音を流す <video> を置き、スクリプトを流し込んで
+// 「バーの長さ・つまみの位置・Twitch の音量」と「実際に出ていく音の大きさ」（AnalyserNode）を測る。
 //
 //   NODE_PATH=$(npm root -g) node test/twitch-volume-boost.test.js
 //
-// Twitch の実DOMや実際の配信（MSE）は再現していないため、
+// 模擬DOMのうち実機で確認済みなのは、.video-player__container、
+// 音量バー input#player-volume-slider-<毎回変わる> と、その入れ物 .volume-slider__slider-container、
+// video の src が空で srcObject から再生していること（2026-11 の診断）。
+// それ以外（ミュートボタンの data-a-target、音量バーの min/max、開き方）は推測。
 // これに通ることは実機で動くことを保証しない。
 
 const SCRIPT = fs.readFileSync(
@@ -20,31 +21,63 @@ const SCRIPT = fs.readFileSync(
   'utf8'
 );
 
-// 実際の Twitch に近い入れ子（クラス名は既知のもの）
+// 音量バーの入れ物は、ふだんは幅 0 で、音量欄にマウスを乗せると 100px に開く
+const PLAYER_HTML = (id, opts = {}) => `
+<div class="video-player" data-a-target="video-player" id="vp-${id}" style="width:1000px;height:562px;">
+  <div class="Layout video-player__container" id="pc-${id}" style="position:relative;width:100%;height:100%;background:#000;">
+    <video id="v-${id}" style="width:100%;height:100%;display:block;"></video>
+    <div class="player-controls" style="position:absolute;left:0;right:0;bottom:0;height:40px;">
+      <div class="player-controls__left-control-group" id="left-${id}" style="display:flex;align-items:center;height:40px;">
+        <button data-a-target="player-play-pause-button" style="width:30px;height:30px;">▶</button>
+        <div class="volume-group" id="vg-${id}" style="display:flex;align-items:center;height:30px;">
+          <button data-a-target="player-mute-unmute-button" id="mute-${id}" style="width:30px;height:30px;">🔊</button>
+          ${opts.noSlider ? '' : `<div class="volume-slider__slider-container" id="sc-${id}">
+            <input type="range" class="tw-range" id="player-volume-slider-${id}-6b45" min="0" max="1" step="0.01" value="1"
+                   style="width:100%;margin:0;">
+          </div>`}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>`;
+
 const HTML = `<!doctype html><meta charset="utf-8"><title>twitch-mock</title>
 <style>
   body { margin: 0; background: #0e0e10; }
-  .video-player { width: 640px; height: 360px; }
-  .video-player__container { position: relative; width: 100%; height: 100%; }
-  video { width: 100%; height: 100%; display: block; }
-  .video-player__overlay { position: absolute; inset: 0; }
-  #nameless { width: 640px; height: 360px; margin-top: 20px; }
-  #nameless > div { position: relative; width: 100%; height: 100%; }
+  .volume-slider__slider-container { width: 0; overflow: hidden; transition: width .05s; }
+  .volume-group:hover .volume-slider__slider-container { width: 100px; }
   .preview video { width: 200px; height: 112px; }
 </style>
 <body>
 <div id="root">
-  <div class="video-player" data-a-target="video-player">
-    <div class="video-player__container" id="container">
-      <video id="main" playsinline></video>
-      <div class="video-player__overlay" id="overlay"></div>
-    </div>
-  </div>
-  <div class="preview"><video id="preview" muted></video></div>
+  ${PLAYER_HTML('a')}
+  <div class="preview"><div class="video-player__container"><video id="preview" muted></video></div></div>
+  <textarea id="chat" style="width:300px;height:40px;"></textarea>
 </div>
 </body>`;
 
-// 正弦波（振幅 AMP）の WAV を blob: URL にする。blob: なので MSE と同じ扱いになる
+// Twitch の動き（React）を真似る: 音量バーの input で video.volume を変え、
+// ミュートボタンで video.muted を切り替え、video 側の変化で音量バーを描き直す
+const TWITCH_BEHAVIOR = `
+  window.__wireTwitch = (id) => {
+    const input = document.getElementById('player-volume-slider-' + id + '-6b45');
+    const video = document.getElementById('v-' + id);
+    const mute = document.getElementById('mute-' + id);
+    window.__twitchInputEvents = window.__twitchInputEvents || 0;
+    if (input) {
+      input.addEventListener('input', () => {
+        window.__twitchInputEvents++;
+        video.volume = Number(input.value);
+      });
+      video.addEventListener('volumechange', () => {
+        if (Math.abs(Number(input.value) - video.volume) > 1e-6) input.value = String(video.volume);
+      });
+    }
+    mute.addEventListener('click', () => { video.muted = !video.muted; });
+  };
+`;
+
+// 正弦波（振幅 amp）の WAV を blob: URL にする
 const PAGE_HELPERS = `
   window.__makeToneUrl = (amp) => {
     const rate = 48000, sec = 30, n = rate * sec;
@@ -58,14 +91,30 @@ const PAGE_HELPERS = `
     return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
   };
 
-  // destination へつなぐ直前に AnalyserNode を挟み、出力の振幅を測れるようにする
-  window.__analysers = [];
+  // 現行の Twitch と同じく、src を空に見せ、srcObject（MediaSourceHandle）から再生しているように見せる
+  window.__startTone = (id, amp) => {
+    const v = document.getElementById(id);
+    v.src = window.__makeToneUrl(amp);
+    v.loop = true;
+    class MediaSourceHandle {}
+    const handle = new MediaSourceHandle();
+    Object.defineProperty(v, 'currentSrc', { get: () => '' });
+    Object.defineProperty(v, 'src', { get: () => '', set: () => {} });
+    Object.defineProperty(v, 'srcObject', { get: () => handle, set: () => {} });
+    return v.play().catch(() => { v.muted = true; return v.play(); });
+  };
+
+  // スピーカー（destination）へつなぐ直前に AnalyserNode を挟み、出ていく音を測る
   window.__contexts = [];
+  window.__mesCount = 0;
   const OrigAC = window.AudioContext;
   window.AudioContext = class extends OrigAC {
     constructor(...a) { super(...a); window.__contexts.push(this); }
   };
+  const origMes = OrigAC.prototype.createMediaElementSource;
+  OrigAC.prototype.createMediaElementSource = function (el) { window.__mesCount++; return origMes.call(this, el); };
   const origConnect = AudioNode.prototype.connect;
+  window.__analysers = [];
   AudioNode.prototype.connect = function (dest, ...rest) {
     if (dest instanceof AudioDestinationNode) {
       const an = this.context.createAnalyser();
@@ -75,24 +124,26 @@ const PAGE_HELPERS = `
     }
     return origConnect.call(this, dest, ...rest);
   };
+  // いまつながっている出口（リミッター経由か直接か）の和を測る
   window.__peak = () => {
-    const an = window.__analysers[window.__analysers.length - 1];
-    if (!an) return null;
-    const d = new Float32Array(an.fftSize);
-    an.getFloatTimeDomainData(d);
-    return d.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+    let peak = 0;
+    for (const an of window.__analysers) {
+      const d = new Float32Array(an.fftSize);
+      an.getFloatTimeDomainData(d);
+      for (const v of d) peak = Math.max(peak, Math.abs(v));
+    }
+    return peak;
   };
 
   // GM_* の代役
-  const store = {};
+  window.__store = window.__store || {};
   window.__menu = {};
-  window.GM_getValue = (k, d) => (k in store ? store[k] : d);
-  window.GM_setValue = (k, v) => { store[k] = v; };
+  window.GM_getValue = (k, d) => (k in window.__store ? window.__store[k] : d);
+  window.GM_setValue = (k, v) => { window.__store[k] = v; };
   window.GM_addValueChangeListener = () => {};
   window.GM_registerMenuCommand = (name, fn) => { window.__menu[name] = fn; };
-  window.GM_info = { script: { version: 'test' } };
   window.GM_addStyle = (css) => { const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); };
-  window.__store = store;
+  window.GM_info = { script: { version: 'test' } };
 `;
 
 const results = [];
@@ -102,343 +153,390 @@ function check(name, cond, extra) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function newPage(browser, { storedBoost } = {}) {
-  const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+async function openPage(browser, { store, html, amp = 0.1 } = {}) {
+  const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
   page.on('pageerror', (e) => console.log('PAGEERROR', e.message));
   await page.route('https://www.twitch.tv/**', (route) =>
-    route.fulfill({ contentType: 'text/html; charset=utf-8', body: HTML })
+    route.fulfill({ contentType: 'text/html; charset=utf-8', body: html || HTML })
   );
-  await page.addInitScript(PAGE_HELPERS);
-  await page.goto('https://www.twitch.tv/somechannel');
-  if (storedBoost) {
-    await page.evaluate((v) => { window.__store.twitchBoost = v; }, storedBoost);
+  if (store) {
+    await page.addInitScript((s) => { window.__store = s; }, store);
   }
-  await page.evaluate(() => {
-    const v = document.getElementById('main');
-    v.src = window.__makeToneUrl(0.1);
-    v.loop = true;
-    // 音付きの自動再生が拒まれたら、Twitch と同じくミュートで再生する
-    return v.play().catch(() => { v.muted = true; return v.play(); });
-  });
+  await page.addInitScript(PAGE_HELPERS + TWITCH_BEHAVIOR);
+  await page.goto('https://www.twitch.tv/somechannel');
+  await page.evaluate((amp) => { window.__wireTwitch('a'); return window.__startTone('v-a', amp); }, amp);
   await page.evaluate(SCRIPT);
-  await sleep(500);
+  await sleep(400);
   return page;
 }
 
-const state = (page) =>
-  page.evaluate(() => ({
-    ctx: window.__contexts.map((c) => c.state),
-    analysers: window.__analysers.length,
-    peak: window.__peak(),
-    label: document.querySelector('.tvb-label') && document.querySelector('.tvb-label').textContent,
-    stored: window.__store.twitchBoost,
-  }));
+const st = (page) =>
+  page.evaluate(() => {
+    const w = document.querySelector('.tm-twvb');
+    const v = document.getElementById('v-a') || document.querySelector('video');
+    const input = document.querySelector('input[id^="player-volume-slider"]');
+    return {
+      label: w && w.querySelector('.tm-twvb-label').textContent,
+      knob: w && parseFloat(w.querySelector('.tm-twvb-knob').style.left),
+      volume: v && Math.round(v.volume * 100) / 100,
+      muted: v && v.muted,
+      input: input && Number(input.value),
+      ctx: window.__contexts.map((c) => c.state),
+      mes: window.__mesCount,
+      peak: window.__peak(),
+      store: window.__store,
+    };
+  });
 
 (async () => {
   const browser = await chromium.launch();
 
-  // ===== 1. 保存値 ×2.00、操作前（自動再生ポリシーで AudioContext が止まっている） =====
-  // 旧ヘッドレス（既定）は自動再生の制限が無いため、実際の Chrome と同じ制限がかかる
-  // 新ヘッドレス（channel: 'chromium'）で起動する。
-  // page.evaluate はユーザー操作として扱われるため、スクリプトの投入まで初期化スクリプトで行う
-  {
-    const strict = await chromium.launch({ channel: 'chromium' });
-    const page = await strict.newPage({ viewport: { width: 1000, height: 900 } });
-    page.on('pageerror', (e) => console.log('PAGEERROR', e.message));
-    await page.route('https://www.twitch.tv/**', (route) =>
-      route.fulfill({ contentType: 'text/html; charset=utf-8', body: HTML })
-    );
-    await page.addInitScript(PAGE_HELPERS);
-    await page.addInitScript(`
-      window.__store.twitchBoost = 2;
-      document.addEventListener('DOMContentLoaded', () => {
-        const v = document.getElementById('main');
-        v.src = window.__makeToneUrl(0.1);
-        v.loop = true;
-        v.muted = true; // Twitch と同じく、操作前はミュートで自動再生
-        v.play();
-        setTimeout(() => { (0, eval)(${JSON.stringify(SCRIPT)}); }, 300);
-        // page.evaluate で読むと操作扱いになるので、操作前の様子はここで記録しておく
-        setTimeout(() => {
-          window.__pre = {
-            ctx: window.__contexts.map((c) => c.state),
-            analysers: window.__analysers.length,
-            active: navigator.userActivation.hasBeenActive,
-            playing: !v.paused,
-          };
-        }, 1200);
-      });
-    `);
-    await page.goto('https://www.twitch.tv/somechannel');
-    await sleep(1600);
-    const pre = await page.evaluate(() => window.__pre);
-    check('前提: 記録の時点でユーザー操作が無い', pre && pre.active === false, pre);
-    let s = pre;
-    check('操作前: video は再生している（素の経路のまま）', pre.playing, pre);
-    check('操作前: 経路へつながない（無音にしない）', s.analysers === 0, s);
-    check('操作前: AudioContext は suspended', s.ctx[0] === 'suspended', s);
+  // ===== 1. 設置と見た目 =====
+  let page = await openPage(browser);
+  let s;
 
-    await page.mouse.click(900, 800); // プレイヤー外を押す（ユーザー操作）
-    await page.evaluate(() => { document.getElementById('main').muted = false; }); // 操作後にミュート解除
-    await sleep(800);
-    s = await state(page);
-    check('操作後: AudioContext が running', s.ctx[0] === 'running', s);
-    check('操作後: 経路へつながる', s.analysers === 1, s);
-    check('×2.00 で振幅がおよそ0.2（元0.1）', s.peak > 0.18 && s.peak < 0.22, s.peak);
-    await strict.close();
-  }
-
-  // ===== 2. 既定値 ×1.00 から操作 =====
-  const page = await newPage(browser);
-  let s = await state(page);
-  check('×1.00 のときは AudioContext を作らない', s.ctx.length === 0, s);
-  check('メイン video にスライダーが付く', await page.evaluate(() => !!document.querySelector('#container > .tvb-panel')));
-  check('小さいプレビュー video にはスライダーを付けない', await page.evaluate(() => document.querySelectorAll('.tvb-panel').length === 1));
-
-  const opacity = () => page.evaluate(() => getComputedStyle(document.querySelector('.tvb-panel')).opacity);
-  await page.mouse.move(900, 850);
-  await sleep(300);
-  check('ホバー外ではスライダーが見えない', (await opacity()) === '0');
-  check('ホバー外ではスライダーがクリックを拾わない', await page.evaluate(() => getComputedStyle(document.querySelector('.tvb-panel')).pointerEvents === 'none'));
-  await page.mouse.move(320, 200);
-  await sleep(300);
-  check('プレイヤー上のホバーでスライダーが見える', (await opacity()) === '1');
-
-  // Alt+↑（操作なので AudioContext も起きる）
-  await page.mouse.move(900, 850);
-  await sleep(300);
-  await page.keyboard.press('Alt+ArrowUp');
-  await sleep(800);
-  s = await state(page);
-  check('Alt+↑ で ×1.25', s.label === '×1.25' && s.stored === 1.25, s);
-  check('Alt+↑ で経路へつながる', s.analysers === 1 && s.ctx[0] === 'running', s);
-  check('Alt+↑ の直後はホバー無しでもスライダーが見える', (await opacity()) === '1');
-  await sleep(1400);
-  check('しばらくすると隠れる', (await opacity()) === '0');
-
-  for (let i = 0; i < 7; i++) await page.keyboard.press('Alt+ArrowUp');
-  await sleep(500);
-  s = await state(page);
-  check('Alt+↑ を重ねて ×3.00', s.label === '×3.00', s);
-  check('×3.00 で振幅がおよそ0.3', s.peak > 0.27 && s.peak < 0.33, s.peak);
-
-  for (let i = 0; i < 20; i++) await page.keyboard.press('Alt+ArrowUp');
-  s = await state(page);
-  check('上限 ×5.00 で止まる', s.label === '×5.00', s);
-  await sleep(500);
-  s = await state(page);
-  check('×5.00（振幅0.5）でもリミッターで1.0を超えない', s.peak > 0.3 && s.peak <= 1.0, s.peak);
-
-  await page.keyboard.press('Alt+ArrowDown');
-  s = await state(page);
-  check('Alt+↓ で ×4.75', s.label === '×4.75', s);
-
-  // macOS の Option+0 は key が「º」。code で判定していることを確認
-  await page.evaluate(() => {
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'º', code: 'Digit0', altKey: true, bubbles: true }));
+  const layout = await page.evaluate(() => {
+    const w = document.querySelector('.tm-twvb');
+    const sc = document.getElementById('sc-a');
+    return {
+      afterSlider: !!w && sc.nextElementSibling === w,
+      hidden: sc.hasAttribute('data-tm-twvb-replaced'),
+      hiddenVisibility: getComputedStyle(sc).visibility,
+      host: w && w.parentElement.hasAttribute('data-tm-twvb-host'),
+      count: document.querySelectorAll('.tm-twvb').length,
+      oldPanel: document.querySelectorAll('.tvb-panel').length,
+    };
   });
-  s = await state(page);
-  check('Alt+0（mac の Option+0 = key「º」）で ×1.00', s.label === '×1.00', s);
-  for (let i = 0; i < 4; i++) await page.keyboard.press('Alt+ArrowUp');
+  check('バーが Twitch の音量バー（.volume-slider__slider-container）の直後に付く', layout.afterSlider, layout);
+  check('Twitch の音量バーは隠す（消さずに visibility: hidden）', layout.hidden && layout.hiddenVisibility === 'hidden', layout);
+  check('バーは1本だけ（プレビューのプレイヤーには付けない）', layout.count === 1, layout);
+  check('v1.0 の左上のスライダーは出さない', layout.oldPanel === 0, layout);
 
-  // 文字入力欄では効かない
-  await page.evaluate(() => {
-    const t = document.createElement('textarea');
-    t.id = 'chat';
-    document.body.appendChild(t);
+  const trackWidth = () => page.evaluate(() => document.querySelector('.tm-twvb-track').getBoundingClientRect().width);
+  await page.mouse.move(600, 100);
+  await sleep(300);
+  check('ふだんはバーが閉じている（幅 0）', (await trackWidth()) === 0);
+  await page.hover('#mute-a');
+  await sleep(500);
+  const openWidth = await trackWidth();
+  // 音量バーの実測 100px → つまみの動く長さ 88px × 6 = 528px。プレイヤー幅 1000px の 30% = 300px に縮む → 300 + 12
+  check('音量欄にマウスを乗せるとバーが開き、プレイヤー幅の30%（+つまみ）に収まる', Math.abs(openWidth - 312) <= 1, openWidth);
+  s = await st(page);
+  check('初期は 100%（Twitch の音量 100%）', s.label === '100%', s);
+
+  const scale = await page.evaluate(() => {
+    const knob = (v) => { window.__tmTwitchVolumeBoost.set(v); return parseFloat(document.querySelector('.tm-twvb-knob').style.left); };
+    const r = { p25: knob(25), p50: knob(50), p100: knob(100) };
+    return r;
   });
-  await page.focus('#chat');
-  await page.keyboard.press('Alt+ArrowUp');
-  s = await state(page);
-  check('チャット欄では Alt+↑ が効かない', s.label === '×2.00', s);
+  check('目盛りは対数: 0〜100% がバーの約 2/3', scale.p100 > 63 && scale.p100 < 70, scale);
+  check('目盛りは対数: 25→50 と 50→100 が同じ長さ', Math.abs((scale.p50 - scale.p25) - (scale.p100 - scale.p50)) < 0.5, scale);
+
+  // ===== 2. 0〜100% は Twitch の音量、音声に触らない =====
+  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(40));
+  await sleep(200);
+  s = await st(page);
+  check('40% で Twitch の音量バーが 0.4 になり、video.volume も 0.4', s.input === 0.4 && s.volume === 0.4, s);
+  check('Twitch の音量バーへ input イベントを送っている（React に伝わる）', await page.evaluate(() => window.__twitchInputEvents > 0));
+  check('100% 以下では AudioContext を作らない・動画をつながない', s.ctx.length === 0 && s.mes === 0, s);
+  check('ラベルは 40%', s.label === '40%', s);
+
+  // ===== 3. 100% 超で増幅 =====
+  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(300));
+  await sleep(700);
+  s = await st(page);
+  check('300% で Twitch の音量は 100% にそろう', s.input === 1 && s.volume === 1, s);
+  check('300% で動画をつなぐ（src が空の srcObject 再生でも）', s.mes === 1 && s.ctx[0] === 'running', s);
+  check('300% で振幅およそ 0.3（元 0.1、実際に 3 倍）', s.peak > 0.28 && s.peak < 0.32, s.peak);
+  check('300% は保存される（GM_setValue）', s.store.boostPercent === 300, s.store);
+  check('100% 超はラベルがオレンジ', await page.evaluate(() => document.querySelector('.tm-twvb').classList.contains('tm-twvb-boosted')));
+
+  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(100));
+  await sleep(700);
+  s = await st(page);
+  check('100% に戻すと振幅も元どおり 0.1', s.peak > 0.09 && s.peak < 0.11, s.peak);
+  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(40));
+  await sleep(700);
+  s = await st(page);
+  check('つないだ後の 40% は Twitch の音量で 0.4 倍', s.peak > 0.035 && s.peak < 0.045, s.peak);
+
+  // ===== 4. ドラッグ =====
+  await page.hover('#mute-a');
+  await sleep(300);
+  const box = await page.evaluate(() => {
+    const r = document.querySelector('.tm-twvb-track').getBoundingClientRect();
+    return { x: r.left, y: r.top + r.height / 2, w: r.width };
+  });
+  const xOf = (pos) => box.x + 6 + (box.w - 12) * pos;
+  await page.mouse.move(xOf(1), box.y);
+  await page.mouse.down();
+  await sleep(100);
+  s = await st(page);
+  check('右端を押すと 600%', s.label === '600%', s);
+  await page.mouse.move(xOf(0.85), box.y, { steps: 5 });
+  await sleep(100);
+  s = await st(page);
+  const mid = s.label;
+  await page.mouse.move(xOf(0.4), box.y, { steps: 5 });
+  await page.mouse.up();
+  await sleep(300);
+  s = await st(page);
+  check('つまみ1つのまま 600% → 300% 前後 → 100% 未満へドラッグできる',
+    parseInt(mid) > 200 && parseInt(mid) < 400 && parseInt(s.label) < 100, { mid, end: s.label });
+  check('ドラッグで 100% 未満に戻すと Twitch の音量が下がる', s.input < 1 && s.input > 0, s);
+
+  // 100% への吸い付き
+  await page.mouse.move(xOf(0.665), box.y);
+  await page.mouse.down();
+  await page.mouse.up();
+  await sleep(200);
+  s = await st(page);
+  check('100% の近くを押すと 100% に吸い付く', s.label === '100%', s);
+
+  // ===== 5. ホイール・←→・Home/End・ダブルクリック =====
+  await page.mouse.move(xOf(0.5), box.y);
+  await page.mouse.wheel(0, -100);
+  await sleep(100);
+  s = await st(page);
+  check('ホイール上で 100% → 110%', s.label === '110%', s);
+  await page.mouse.wheel(0, 100);
+  await page.mouse.wheel(0, 100);
+  await sleep(100);
+  s = await st(page);
+  check('ホイール下で 110% → 100% → 95%（100% 以下は 5% 刻み）', s.label === '95%', s);
+
+  await page.focus('.tm-twvb');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  s = await st(page);
+  check('バーにフォーカスして → で 95 → 100 → 110%', s.label === '110%', s);
+  await page.keyboard.press('End');
+  s = await st(page);
+  check('End で 600%', s.label === '600%', s);
+  await page.keyboard.press('Home');
+  s = await st(page);
+  check('Home で 0%', s.label === '0%' && s.input === 0, s);
   await page.evaluate(() => document.activeElement.blur());
 
-  // スライダーを押した後もキーが効く
-  await page.mouse.move(320, 200);
-  await sleep(300);
-  await page.focus('.tvb-panel input');
-  await page.keyboard.press('Alt+ArrowUp');
-  s = await state(page);
-  check('スライダーにフォーカスがあっても Alt+↑ が効く', s.label === '×2.25', s);
-
-  // スライダーの操作
-  await page.evaluate(() => {
-    const r = document.querySelector('.tvb-panel input');
-    r.value = '3.5';
-    r.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  s = await state(page);
-  check('スライダーで ×3.50 になり保存される', s.label === '×3.50' && s.stored === 3.5, s);
-
-  // スライダーのクリックが Twitch（一時停止の処理）に届かない
-  const leaked = await page.evaluate(() => {
+  await page.hover('#mute-a');
+  await sleep(200);
+  await page.mouse.dblclick(xOf(0.2), box.y);
+  await sleep(200);
+  s = await st(page);
+  check('バーのダブルクリックで 100% に戻る', s.label === '100%', s);
+  check('バーのクリックはプレイヤー（一時停止）へ伝わらない', await page.evaluate(() => {
     let n = 0;
-    document.getElementById('container').addEventListener('click', () => n++);
-    document.querySelector('.tvb-panel input').click();
-    return n;
+    const c = document.getElementById('pc-a');
+    const f = () => n++;
+    c.addEventListener('click', f);
+    document.querySelector('.tm-twvb-track').click();
+    c.removeEventListener('click', f);
+    return n === 0;
+  }));
+
+  // ===== 6. ↑↓ キー（YouTube 版と同じ: プレイヤーを操作しているとき） =====
+  await page.mouse.move(500, 200); // プレイヤーの上
+  await sleep(200);
+  await page.keyboard.press('ArrowUp');
+  await sleep(100);
+  s = await st(page);
+  check('プレイヤーの上で ↑ を押すと 100% → 110%', s.label === '110%', s);
+  check('↑ で画面に「音量 110%」が出る', await page.evaluate(() => {
+    const t = document.querySelector('.tm-twvb-toast');
+    return !!t && t.textContent === '音量 110%' && t.classList.contains('tm-twvb-show');
+  }));
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await sleep(100);
+  s = await st(page);
+  check('↓ で 110 → 100 → 95%（Twitch の音量が下がる）', s.label === '95%' && s.input === 0.95, s);
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowUp');
+  s = await st(page);
+  check('↑ で 95 → 100 → 110 → 120%', s.label === '120%', s);
+
+  await page.mouse.move(1100, 800); // プレイヤーの外
+  await sleep(100);
+  await page.keyboard.press('ArrowUp');
+  s = await st(page);
+  check('プレイヤーの外では ↑ を横取りしない（ページのスクロールに任せる）', s.label === '120%', s);
+
+  await page.focus('#chat');
+  await page.mouse.move(500, 200);
+  await page.keyboard.press('ArrowUp');
+  s = await st(page);
+  check('チャット欄に入力中は ↑ を横取りしない', s.label === '120%', s);
+  await page.evaluate(() => document.activeElement.blur());
+
+  await page.keyboard.press('Alt+ArrowUp');
+  s = await st(page);
+  check('Alt+↑ は使わない（v1.0 のキーは廃止）', s.label === '120%', s);
+
+  // ===== 7. Twitch 側の操作との連動 =====
+  await page.evaluate(() => {
+    const input = document.querySelector('input[id^="player-volume-slider"]');
+    input.value = '0.5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  check('スライダーのクリックがプレイヤーへ伝わらない', leaked === 0, leaked);
+  await sleep(700);
+  s = await st(page);
+  check('増幅中に Twitch 側で音量を 50% に下げると、増幅を外して 50%', s.label === '50%' && s.store.boostPercent === 100, s);
 
-  // メニュー
-  await page.evaluate(() => window.__menu['音量ブースト リセット']());
-  s = await state(page);
-  check('メニュー「リセット」で ×1.00', s.label === '×1.00', s);
-  await page.evaluate(() => window.__menu['音量ブースト +0.25']());
-  s = await state(page);
-  check('メニュー「+0.25」で ×1.25', s.label === '×1.25', s);
-  await page.evaluate(() => { window.__menu['音量ブースト +0.25'](); window.__menu['音量ブースト +0.25'](); window.__menu['音量ブースト -0.25'](); });
-  s = await state(page);
-  check('メニュー「-0.25」で ×1.50', s.label === '×1.50', s);
+  await page.click('#mute-a');
+  await sleep(200);
+  s = await st(page);
+  check('Twitch 側でミュートすると、つまみが 0 で「ミュート」', s.label === 'ミュート' && s.knob === 0, s);
+  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(200));
+  await sleep(500);
+  s = await st(page);
+  check('ミュート中に 200% にすると、ミュートを解いて増幅', !s.muted && s.label === '200%' && s.input === 1, s);
 
-  // 診断
+  // ===== 8. きれい／大きく =====
+  await page.close();
+  page = await openPage(browser, { amp: 0.5 });
+  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(600));
+  await sleep(800);
+  s = await st(page);
+  check('きれい（リミッターあり）: 振幅 0.5 × 600% でも 1 前後に収まる', s.peak > 0.8 && s.peak < 1.15, s.peak);
+  await page.hover('#mute-a');
+  await sleep(300);
+  await page.click('.tm-twvb-track', { button: 'right' });
+  await sleep(800);
+  s = await st(page);
+  check('バーの右クリックで「大きく」になり、数字に ! が付く', s.label === '600%!' && s.store.limiterOn === false, s);
+  check('大きく（リミッターなし）: 振幅 0.5 × 600% が 3.0 まで出る', s.peak > 2.8 && s.peak < 3.2, s.peak);
+  check('右クリックで「大きく」の説明が出る', await page.evaluate(() => document.querySelector('.tm-twvb-toast').textContent.startsWith('大きく')));
+  await page.click('.tm-twvb-label');
+  await sleep(300);
+  s = await st(page);
+  check('数字のクリックで「きれい」に戻る', s.label === '600%' && s.store.limiterOn === true, s);
+
+  // ===== 9. 配信の切り替え（プレイヤーの作り直し）・音量バーだけの作り直し =====
+  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(200));
+  await page.evaluate(() => document.getElementById('vp-a').remove());
+  await page.evaluate((html) => {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    document.getElementById('root').prepend(t.content);
+    window.__wireTwitch('b');
+    return window.__startTone('v-b', 0.1);
+  }, PLAYER_HTML('b'));
+  await sleep(900);
+  const sw = await page.evaluate(() => ({
+    mounted: document.getElementById('sc-b').nextElementSibling === document.querySelector('.tm-twvb'),
+    hidden: document.getElementById('sc-b').hasAttribute('data-tm-twvb-replaced'),
+    mes: window.__mesCount,
+    peak: window.__peak(),
+  }));
+  check('作り直したプレイヤーにバーが付き直し、新しい音量バーを隠す', sw.mounted && sw.hidden, sw);
+  check('作り直したプレイヤーの動画もつなぎ、200% で振幅およそ 0.2', sw.mes === 2 && sw.peak > 0.18 && sw.peak < 0.22, sw);
+
+  await page.evaluate(() => {
+    const old = document.getElementById('sc-b');
+    const neu = old.cloneNode(true);
+    neu.removeAttribute('data-tm-twvb-replaced');
+    neu.id = 'sc-b2';
+    old.replaceWith(neu);
+  });
+  await sleep(600);
+  const re = await page.evaluate(() => ({
+    mounted: document.getElementById('sc-b2').nextElementSibling === document.querySelector('.tm-twvb'),
+    hidden: document.getElementById('sc-b2').hasAttribute('data-tm-twvb-replaced'),
+  }));
+  check('Twitch の音量バーだけ作り直されても、隣に付き直して隠し直す', re.mounted && re.hidden, re);
+
+  // ===== 10. フルスクリーン =====
+  await page.evaluate(() => document.getElementById('pc-b').requestFullscreen());
+  await sleep(500);
+  check('フルスクリーン中もバーは全画面の要素の中にある', await page.evaluate(() =>
+    document.fullscreenElement && document.fullscreenElement.contains(document.querySelector('.tm-twvb'))));
+  await page.mouse.move(600, 400);
+  await page.keyboard.press('ArrowUp');
+  await sleep(100);
+  check('フルスクリーン中も ↑ が効き、「音量」表示が全画面の中に出る', await page.evaluate(() => {
+    const t = document.querySelector('.tm-twvb-toast');
+    return document.fullscreenElement.contains(t) && t.textContent === '音量 210%';
+  }));
+  await page.evaluate(() => document.exitFullscreen());
+  await sleep(300);
+
+  // ===== 11. 診断 =====
   const diag = await page.evaluate(() => {
     const out = [];
     const orig = console.log;
     console.log = (...a) => out.push(a.join(' '));
     window.__tmTwitchVolumeBoost.dump();
     console.log = orig;
-    window.__tmTwitchVolumeBoost.set(2);
     const text = out.find((x) => x.includes('診断')) || '';
-    const parsed = JSON.parse(text.slice(text.indexOf('{')));
-    return { rows: parsed.videos, report: parsed, label: document.querySelector('.tvb-label').textContent };
+    return JSON.parse(text.slice(text.indexOf('{')));
   });
-  const mainRow = diag.rows && diag.rows.find((r) => r.size === '640x360');
-  check('__tmTwitchVolumeBoost.dump() が video ごとの状態を文字（JSON）で出す',
-    mainRow && mainRow.hooked === 'yes' && mainRow.matchedSelector === '.video-player__container' &&
-    typeof mainRow.gain === 'number' && mainRow.ancestors[0].startsWith('div.video-player__container'), diag.rows);
-  check('__tmTwitchVolumeBoost.set(2) で ×2.00', diag.label === '×2.00', diag.label);
-  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(1.5));
-
-  // ===== プレイヤーの作り直し（配信の切り替え） =====
-  await page.evaluate(() => {
-    const old = document.querySelector('.video-player');
-    const wrap = document.createElement('div');
-    wrap.className = 'video-player';
-    wrap.innerHTML = '<div class="video-player__container" id="container2"><video id="main2"></video></div>';
-    old.replaceWith(wrap);
-    const v = document.getElementById('main2');
-    v.src = window.__makeToneUrl(0.1);
-    v.loop = true;
-    return v.play();
-  });
-  await sleep(1000);
-  s = await state(page);
-  check('作り直した video にもスライダーが付く', await page.evaluate(() => !!document.querySelector('#container2 > .tvb-panel')));
-  check('作り直した video も経路へつながる', s.analysers === 2, s);
-  check('作り直した video も ×1.50 で振幅およそ0.15', s.peak > 0.135 && s.peak < 0.165, s.peak);
-
-  // 同じ video を別の入れ物へ移す（Twitch が video を使い回す場合）
-  await page.evaluate(() => {
-    const v = document.getElementById('main2');
-    const wrap = document.createElement('div');
-    wrap.className = 'video-player__container';
-    wrap.id = 'container3';
-    wrap.style.cssText = 'position:relative;width:640px;height:360px';
-    document.getElementById('root').appendChild(wrap);
-    wrap.appendChild(v);
-    return v.play();
-  });
-  await sleep(800);
-  check('video を別の入れ物へ移すとスライダーも付いてくる', await page.evaluate(() => !!document.querySelector('#container3 > .tvb-panel')));
-
-  // ===== 既知のクラス名が無いプレイヤー（大きさで推定） =====
-  await page.evaluate(() => {
-    const box = document.createElement('div');
-    box.id = 'nameless';
-    box.innerHTML = '<div id="inner"><video id="v3"></video></div>';
-    document.getElementById('root').appendChild(box);
-  });
-  await sleep(800);
-  check('クラス名が無くても video と同じ大きさの入れ物に付く', await page.evaluate(() => !!document.querySelector('#nameless > .tvb-panel, #inner > .tvb-panel')));
-  await page.evaluate(() => document.getElementById('nameless').remove());
-
-  // ===== フルスクリーン =====
-  // Twitch はプレイヤー全体（入れ物より外側）を全画面にすることがあるため、外側で試す
-  await page.evaluate(() => {
-    const outer = document.createElement('div');
-    outer.id = 'fsouter';
-    outer.style.cssText = 'width:640px;height:360px';
-    const v = document.getElementById('main2');
-    outer.appendChild(v); // 入れ物クラスを持たない外側に video を直接置く
-    document.getElementById('root').appendChild(outer);
-  });
-  await sleep(600);
-  await page.click('#fsouter', { position: { x: 10, y: 350 } }).catch(() => {});
-  await page.evaluate(() => document.getElementById('fsouter').requestFullscreen());
-  await sleep(800);
-  const fsInfo = await page.evaluate(() => {
-    const fs = document.fullscreenElement;
-    const p = document.querySelector('#main2') && [...document.querySelectorAll('.tvb-panel')].find((x) => fs && fs.contains(x));
-    return { fs: fs && fs.id, panelInside: !!p };
-  });
-  check('フルスクリーン中、全画面の要素の中にスライダーがある', fsInfo.fs === 'fsouter' && fsInfo.panelInside, fsInfo);
-  await page.mouse.move(400, 300);
-  await sleep(300);
-  check('フルスクリーン中もホバーで見える', await page.evaluate(() => {
-    const p = [...document.querySelectorAll('.tvb-panel')].find((x) => document.fullscreenElement.contains(x));
-    return getComputedStyle(p).opacity === '1';
-  }));
-  await page.evaluate(() => document.exitFullscreen());
-  await sleep(300);
-
+  check('dump() が文字（JSON）で状態を出す（コピーして貼れる）',
+    diag.state.形.startsWith('1本のバー') && diag.state.Twitchの音量バー.includes('player-volume-slider') &&
+    diag.videos.some((v) => v.再生元 === 'srcObject:MediaSourceHandle' && v.つないだ === 'はい'), diag);
   await page.close();
 
-  // ===== 3. blob: でない src（iOS のネイティブHLS相当）はつながない =====
-  {
-    const p = await browser.newPage();
-    await p.route('https://www.twitch.tv/**', (route) => {
-      if (route.request().url().endsWith('.wav')) {
-        return route.fulfill({ status: 404, body: '' });
-      }
-      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: HTML });
-    });
-    await p.addInitScript(PAGE_HELPERS);
-    await p.goto('https://www.twitch.tv/x');
-    await p.evaluate(() => {
-      window.__store.twitchBoost = 2;
-      document.getElementById('main').src = 'https://cdn.example.invalid/stream.m3u8';
-    });
-    await p.evaluate(SCRIPT);
-    await p.mouse.click(900, 800);
-    await sleep(800);
-    const r = await p.evaluate(() => window.__analysers.length);
-    check('blob: でない src の video は経路へつながない', r === 0, r);
-    await p.close();
-  }
+  // ===== 12. Twitch の音量バーが見つからない → 延長部分（100〜600%）だけ =====
+  page = await openPage(browser, { html: HTML.replace(PLAYER_HTML('a'), PLAYER_HTML('a', { noSlider: true })) });
+  const ext = await page.evaluate(() => {
+    const w = document.querySelector('.tm-twvb');
+    return {
+      afterMute: !!w && document.getElementById('mute-a').nextElementSibling === w,
+      unified: w && w.classList.contains('tm-twvb-unified'),
+    };
+  });
+  check('音量バーが無ければミュートボタンの直後に延長部分（100〜600%）だけ付く', ext.afterMute && ext.unified === false, ext);
+  await page.evaluate(() => window.__tmTwitchVolumeBoost.set(250));
+  await sleep(700);
+  s = await st(page);
+  check('延長部分だけでも 250% で振幅およそ 0.25', s.peak > 0.23 && s.peak < 0.27, s.peak);
+  await page.close();
 
-  // ===== 4. 現行の Twitch と同じく、src が空で srcObject で再生している =====
-  // Amazon IVS Player はワーカーの MediaSource を srcObject（MediaSourceHandle）で渡すため、
-  // src / currentSrc は空になる（実機の診断で確認）
+  // ===== 13. v1.0.x の保存値（倍率）を引き継ぐ =====
+  page = await openPage(browser, { store: { twitchBoost: 2.5 } });
+  s = await st(page);
+  check('v1.0.x の保存値（×2.5）を 250% として引き継ぐ', s.label === '250%', s);
+  await page.close();
+
+  await browser.close();
+
+  // ===== 14. 自動再生の制限（新ヘッドレスは実際の Chrome と同じく、操作前は AudioContext が止まる） =====
+  // page.evaluate はユーザー操作として扱われるため、スクリプトの投入まで初期化スクリプトで行う
   {
-    const p = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    const strict = await chromium.launch({ channel: 'chromium' });
+    const p = await strict.newPage({ viewport: { width: 1200, height: 900 } });
     p.on('pageerror', (e) => console.log('PAGEERROR', e.message));
     await p.route('https://www.twitch.tv/**', (route) =>
       route.fulfill({ contentType: 'text/html; charset=utf-8', body: HTML })
     );
-    await p.addInitScript(PAGE_HELPERS);
+    await p.addInitScript(`window.__store = { boostPercent: 200 };`);
+    await p.addInitScript(PAGE_HELPERS + TWITCH_BEHAVIOR);
+    await p.addInitScript(`
+      document.addEventListener('DOMContentLoaded', () => {
+        window.__wireTwitch('a');
+        window.__startTone('v-a', 0.1);
+        setTimeout(() => { (0, eval)(${JSON.stringify(SCRIPT)}); }, 300);
+        setTimeout(() => {
+          window.__pre = {
+            active: navigator.userActivation.hasBeenActive,
+            ctx: window.__contexts.map((c) => c.state),
+            mes: window.__mesCount,
+            waiting: document.querySelector('.tm-twvb').classList.contains('tm-twvb-waiting'),
+          };
+        }, 1200);
+      });
+    `);
     await p.goto('https://www.twitch.tv/somechannel');
-    await p.evaluate(async () => {
-      const v = document.getElementById('main');
-      v.src = window.__makeToneUrl(0.1);
-      v.loop = true;
-      await v.play();
-      class MediaSourceHandle {}
-      const handle = new MediaSourceHandle();
-      Object.defineProperty(v, 'currentSrc', { get: () => '' });
-      Object.defineProperty(v, 'src', { get: () => '', set: () => {} });
-      Object.defineProperty(v, 'srcObject', { get: () => handle, set: () => {} });
-    });
-    await p.evaluate(SCRIPT);
-    await sleep(400);
-    for (let i = 0; i < 4; i++) await p.keyboard.press('Alt+ArrowUp');
+    await sleep(1700);
+    const pre = await p.evaluate(() => window.__pre);
+    check('前提: 記録の時点でユーザー操作が無い', pre && pre.active === false, pre);
+    check('操作前: AudioContext が止まっている間は動画をつながない（無音にしない）', pre.ctx[0] === 'suspended' && pre.mes === 0, pre);
+    check('操作前: 数字を薄くしてクリック待ちを示す', pre.waiting, pre);
+    await p.mouse.click(1100, 800);
+    await p.evaluate(() => { document.getElementById('v-a').muted = false; });
     await sleep(800);
-    const r = await state(p);
-    check('src が空で srcObject 再生の video もつながる（現行 Twitch）', r.analysers === 1 && r.label === '×2.00', r);
-    check('srcObject 再生の video も ×2.00 で振幅およそ0.2', r.peak > 0.18 && r.peak < 0.22, r.peak);
-    await p.close();
+    s = await st(p);
+    check('クリック後: つないで 200% で振幅およそ 0.2', s.ctx[0] === 'running' && s.mes === 1 && s.peak > 0.18 && s.peak < 0.22, s);
+    await strict.close();
   }
-
-  await browser.close();
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} passed`);
