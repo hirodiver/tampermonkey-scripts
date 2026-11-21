@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X アカウント切替 v1.11.0
+// @name         X アカウント切替 v1.12.0
 // @namespace    local.hiro.tools
-// @version      1.11.0
+// @version      1.12.0
 // @description  X のアカウント切替を、画面端のアイコンからワンタップで行う（X 本体の切替メニューを代わりに操作する。非公式APIは使わない）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -73,6 +73,16 @@
  *   X は切替後にページを読み込み直すので、戻り先は切替を押した印（sessionStorage）に
  *   入れておき、読み込み直した後の起動時に開く
  *
+ * ■ 置き場所を6か所か自由に選べる・つまみを大きくした（v1.12.0）
+ *   「6か所」: 左右それぞれ上・中・下の6か所。離したところから一番近い所に置く
+ *              （画面を縦に3つに分け、どの段で離したかで上・中・下を決める）。
+ *   「自由」:   左右どちらかの端に付けたまま、離した高さにそのまま置く。
+ *              高さは画面の高さに対する割合で覚えるので、画面の向きが変わっても大きく外れない。
+ *              iPhone の下のタブや投稿ボタンには重ねない（下の隅と同じ高さより下へは行かない）。
+ *   切り替えは、現在のアカウントのアイコンを押すと出る「自由」「6か所」のボタンで行う。
+ *   しまったときのつまみは 24×56px で、矢印（文字の ‹ ›）も細くて見えにくかったため、
+ *   34×88px にし、矢印は太い線の図形（SVG）で描くようにした
+ *
  * ■ 未確認の点
  *   ドロワーとアカウント一覧シートの実際の DOM は確認できていない。testid ではなく
  *   「アバターと @ハンドルを持つ、押せる要素」「アカウント追加・ログアウトの
@@ -94,7 +104,7 @@
     // 設定
     // ============================================================
 
-    const VERSION = '1.11.0';
+    const VERSION = '1.12.0';
 
     // 自作要素の id
     const ROOT_ID = 'tm-x-switch-root';
@@ -131,16 +141,44 @@
     const SESSION_SNAPSHOT = 'tm-x-switch-snapshot';
 
     /*
-     * ドックの置き場所。先頭が既定。
-     * ドックを引っぱって離したところから一番近い隅に置く
-     * （v1.7.0 で「移動」ボタンと四隅の表は廃止）
+     * ドックの置き場所（置き方が「6か所」のとき）。先頭が既定。
+     * ドックを引っぱって離したところから一番近い所に置く
+     * （v1.7.0 で「移動」ボタンと四隅の表は廃止。v1.12.0 で左右の「中」を足した）
      */
     const POSITIONS = [
         { key: 'left-bottom', label: '左下' },
         { key: 'right-bottom', label: '右下' },
         { key: 'left-top', label: '左上' },
-        { key: 'right-top', label: '右上' }
+        { key: 'right-top', label: '右上' },
+        { key: 'left-middle', label: '左中' },
+        { key: 'right-middle', label: '右中' }
     ];
+
+    /*
+     * 置き方（v1.12.0）。'snap': 上の6か所のどれか / 'free': 左右の端に付けて、離した高さに置く。
+     * 現在のアカウントのアイコンを押すと出る「自由」「6か所」で切り替え、端末に覚える
+     */
+    const STORAGE_PLACE_MODE = 'tm-x-switch-place-mode';
+
+    const DEFAULT_PLACE_MODE = 'snap';
+
+    // 「自由」で置いた場所（{ side: 'left' | 'right', y: ドックの中心の高さ ÷ 画面の高さ }）
+    const STORAGE_FREE_SPOT = 'tm-x-switch-free-spot';
+
+    // 「自由」で、画面の上端・下端（下のタブが無い画面）から最低限空ける幅（px）
+    const FREE_EDGE_PX = 10;
+
+    /*
+     * しまったときのつまみの大きさ（px。v1.12.0 で 24×56 から大きくした）。
+     * 矢印は太い線で描く（文字の ‹ › は細く小さく見えにくかったため）
+     */
+    const TAB_WIDTH_PX = 34;
+
+    const TAB_HEIGHT_PX = 88;
+
+    const TAB_ARROW_PX = 22;
+
+    const TAB_ARROW_STROKE = 3.5;
 
     /*
      * 下の隅に置くときの高さ（モバイル幅だけ。v1.6.0）。
@@ -510,7 +548,11 @@
     let reloadEl = null;
     let biggerEl = null;
     let smallerEl = null;
+    let placeEl = null;
     let toastEl = null;
+
+    // 最後に決めた下の隅の高さ（{ left, right }。画面の下端からの px）。「自由」の下限に使う
+    let currentLift = null;
 
     let busy = false;
 
@@ -734,13 +776,141 @@
     }
 
 
+    /*
+     * ドックの置き場所の名前。CSS のクラスにもそのまま使う。
+     *   6か所: 'left-bottom' 等（POSITIONS のどれか）
+     *   自由:   'left-free' / 'right-free'（高さは getFreeSpot().y）
+     */
     function getPosition() {
+
+        if (getPlaceMode() === 'free') {
+            return getFreeSpot().side + '-free';
+        }
+
+
+        return getSnapPosition();
+    }
+
+
+    function getSnapPosition() {
 
         const saved = readJson(localStorage, STORAGE_POSITION, '');
 
         return POSITIONS.some(p => p.key === saved) ?
             saved :
             POSITIONS[0].key;
+    }
+
+
+    function getPlaceMode() {
+
+        return readJson(localStorage, STORAGE_PLACE_MODE, DEFAULT_PLACE_MODE) === 'free' ?
+            'free' :
+            'snap';
+    }
+
+
+    /*
+     * 「自由」で置いた場所。まだ無ければ、6か所で置いていた場所の側と高さから作る
+     */
+    function getFreeSpot() {
+
+        const saved = readJson(localStorage, STORAGE_FREE_SPOT, null);
+
+        if (
+            saved &&
+            (saved.side === 'left' || saved.side === 'right') &&
+            Number.isFinite(saved.y)
+        ) {
+            return {
+                side: saved.side,
+                y: Math.min(1, Math.max(0, saved.y))
+            };
+        }
+
+
+        const snap = getSnapPosition();
+
+        const heights = { top: 0.15, middle: 0.5, bottom: 0.85 };
+
+        return {
+            side: snap.split('-')[0],
+            y: heights[snap.split('-')[1]]
+        };
+    }
+
+
+    /*
+     * 画面上の点（ドックの中心）から置き場所を決めて覚える
+     */
+    function placeAt(x, y) {
+
+        const side = x < window.innerWidth / 2 ? 'left' : 'right';
+
+
+        if (getPlaceMode() === 'free') {
+
+            writeJson(
+                localStorage,
+                STORAGE_FREE_SPOT,
+                {
+                    side,
+                    y: Math.round(Math.min(1, Math.max(0, y / window.innerHeight)) * 1000) / 1000
+                }
+            );
+
+            return;
+        }
+
+
+        /*
+         * 画面を縦に3つに分け、どの段で離したかで上・中・下を決める
+         */
+        const ratio = y / window.innerHeight;
+
+        const vertical =
+            ratio < 1 / 3 ? 'top' :
+            ratio < 2 / 3 ? 'middle' :
+            'bottom';
+
+
+        writeJson(localStorage, STORAGE_POSITION, side + '-' + vertical);
+    }
+
+
+    /*
+     * 「自由」と「6か所」を切り替える。いまドック（しまっていればつまみ）がある所から
+     * 移る先の場所を決めるので、切り替えただけでは大きく動かない
+     */
+    function togglePlaceMode() {
+
+        const shown = isTucked() ? tabEl : dock;
+
+        const rect = shown ? shown.getBoundingClientRect() : null;
+
+        const next = getPlaceMode() === 'free' ? 'snap' : 'free';
+
+
+        writeJson(localStorage, STORAGE_PLACE_MODE, next);
+
+
+        if (rect && rect.width > 0 && rect.height > 0) {
+
+            placeAt(
+                rect.left + rect.width / 2,
+                rect.top + rect.height / 2
+            );
+        }
+
+
+        render(true);
+
+
+        toast(
+            next === 'free' ?
+                '自由に置きます（左右の端の、引っぱって離した高さ）' :
+                '6か所（左右の上・中・下）のどこかに置きます'
+        );
     }
 
 
@@ -2757,10 +2927,15 @@
 
 
         /*
-         * 上の隅に置いている間は測らない（ページ全体の要素を見るので、無駄に回さない）
+         * 上・中に置いている間は測らない（ページ全体の要素を見るので、無駄に回さない）。
+         * 「自由」では下の限りに使うので測る
          */
+        const position = getPosition();
+
         const measured =
-            getPosition().endsWith('-bottom') ? measureBottomLift() : null;
+            position.endsWith('-bottom') || position.endsWith('-free') ?
+                measureBottomLift() :
+                null;
 
 
         let lift = null;
@@ -2789,6 +2964,9 @@
         }
 
 
+        currentLift = lift;
+
+
         for (const element of [dock, tabEl]) {
 
             for (const side of ['left', 'right']) {
@@ -2806,6 +2984,71 @@
     function isNarrowScreen() {
 
         return window.innerWidth <= MOBILE_MAX_WIDTH;
+    }
+
+
+    /*
+     * 「自由」で置いたとき、ドックとつまみの上端を決めて CSS 変数で渡す（v1.12.0）。
+     * 覚えた高さ（割合）にドックの中心を合わせ、画面からはみ出さないよう、
+     * また iPhone の下のタブや投稿ボタン（下の隅の高さ）より下へ行かないよう収める
+     */
+    function applyFreeSpot() {
+
+        if (!dock || !tabEl) {
+            return;
+        }
+
+
+        if (getPlaceMode() !== 'free') {
+
+            for (const element of [dock, tabEl]) {
+                element.style.removeProperty('--free-top');
+            }
+
+            return;
+        }
+
+
+        const spot = getFreeSpot();
+
+        const height = window.innerHeight;
+
+        const center = spot.y * height;
+
+
+        /*
+         * 下の限り（画面の下端からの px）。下のタブがある画面では下の隅と同じ高さ。
+         * iPhone 等の幅では、下の隅と同じく下限・上限の間に収める
+         */
+        let bottomLimit = currentLift ? currentLift[spot.side] : FREE_EDGE_PX;
+
+        if (isNarrowScreen()) {
+
+            bottomLimit =
+                Math.min(
+                    MOBILE_BOTTOM_MAX_PX,
+                    Math.max(MOBILE_BOTTOM_MIN_PX, bottomLimit)
+                );
+        }
+
+
+        const topOf = elementHeight =>
+            Math.round(
+                Math.max(
+                    FREE_EDGE_PX,
+                    Math.min(
+                        center - elementHeight / 2,
+                        height - bottomLimit - elementHeight
+                    )
+                )
+            );
+
+
+        if (!isTucked()) {
+            dock.style.setProperty('--free-top', topOf(dock.offsetHeight) + 'px');
+        }
+
+        tabEl.style.setProperty('--free-top', topOf(TAB_HEIGHT_PX) + 'px');
     }
 
 
@@ -2849,6 +3092,10 @@
 .dock.right-bottom { right: max(10px, env(safe-area-inset-right)); bottom: var(--lift-right, calc(62px + env(safe-area-inset-bottom, 0px))); }
 .dock.left-top     { left: max(10px, env(safe-area-inset-left));  top: calc(58px + env(safe-area-inset-top, 0px)); }
 .dock.right-top    { right: max(10px, env(safe-area-inset-right)); top: calc(58px + env(safe-area-inset-top, 0px)); }
+.dock.left-middle  { left: max(10px, env(safe-area-inset-left));  top: 50%; transform: translateY(-50%); }
+.dock.right-middle { right: max(10px, env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); }
+.dock.left-free    { left: max(10px, env(safe-area-inset-left));  top: max(calc(${FREE_EDGE_PX}px + env(safe-area-inset-top, 0px)), var(--free-top, 50%)); }
+.dock.right-free   { right: max(10px, env(safe-area-inset-right)); top: max(calc(${FREE_EDGE_PX}px + env(safe-area-inset-top, 0px)), var(--free-top, 50%)); }
 .list {
     display: flex;
     flex-direction: column;
@@ -2862,22 +3109,25 @@
     display: none;
     place-items: center;
     appearance: none;
-    width: 24px;
-    height: 56px;
+    width: ${TAB_WIDTH_PX}px;
+    height: ${TAB_HEIGHT_PX}px;
     padding: 0;
-    border: 1px solid rgba(244, 244, 245, 0.12);
-    background: rgba(10, 10, 11, 0.72);
-    color: rgba(244, 244, 245, 0.85);
-    font-size: 16px;
+    border: 1px solid rgba(244, 244, 245, 0.2);
+    background: rgba(10, 10, 11, 0.85);
+    color: #f4f4f5;
     line-height: 1;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
 }
 .tab.show { display: grid; }
-.tab:active { background: rgba(10, 10, 11, 0.95); }
-.tab.left-bottom, .tab.left-top   { left: env(safe-area-inset-left, 0px);  border-left: 0;  border-radius: 0 12px 12px 0; }
-.tab.right-bottom, .tab.right-top { right: env(safe-area-inset-right, 0px); border-right: 0; border-radius: 12px 0 0 12px; }
+.tab:active { background: rgba(10, 10, 11, 0.98); }
+.tab svg { width: ${TAB_ARROW_PX}px; height: ${TAB_ARROW_PX}px; display: block; pointer-events: none; }
+.tab.left-bottom, .tab.left-top, .tab.left-middle, .tab.left-free       { left: env(safe-area-inset-left, 0px);  border-left: 0;  border-radius: 0 14px 14px 0; }
+.tab.right-bottom, .tab.right-top, .tab.right-middle, .tab.right-free   { right: env(safe-area-inset-right, 0px); border-right: 0; border-radius: 14px 0 0 14px; }
+.tab.left-middle, .tab.right-middle { top: 50%; transform: translateY(-50%); }
+.tab.left-free, .tab.right-free     { top: max(calc(${FREE_EDGE_PX}px + env(safe-area-inset-top, 0px)), var(--free-top, 50%)); }
 .tab.left-bottom  { bottom: var(--lift-left, calc(62px + env(safe-area-inset-bottom, 0px))); }
 .tab.right-bottom { bottom: var(--lift-right, calc(62px + env(safe-area-inset-bottom, 0px))); }
 /*
@@ -3101,7 +3351,8 @@
          *   しまう:          画面端のつまみだけにする（つまみの矢印は「出す」専用）。常に出す
          *   更新:            一覧を読み直す（関係ないアカウントが入ったときの直し用）
          *   大きく / 小さく: ドックの大きさを1段ずつ変える（v1.10.0）
-         * 「更新」「大きく」「小さく」は、現在のアカウントのアイコンを押したときだけ出す（v1.10.0）。
+         *   自由 / 6か所:    置き方を切り替える（v1.12.0。押すとその置き方になる）
+         * 「更新」「大きく」「小さく」「自由 / 6か所」は、現在のアカウントのアイコンを押したときだけ出す（v1.10.0）。
          * 置き場所はドックを引っぱって変える（v1.7.0 で「移動」ボタンは廃止）
          */
         const tools = document.createElement('div');
@@ -3173,7 +3424,16 @@
         smallerEl.addEventListener('click', () => changeDockSize(-1));
 
 
-        tools.append(reloadEl, biggerEl, smallerEl, tuckEl);
+        placeEl = document.createElement('button');
+
+        placeEl.type = 'button';
+
+        placeEl.className = 'tool place';
+
+        placeEl.addEventListener('click', togglePlaceMode);
+
+
+        tools.append(reloadEl, biggerEl, smallerEl, placeEl, tuckEl);
 
         dock.append(listEl, tools);
 
@@ -3190,6 +3450,10 @@
         tabEl.className = 'tab';
 
         tabEl.setAttribute('aria-label', 'アカウント切替を出す');
+
+        tabEl.title = 'アカウント切替を出す';
+
+        tabEl.appendChild(tabArrow());
 
         tabEl.addEventListener('click', () => setTucked(false));
 
@@ -3212,7 +3476,45 @@
 
 
     /*
-     * ドックを指（マウス）で引っぱって動かし、離したところから一番近い四隅に置く。
+     * つまみの矢印。文字の ‹ › は細く小さいので、太い線の図形で描く（v1.12.0）。
+     * 右向き（›）で作り、右に置いたときは CSS ではなく points を入れ替えて左向きにする
+     */
+    function tabArrow() {
+
+        const ns = 'http://www.w3.org/2000/svg';
+
+
+        const svg = document.createElementNS(ns, 'svg');
+
+        svg.setAttribute('viewBox', '0 0 24 24');
+
+        svg.setAttribute('aria-hidden', 'true');
+
+
+        const line = document.createElementNS(ns, 'polyline');
+
+        line.setAttribute('points', '9,4 17,12 9,20');
+
+        line.setAttribute('fill', 'none');
+
+        line.setAttribute('stroke', 'currentColor');
+
+        line.setAttribute('stroke-width', String(TAB_ARROW_STROKE));
+
+        line.setAttribute('stroke-linecap', 'round');
+
+        line.setAttribute('stroke-linejoin', 'round');
+
+
+        svg.appendChild(line);
+
+        return svg;
+    }
+
+
+    /*
+     * ドックを指（マウス）で引っぱって動かし、離したところに応じて置く
+     * （6か所なら一番近い所、自由ならその高さ）。
      * 少し動かしただけ（DRAG_THRESHOLD_PX 未満）なら普通のタップとして扱う。
      * 動かした後に続けて起きるクリックは捨てる（アイコンの上から引っぱっても切り替わらない）
      */
@@ -3253,7 +3555,11 @@
             }
 
 
-            element.style.transform = `translate(${dx}px, ${dy}px)`;
+            /*
+             * transform ではなく translate で動かす。
+             * 「中」に置いたドックは transform（translateY(-50%)）で真ん中に寄せているため
+             */
+            element.style.translate = `${dx}px ${dy}px`;
         };
 
 
@@ -3289,7 +3595,7 @@
 
             element.classList.remove('dragging');
 
-            element.style.transform = '';
+            element.style.translate = '';
 
 
             if (cancelled) {
@@ -3297,14 +3603,10 @@
             }
 
 
-            const vertical =
-                rect.top + rect.height / 2 < window.innerHeight / 2 ? 'top' : 'bottom';
-
-            const side =
-                rect.left + rect.width / 2 < window.innerWidth / 2 ? 'left' : 'right';
-
-
-            writeJson(localStorage, STORAGE_POSITION, side + '-' + vertical);
+            placeAt(
+                rect.left + rect.width / 2,
+                rect.top + rect.height / 2
+            );
 
             render(true);
 
@@ -3397,6 +3699,18 @@
 
     function render(force) {
 
+        renderDock(force);
+
+
+        /*
+         * 「自由」の高さはドックの実際の高さで決まるので、描き直さないときも合わせ直す
+         */
+        applyFreeSpot();
+    }
+
+
+    function renderDock(force) {
+
         if (!shouldShowDock()) {
 
             unmount();
@@ -3438,8 +3752,11 @@
         }
 
 
+        const placeMode = getPlaceMode();
+
+
         const signature =
-            JSON.stringify([accounts, current, position, tucked, busy, sizeIndex, menuOpen]);
+            JSON.stringify([accounts, current, position, placeMode, tucked, busy, sizeIndex, menuOpen]);
 
         if (!force && signature === renderedSignature) {
             return;
@@ -3473,8 +3790,16 @@
         tabEl.className =
             'tab ' + position + (tucked ? ' show' : '');
 
-        tabEl.textContent =
-            position.startsWith('left') ? '›' : '‹';
+        /*
+         * 左に置いたら右向き（›。画面の内側へ出す）、右に置いたら左向き（‹）
+         */
+        tabEl.dataset.arrow =
+            position.startsWith('left') ? 'right' : 'left';
+
+        tabEl.querySelector('polyline')?.setAttribute(
+            'points',
+            position.startsWith('left') ? '9,4 17,12 9,20' : '15,4 7,12 15,20'
+        );
 
         /*
          * 一覧が空のときは、アイコン欄の大きな「読込」だけにする（下の「更新」は隠す）
@@ -3492,6 +3817,21 @@
         smallerEl.hidden = !menuOpen;
 
         smallerEl.disabled = busy || sizeIndex === 0;
+
+
+        /*
+         * 押すとその置き方になる。いまの置き方は title に書く
+         */
+        placeEl.hidden = !menuOpen;
+
+        placeEl.disabled = busy;
+
+        placeEl.textContent = placeMode === 'free' ? '6か所' : '自由';
+
+        placeEl.title =
+            placeMode === 'free' ?
+                'いまは自由に置いている。押すと左右の上・中・下の6か所に置く' :
+                'いまは左右の上・中・下の6か所に置いている。押すと離した高さにそのまま置く';
 
 
         listEl.replaceChildren();
@@ -3988,7 +4328,16 @@
          */
         window.addEventListener('storage', event => {
 
-            if ([STORAGE_ACCOUNTS, STORAGE_POSITION, STORAGE_TUCKED, STORAGE_SIZE].includes(event.key)) {
+            if (
+                [
+                    STORAGE_ACCOUNTS,
+                    STORAGE_POSITION,
+                    STORAGE_TUCKED,
+                    STORAGE_SIZE,
+                    STORAGE_PLACE_MODE,
+                    STORAGE_FREE_SPOT
+                ].includes(event.key)
+            ) {
                 render(false);
             }
         });
@@ -4194,6 +4543,16 @@
         lines.push(
             '■ ドックの大きさ: アイコン ' + DOCK_SIZES[sizeIndex].avatar + 'px' +
             '（' + (sizeIndex + 1) + '／' + DOCK_SIZES.length + '段目。小さい順）'
+        );
+
+
+        const spot = getFreeSpot();
+
+        lines.push(
+            '■ 置き方: ' +
+            (getPlaceMode() === 'free' ?
+                '自由（' + (spot.side === 'left' ? '左' : '右') + '・画面の上から ' + Math.round(spot.y * 100) + '%）' :
+                '6か所（' + (POSITIONS.find(p => p.key === getSnapPosition())?.label || '?') + '）')
         );
 
 
