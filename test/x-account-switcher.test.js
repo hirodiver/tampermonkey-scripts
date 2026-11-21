@@ -517,8 +517,8 @@ const toastText = (page) =>
     tuck = await tuckState();
     check('しまう: ドックが消え、つまみだけ残る', !tuck.dockShown && tuck.tabShown, tuck);
     check('しまう: つまみは画面の端（右上に置いていれば右端・上寄り）に付く', tuck.tabRight === 0 && tuck.tabTop < 200 && tuck.tabText === '‹', tuck);
-    check('しまう: つまみは 34×88px、矢印は 22px の太い線（v1.12.0）',
-      tuck.tabWidth === 34 && tuck.tabHeight === 88 && tuck.arrowWidth === 22, tuck);
+    check('しまう: つまみは 26×68px、矢印は 18px の太い線（v1.12.1）',
+      tuck.tabWidth === 26 && tuck.tabHeight === 68 && tuck.arrowWidth === 18, tuck);
     check('しまう: 右に置いたつまみの矢印は左向き', tuck.arrowPoints === '15,4 7,12 15,20', tuck);
     check('しまう: 戻し方をトーストで知らせる', (await toastText(page)).includes('つまみ'), await toastText(page));
     check('しまう: 端末に覚える（再読み込み・別タブでも続く）', await page.evaluate(() => localStorage.getItem('tm-x-switch-tucked') === 'true'));
