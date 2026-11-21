@@ -406,6 +406,38 @@ const state = (page) =>
     await p.close();
   }
 
+  // ===== 4. 現行の Twitch と同じく、src が空で srcObject で再生している =====
+  // Amazon IVS Player はワーカーの MediaSource を srcObject（MediaSourceHandle）で渡すため、
+  // src / currentSrc は空になる（実機の診断で確認）
+  {
+    const p = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    p.on('pageerror', (e) => console.log('PAGEERROR', e.message));
+    await p.route('https://www.twitch.tv/**', (route) =>
+      route.fulfill({ contentType: 'text/html; charset=utf-8', body: HTML })
+    );
+    await p.addInitScript(PAGE_HELPERS);
+    await p.goto('https://www.twitch.tv/somechannel');
+    await p.evaluate(async () => {
+      const v = document.getElementById('main');
+      v.src = window.__makeToneUrl(0.1);
+      v.loop = true;
+      await v.play();
+      class MediaSourceHandle {}
+      const handle = new MediaSourceHandle();
+      Object.defineProperty(v, 'currentSrc', { get: () => '' });
+      Object.defineProperty(v, 'src', { get: () => '', set: () => {} });
+      Object.defineProperty(v, 'srcObject', { get: () => handle, set: () => {} });
+    });
+    await p.evaluate(SCRIPT);
+    await sleep(400);
+    for (let i = 0; i < 4; i++) await p.keyboard.press('Alt+ArrowUp');
+    await sleep(800);
+    const r = await state(p);
+    check('src が空で srcObject 再生の video もつながる（現行 Twitch）', r.analysers === 1 && r.label === '×2.00', r);
+    check('srcObject 再生の video も ×2.00 で振幅およそ0.2', r.peak > 0.18 && r.peak < 0.22, r.peak);
+    await p.close();
+  }
+
   await browser.close();
 
   const failed = results.filter((r) => !r.ok);
