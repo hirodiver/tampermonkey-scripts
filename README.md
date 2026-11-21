@@ -22,6 +22,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `youtube-chat-input-toggle.user.js` | YouTube チャット入力欄切替 | www.youtube.com/live_chat |
 | `youtube-watch-chat-fit.user.js` | YouTube チャット高さ調整 | www.youtube.com（再生ページ） |
 | `youtube-volume-boost.user.js` | YouTube 音量ブースト | www.youtube.com |
+| `twitch-volume-boost.user.js` | Twitch Volume Boost | www.twitch.tv |
 | `youtube-watch-later-clear.user.js` | YouTube 後で見る一括削除 | www.youtube.com/playlist?list=WL |
 | `demae-can-confirm.user.js` | 出前館 到着確認 | demae-can.com |
 | `tenbin-ai-biz-terms-expand-all.user.js` | 天秤AI 約款一括展開 | biz.tenbin.ai/trust |
@@ -63,6 +64,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-chat-input-toggle.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-watch-chat-fit.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-volume-boost.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/twitch-volume-boost.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/youtube-watch-later-clear.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/demae-can-confirm.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/tenbin-ai-biz-terms-expand-all.user.js
@@ -840,6 +842,65 @@ NODE_PATH=$(npm root -g) node test/youtube-volume-boost.test.js
 自動再生の制限中はつながず、クリック後に効く）を確認する。
 
 YouTube の実DOMとは異なるため、**実機確認の代わりにはならない**。
+
+## Twitch Volume Boost について（ファイル: `twitch-volume-boost.user.js`）
+
+Twitch の音量を100%超（最大500%）に増幅する。Twitch 側の音量スライダーとは掛け算になる
+（Twitch 50% × ブースト ×3.00 ＝ 元の150%）。
+
+### 使い方
+
+- プレイヤーにカーソルを載せると、左上に 🔊 のスライダーが出る（×1.00〜×5.00、0.25刻み）
+- **Alt+↑ / Alt+↓** で ±0.25、**Alt+0** で ×1.00 に戻す（mac は Option）。
+  キーで変えた直後は、ホバーしていなくても1.2秒ほどスライダーが出る
+- Tampermonkey のメニューにも「+0.25」「-0.25」「リセット」「診断をコンソールに出す」がある
+- 倍率は `GM_setValue`（キー `twitchBoost`）に保存し、別タブにも反映する
+
+YouTube 音量ブーストとは別に作ったもので、見た目・操作キー・上限（500%）はまだ揃えていない。
+
+### 作りの要点
+
+- 音声経路は `video → GainNode → DynamicsCompressor（簡易リミッター）→ destination`
+- **経路へつなぐのは、倍率が100%を超え、かつ AudioContext が動いているときだけ。**
+  一度 `createMediaElementSource` でつなぐと元に戻せず、以後の音はすべて AudioContext を通る。
+  ブラウザの自動再生ポリシーで AudioContext は操作前 `suspended` のまま始まるため、
+  その状態でつなぐと操作するまで配信が無音になる。操作（クリック・キー）を待ってからつなぐ
+- **`blob:`（MSE）で再生している video だけをつなぐ。** 別オリジンの直接URL
+  （iOS Safari のネイティブHLS等）をつなぐと CORS の制限で無音になるので、触らない
+- `DynamicsCompressor` は仕様上、自動でメイクアップゲイン（この設定で約+1.7dB＝約1.22倍）を足す。
+  そのままだと表示「×2.00」で実際は約2.44倍になるため、GainNode 側で打ち消している
+- プレイヤーの入れ物は `.video-player__container` → `[data-a-target="video-player"]` →
+  `.video-player` の順に探し、無ければ video とほぼ同じ大きさの祖先を使う
+- 配信の切替・プレイヤーの作り直し・フルスクリーン切替のたびに、スライダーを今の入れ物へ付け直す。
+  フルスクリーンの要素が入れ物より外側なら、全画面の要素の中へ移す
+- キーは `window` の capture で拾い、Twitch の矢印キー（音量）より先に処理する。
+  判定は `e.key` ではなく `e.code`（mac の Option+0 は `e.key` が「º」になるため）
+- 増幅率はなめらかに追従させる（`setTargetAtTime`、プツッという音を防ぐ）
+- チャット欄など文字入力中は Alt キーを無視する。自分のスライダーにフォーカスがあるときは効く
+
+### 効かないときは
+
+コンソールで `__tmTwitchVolumeBoost.dump()`（またはメニューの「診断をコンソールに出す」）で、video ごとに大きさ・src・経路へつないだか
+（つないでいなければ理由）・入れ物とどのセレクタで見つけたか・スライダーの有無が出る。
+入れ物が「(大きさで推定)」になっていたら、Twitch のクラス名が変わっている。
+`__tmTwitchVolumeBoost.set(3)` で直接変えることもできる（1〜5）。
+
+### 検証
+
+```
+node --check twitch-volume-boost.user.js
+NODE_PATH=$(npm root -g) node test/twitch-volume-boost.test.js
+```
+
+Twitch のプレイヤーを模したページで40項目を確認する。増幅は AnalyserNode で実際の振幅を測る
+（×2.00 で2倍、×3.00 で3倍、×5.00 でもリミッターで1.0を超えない）。
+自動再生ポリシー下で操作前に経路へつながないこと（新ヘッドレスで実際の Chrome と同じ制限をかける）、
+ホバー表示、Alt+↑↓0（mac の Option+0 を含む）、チャット欄では効かない、
+スライダーのクリックがプレイヤー（一時停止）へ伝わらない、メニュー、
+プレイヤーの作り直し・video の付け替え、クラス名の無い入れ物、フルスクリーン、
+`blob:` でない src をつながない、診断関数、など。
+
+Twitch の実DOMや実際の配信は再現していないため、**実機確認の代わりにはならない**。
 
 ## Claude 音声入力キー について（ファイル: `claude-dictation-shortcut.user.js`）
 
