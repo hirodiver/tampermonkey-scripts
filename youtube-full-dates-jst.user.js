@@ -292,12 +292,15 @@
     // 処理待ちの間に YouTube が文字を書き換えていたら、古い結果で上書きしない
     function isStillOriginal(element, originalText) {
         if (element.textContent.trim() === originalText) return true;
-        // 書き換え後の文字で処理し直している最中なら、そちらの目印は残す
-        if (element.getAttribute(ORIGINAL_ATTR) === originalText) {
-            element.removeAttribute(PROCESSED_ATTR);
-            element.removeAttribute(ORIGINAL_ATTR);
-        }
+        releasePending(element, originalText);
         return false;
+    }
+    // 処理待ちの目印を外す（次の走査で処理し直す）。
+    // 書き換え後の文字で処理し直している最中なら、そちらの目印は残す
+    function releasePending(element, originalText) {
+        if (element.getAttribute(ORIGINAL_ATTR) !== originalText) return;
+        element.removeAttribute(PROCESSED_ATTR);
+        element.removeAttribute(ORIGINAL_ATTR);
     }
     function markPending(element, originalText) {
         element.setAttribute(PROCESSED_ATTR, 'pending');
@@ -313,9 +316,9 @@
                 if (extracted) uploadDate = extracted.toISOString();
             }
             if (!uploadDate) uploadDate = await fetchUploadDate(videoId);
-            if (!uploadDate) { element.removeAttribute(PROCESSED_ATTR); return; }
+            if (!uploadDate) { releasePending(element, originalText); return; }
             const result = formatDate(uploadDate);
-            if (!result.text) { element.removeAttribute(PROCESSED_ATTR); return; }
+            if (!result.text) { releasePending(element, originalText); return; }
             if (!isStillOriginal(element, originalText)) return;
             applyDateToElement(element, result);
         });
@@ -325,9 +328,9 @@
         markPending(element, originalText);
         requestQueue.push(async () => {
             const calculatedDate = calculateDateFromRelative(originalText);
-            if (!calculatedDate) { element.removeAttribute(PROCESSED_ATTR); return; }
+            if (!calculatedDate) { releasePending(element, originalText); return; }
             const result = formatDate(calculatedDate);
-            if (!result.text) { element.removeAttribute(PROCESSED_ATTR); return; }
+            if (!result.text) { releasePending(element, originalText); return; }
             if (!isStillOriginal(element, originalText)) return;
             applyDateToElement(element, result);
         });
