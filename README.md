@@ -30,6 +30,7 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `claude-dictation-shortcut.user.js` | [Claude 音声入力キー](docs/claude-dictation-shortcut.md) | claude.ai（Claude Code on the web） |
 | `google-hide-ai-overview.user.js` | [Google AI概要非表示](docs/google-hide-ai-overview.md) | www.google.com / www.google.co.jp の検索結果 |
 | `block-ctrl-d-bookmark.user.js` | [Ctrl+D ブックマーク無効](docs/block-ctrl-d-bookmark.md) | 全サイト |
+| `gemini-dictation-shortcut.user.js` | [Gemini 音声入力キー](docs/gemini-dictation-shortcut.md) | gemini.google.com |
 
 各スクリプトの使い方・作りの要点・診断・検証の手順は、名前のリンク先（`docs/<ファイル名>.md`）にある。
 スクリプトを直したら、README ではなくそのファイルを更新する。
@@ -75,6 +76,7 @@ Tampermonkey で以下の raw URL を開くとインストールできる（以�
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/claude-dictation-shortcut.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/google-hide-ai-overview.user.js
 - https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/block-ctrl-d-bookmark.user.js
+- https://raw.githubusercontent.com/hirodiver/tampermonkey-scripts/main/gemini-dictation-shortcut.user.js
 
 ### 新しいスクリプトを入れるとき
 

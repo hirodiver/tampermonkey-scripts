@@ -164,6 +164,7 @@ const selectors = [
 | 対 | ファイル |
 |---|---|
 | 音量ブースト | `youtube-volume-boost.user.js` と `twitch-volume-boost.user.js` |
+| 音声入力キー | `claude-dictation-shortcut.user.js` と `gemini-dictation-shortcut.user.js` |
 
 - 対の片方を直したら、**同じ直しがもう片方にも当てはまるかを必ず見る。**
   見た目・操作・音声経路（AudioContext・GainNode・リミッター）・自動再生の制限への対処・
