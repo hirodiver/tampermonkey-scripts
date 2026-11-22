@@ -1,12 +1,13 @@
 // ==UserScript==
-// @name         X 16進デコード v1.1.0
+// @name         X 16進デコード v1.2.0
 // @namespace    local.hiro.tools
-// @version      1.1.0
-// @description  X 上で UTF-8 の16進数文字列をドラッグして選択すると、デコードした文字列を選択位置の下に表示する
+// @version      1.2.0
+// @description  X と YouTube のライブチャットで、UTF-8 の16進数文字列をドラッグして選択すると、デコードした文字列を選択位置の下に表示する
 // @match        https://x.com/*
 // @match        https://twitter.com/*
+// @match        https://www.youtube.com/live_chat*
+// @match        https://www.youtube.com/live_chat_replay*
 // @run-at       document-idle
-// @noframes
 // @grant        none
 // @homepageURL  https://github.com/hirodiver/tampermonkey-scripts
 // @supportURL   https://github.com/hirodiver/tampermonkey-scripts/issues
@@ -38,6 +39,10 @@
  *
  * パネルの閉じ方: パネルの外をクリック / Esc / 別の文字列を選択
  *
+ * YouTube のライブチャットは再生ページの中の iframe（/live_chat）なので、
+ * @noframes を付けずに iframe の中でも動かす（v1.2.0）。
+ * X の中の iframe（広告など）では動かさない。ポップアウトしたチャットも同じ URL。
+ *
  * ■ 診断
  *   コンソールで window.__tmHexDecode.dump() を呼ぶと、
  *   いまの選択文字列と判定結果を console.table で出す。
@@ -46,6 +51,11 @@
 
 (function () {
     'use strict';
+
+    // X では一番上のページだけで動かす（YouTube のチャットは iframe の中で動かす）
+    if (window.top !== window.self && !/^\/live_chat/.test(location.pathname)) {
+        return;
+    }
 
     // ============================================================
     // 設定
@@ -238,17 +248,38 @@
     // パネル
     // ============================================================
 
+    // 背景色を持つ要素を探して明るさを見る。
+    // YouTube のチャットは body が透明で、<html dark> でダークモードを示す
     function isDarkBackground() {
-        const color = getComputedStyle(document.body).backgroundColor;
-        const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(color);
-
-        if (!m) {
-            return window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (document.documentElement.hasAttribute('dark')) {
+            return true;
         }
 
-        const brightness = (Number(m[1]) + Number(m[2]) + Number(m[3])) / 3;
+        const candidates = [
+            document.querySelector('yt-live-chat-app'),
+            document.body,
+            document.documentElement
+        ];
 
-        return brightness < 128;
+        for (const el of candidates) {
+            if (!el) {
+                continue;
+            }
+
+            const color = getComputedStyle(el).backgroundColor;
+            const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/.exec(color);
+
+            // 透明なら次の候補へ
+            if (!m || (m[4] !== undefined && Number(m[4]) === 0)) {
+                continue;
+            }
+
+            const brightness = (Number(m[1]) + Number(m[2]) + Number(m[3])) / 3;
+
+            return brightness < 128;
+        }
+
+        return window.matchMedia('(prefers-color-scheme: dark)').matches;
     }
 
     function removePanel() {
