@@ -1,6 +1,6 @@
 # X YouTube Card 仕様書
 
-- **バージョン**: 3.10.3（機能はv3.9.1相当＋引用ポストの誤URL修正＋iOSタップ誤爆修正）
+- **バージョン**: 3.11.0（機能はv3.9.1相当＋引用ポストの誤URL修正＋iOSタップ誤爆修正＋画像付き投稿・折りたたみ長文への対応）
 - **形式**: Tampermonkey ユーザースクリプト
 - **ファイル**: `x-youtube-card-open-in-browser.user.js`
 - **namespace**: `local.hiro.tools`
@@ -466,7 +466,7 @@ scan() のカード判定:
 NODE_PATH=$(npm root -g) node test/x-youtube-card.test.js
 ```
 
-ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。57項目。
+ヘッドレスChromium（Playwright）上にXのカード構造を模したDOMを組み、スクリプトを流し込んで挙動を確認する。`GM_xmlhttpRequest` と `window.open` はモック。70項目。
 
 | 項目 | 確認内容 |
 |---|---|
@@ -506,12 +506,28 @@ Xの実DOM構造、Reactの実際の内部形状、iOSのUniversal Linkの挙動
 3. 配信前のライブカードでURLが取れるか
 4. 1つの投稿に複数のYouTubeカードがある場合、それぞれ正しいURLが開くか
 5. タイトルに「YouTube」を含む他ドメインのカードにボタンが出ていないか
+6. 画像付きでカード化されない投稿（YouTube URL + 画像）で、画像が正常に表示されるか（v3.7.0 はここが壊れていた）。本文の下にボタンが出るか、開いた動画が正しいか
+7. 画像付きでも YouTube と無関係な投稿にボタンが出ていないか
+8. 折りたたまれた長文投稿（「さらに表示」の前）でボタンが出るか。外れたら DevTools で `__tmYtCard.dump()` を実行して表を見る
 
 ボタンが一切出ない場合、疑う順序は `[data-testid="card.wrapper"]` の変更 → `isYouTubeCard()` が厳しすぎる、の順。判定を緩めるなら `hasYouTubeDomainLabel()` を見る。
 
 ---
 
 ## 13. 変更履歴
+
+### v3.11.0
+- **折りたたまれた長文投稿でも、「さらに表示」を押す前からボタンを出す**
+- 「さらに表示」がある画像付き投稿は、リンクが DOM にも API にも無い。React の props にある投稿データから YouTube URL を探す
+- 探す範囲は本文から article までに閉じ、引用元・投稿者プロフィールは除外する
+- 診断用に `__tmYtCard.dump()` を追加
+- 検証を70項目に拡充（隣の投稿の props を拾わない、YouTube 以外のリンクの長文には出さない、など）
+
+### v3.10.4
+- **画像付き投稿で、ボタンが添付画像のリンクを開く不具合を修正**
+- 本文リンクの省略判定を動画IDの直後で行い、`?si=` の後で省略された表示でも確定URLにする
+- oEmbed から t.co を拾うとき、添付画像（`pic.x.com` / `pic.twitter.com`）のリンクを除外する
+- 実機で報告された投稿を模したテストを追加
 
 ### v3.10.3
 - **実機報告: iOSでボタンをタップすると、YouTubeではなくXアプリが起動してそのポストが再び表示される不具合を修正**
