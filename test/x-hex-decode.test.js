@@ -9,6 +9,8 @@ const path = require('path');
 //
 //   NODE_PATH=$(npm root -g) node test/x-hex-decode.test.js
 //
+// 後半では YouTube のライブチャット（再生ページの中の iframe）を模して同じことを確かめる。
+//
 // Xの実DOMそのものではないので、これに通ることは実機で動くことを保証しない。
 
 const SCRIPT = fs.readFileSync(
@@ -207,6 +209,91 @@ function check(name, cond, extra) {
   await selectAll('jaHex');
   check('診断: dump() が選択の判定を返す', await page.evaluate(() =>
     window.__tmHexDecode.dump()[0]['結果'] === 'あいう'));
+
+  // ============================================================
+  // YouTube のライブチャット（再生ページの中の iframe）
+  // ============================================================
+  {
+    const ytPage = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+    const chatHtml = (dark) => `<!doctype html><html ${dark ? 'dark' : ''}><meta charset="utf-8">
+<style>
+  body { margin: 0; font: 13px sans-serif; }
+  yt-live-chat-app { display: block; height: 100vh; background: ${dark ? '#0f0f0f' : '#fff'}; color: ${dark ? '#fff' : '#0f0f0f'}; }
+  #item-scroller { height: 100%; overflow-y: auto; }
+  yt-live-chat-text-message-renderer { display: block; padding: 4px 24px; }
+  #message { word-break: break-all; }
+</style>
+<body><yt-live-chat-app><div id="item-scroller"><div id="items">
+  <yt-live-chat-text-message-renderer><span id="author-name">名無し</span>
+    <span id="message"><span id="chatHex">e38182e38184e38186</span></span></yt-live-chat-text-message-renderer>
+  <yt-live-chat-text-message-renderer><span id="author-name">だれか</span>
+    <span id="message"><span id="chatUrl">${URL_HEX}</span></span></yt-live-chat-text-message-renderer>
+</div></div></yt-live-chat-app></body></html>`;
+
+    await ytPage.route('https://www.youtube.com/**', (route) => {
+      const u = new URL(route.request().url());
+      let body;
+      if (u.pathname === '/watch') {
+        body = `<!doctype html><meta charset="utf-8"><body style="margin:0">
+<iframe id="chatframe" src="/live_chat?v=test${u.searchParams.get('dark') ? '&dark=1' : ''}" style="width:400px;height:600px;border:0"></iframe>
+<iframe id="adframe" src="/embed/other" style="width:300px;height:100px;border:0"></iframe></body>`;
+      } else if (u.pathname === '/live_chat') {
+        body = chatHtml(!!u.searchParams.get('dark'));
+      } else {
+        body = '<!doctype html><body><span id="otherHex">e38182e38184e38186</span></body>';
+      }
+      route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body });
+    });
+
+    async function openChat(dark) {
+      await ytPage.goto('https://www.youtube.com/watch?v=test' + (dark ? '&dark=1' : ''));
+      const chat = ytPage.frame({ url: /\/live_chat/ });
+      const other = ytPage.frame({ url: /\/embed\/other/ });
+      await chat.waitForSelector('#chatHex');
+      await chat.addScriptTag({ content: SCRIPT });
+      await other.addScriptTag({ content: SCRIPT });
+      return { chat, other };
+    }
+
+    async function dragIn(frame, id) {
+      const box = await frame.locator('#' + id).boundingBox();
+      await ytPage.mouse.click(1150, 780);
+      await ytPage.mouse.move(box.x + 1, box.y + box.height / 2);
+      await ytPage.mouse.down();
+      await ytPage.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
+      await ytPage.mouse.move(box.x + box.width - 1, box.y + box.height - 3, { steps: 5 });
+      await ytPage.mouse.up();
+      await ytPage.waitForTimeout(500);
+    }
+
+    const texts = (frame) => frame.evaluate(() =>
+      [...document.querySelectorAll('#tm-x-hex-decode-panel .tm-hex-decoded')].map((e) => e.textContent));
+    const panelBg = (frame) => frame.evaluate(() =>
+      getComputedStyle(document.getElementById('tm-x-hex-decode-panel')).backgroundColor);
+
+    let { chat, other } = await openChat(false);
+    await dragIn(chat, 'chatHex');
+    let t = await texts(chat);
+    check('YouTube チャット: iframe の中でドラッグするとデコードされる', t.length === 1 && t[0] === 'あいう', t);
+    check('YouTube チャット: 明るいテーマでは白いパネル', (await panelBg(chat)) === 'rgb(255, 255, 255)', await panelBg(chat));
+    check('YouTube チャット: パネルがチャット欄の中に収まる', await chat.evaluate(() => {
+      const p = document.getElementById('tm-x-hex-decode-panel').getBoundingClientRect();
+      return p.left >= 0 && p.right <= document.documentElement.clientWidth;
+    }));
+
+    await dragIn(chat, 'chatUrl');
+    t = await texts(chat);
+    check('YouTube チャット: URL にデコードされ「開く」が出る', t.length === 1 && t[0] === URL_TEXT &&
+      await chat.evaluate(() => !!document.querySelector('#tm-x-hex-decode-panel a.tm-hex-open')), t);
+
+    check('YouTube: チャット以外の iframe では動かない', await other.evaluate(() => window.__tmHexDecode === undefined));
+
+    ({ chat } = await openChat(true));
+    await dragIn(chat, 'chatHex');
+    check('YouTube チャット: ダークテーマ（html[dark]）では暗いパネル', (await panelBg(chat)) === 'rgb(22, 24, 28)', await panelBg(chat));
+
+    await ytPage.close();
+  }
 
   await browser.close();
 
