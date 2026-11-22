@@ -149,14 +149,25 @@ async function openPage(browser, url, setup) {
         check('作り直し: 新しい「おすすめ」タブも消える', (await display(page, 'forYou')) === 'none');
         check('作り直し: フォロー中が選択済みならクリックしない', (await tabClicks(page)).length === 2, await tabClicks(page));
 
-        // 現状の挙動: 隠した要素がそのまま別ラベルに使い回されても、表示に戻さない
+        // 隠した要素がそのまま別ラベルに使い回されたら、表示に戻す
         await page.evaluate(() => {
             document.querySelector('#forYou span').textContent = '話題';
             window.addCell();
         });
         await wait(400);
-        known('隠した要素が別ラベルに使い回されても表示へ戻さない（目印を外す処理が無い）',
-            (await display(page, 'forYou')) === 'none');
+        check('使い回し: 隠した要素が別ラベルに使い回されたら表示へ戻る',
+            (await display(page, 'forYou')) !== 'none');
+        check('使い回し: 戻したら目印も外れる', await page.evaluate(() =>
+            !document.getElementById('forYou').hasAttribute('data-tm-following-hidden')));
+
+        // 使い回しで別の要素に「おすすめ」が入ったら、そちらを隠す
+        await page.evaluate(() => {
+            document.querySelector('#list1 span').textContent = 'おすすめ';
+            window.addCell();
+        });
+        await wait(400);
+        check('使い回し: 別の要素に「おすすめ」が入ればそちらを消す', (await display(page, 'list1')) === 'none');
+        check('使い回し: 「話題」になった要素は表示のまま', (await display(page, 'forYou')) !== 'none');
 
         await page.close();
     }
@@ -218,6 +229,20 @@ async function openPage(browser, url, setup) {
         });
         await wait(900);
         check('SPA: ホームから離れた先の「おすすめ」は消さない', (await display(page, 'forYou2')) !== 'none');
+
+        // ホームで隠したタブ要素が、そのまま話題のタブ列に使い回された
+        await page.evaluate(() => {
+            history.pushState({}, '', '/home');
+            window.homeTabs(false);
+        });
+        await wait(900);
+        check('SPA: ホームへ戻ると再び「おすすめ」が消える', (await display(page, 'forYou')) === 'none');
+        await page.evaluate(() => {
+            history.pushState({}, '', '/explore');
+            window.addCell();
+        });
+        await wait(900);
+        check('SPA: ホームから離れると、隠していた要素を表示へ戻す', (await display(page, 'forYou')) !== 'none');
 
         await page.close();
     }

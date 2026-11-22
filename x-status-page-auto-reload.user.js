@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X Status Auto Reload v1.2.1
+// @name         X Status Auto Reload v1.2.2
 // @namespace    local.hiro.tools
-// @version      1.2.1
+// @version      1.2.2
 // @description  タイムラインから個別ポストへ遷移した際に読み込みが固まったら自動で更新する（Control Panel for Twitter等の拡張との競合対策）
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -132,19 +132,41 @@
     location.reload();
   }
 
+  // 画面のDOM変化を監視する。
+  // document-start 実行時は document.body がまだ存在しないことがあるため、
+  // documentElement を監視する（subtree指定なのでbody追加も拾える）。
+  // 実行環境によっては documentElement すら null の時点で走るので、
+  // そのときは document の直下を見て、documentElement ができてから監視を始める。
+  function observeActivity() {
+    if (document.documentElement) {
+      mutationObserver = new MutationObserver(() => {
+        hasActivity = true;
+      });
+      mutationObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+      return;
+    }
+
+    log('documentElement がまだ無いので、できるまで待つ');
+    mutationObserver = new MutationObserver(() => {
+      if (!document.documentElement) return;
+      mutationObserver.disconnect();
+      // documentElement ができた＝読み込み中の兆候ありとみなす
+      hasActivity = true;
+      observeActivity();
+    });
+    mutationObserver.observe(document, {
+      childList: true,
+    });
+  }
+
   function scheduleCheck(path) {
     stopWatching();
     hasActivity = false;
 
-    mutationObserver = new MutationObserver(() => {
-      hasActivity = true;
-    });
-    // document-start 実行時は document.body がまだ存在しないことがあるため、
-    // 常に存在する documentElement を監視する（subtree指定なのでbody追加も拾える）
-    mutationObserver.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-    });
+    observeActivity();
 
     // 第1段階: 画面が完全に無反応のまま短時間経過したら早期にリロード
     noActivityTimer = setTimeout(() => {

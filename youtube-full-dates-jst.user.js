@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube Full Dates (JST) v3.8.2
+// @name         YouTube Full Dates (JST) v3.8.3
 // @namespace    local.hiro.tools
-// @version      3.8.2
+// @version      3.8.3
 // @description  YouTubeの「1年前」等の相対表示を、JST基準の絶対日付に置換する。今週/今年/昨年以前を色分け表示。Trusted Types対応。
 // @author       hirodiver (fork of Solomon / InMirrors "YouTube Full Dates v3")
 // @match        https://www.youtube.com/*
@@ -75,6 +75,10 @@
     const SETTINGS = { ...DEFAULT_CONFIG, ...savedSettings };
 
     const PROCESSED_ATTR = 'data-ytfd-done';
+    // 置き換え前の文字（元の文字）と、置き換えた後の文字。
+    // YouTube が同じ要素の文字だけを書き換えたとき、目印が残っていても処理し直すために使う。
+    const ORIGINAL_ATTR = 'data-ytfd-original';
+    const APPLIED_ATTR = 'data-ytfd-applied';
     const dateCache = new Map();
     let isProcessing = false, pendingRequests = 0, lastUrl = window.location.href;
     const MAX_CONCURRENT = 8, requestQueue = [];
@@ -171,8 +175,41 @@
         }
         return null;
     }
+    // 日付欄らしい文字か（「3 日前」「2 years ago」のように数字の直後に単位が来る、
+    // または英語の絶対日付）。チャンネル名「毎日の前向き日記」のように
+    // 「前」と「日」を含むだけの文字は日付欄とみなさない。
+    const DATE_UNIT_PATTERN = new RegExp(
+        '\\d+\\s*(?:' +
+            Object.values(LANGUAGES)
+                .flatMap(l => l.dateKeywords)
+                .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                .join('|') +
+        ')',
+        'i'
+    );
+    function looksLikeDateField(text) {
+        if (!text) return false;
+        return (hasRelativeDate(text) && DATE_UNIT_PATTERN.test(text)) || hasYouTubeFullDate(text);
+    }
+
+    // 処理済みの目印が今の文字に対して有効か。
+    // 置き換えた後の文字から変わっていたら（YouTube が書き換えた）、目印を外して処理し直す。
+    function isMarkedCurrent(el) {
+        const state = el.getAttribute(PROCESSED_ATTR);
+        if (state === null) return false;
+        if (state === 'pending') {
+            if (el.textContent.trim() === el.getAttribute(ORIGINAL_ATTR)) return true;
+        } else if (el.textContent === el.getAttribute(APPLIED_ATTR)) {
+            return true;
+        }
+        el.removeAttribute(PROCESSED_ATTR);
+        el.removeAttribute(ORIGINAL_ATTR);
+        el.removeAttribute(APPLIED_ATTR);
+        el.classList.remove('ytfd-old-video','ytfd-this-week','ytfd-this-year');
+        return false;
+    }
     function needsProcessing(el) {
-        if (el.hasAttribute(PROCESSED_ATTR)) return false;
+        if (isMarkedCurrent(el)) return false;
         const text = el.textContent;
         return text && (hasRelativeDate(text) || hasYouTubeFullDate(text));
     }
@@ -246,13 +283,29 @@
     function applyDateToElement(element, result) {
         element.textContent = result.text;
         element.setAttribute(PROCESSED_ATTR, 'true');
+        element.setAttribute(APPLIED_ATTR, result.text);
         element.classList.remove('ytfd-old-video','ytfd-this-week','ytfd-this-year');
         if      (result.tier === 'thisWeek')                              element.classList.add('ytfd-this-week');
         else if (result.tier === 'oldYear'  && SETTINGS.highlightOldVideos) element.classList.add('ytfd-old-video');
         else if (result.tier === 'thisYear' && SETTINGS.thisYearBadge)    element.classList.add('ytfd-this-year');
     }
-    function queueDateUpdate(videoId, element, originalText) {
+    // 処理待ちの間に YouTube が文字を書き換えていたら、古い結果で上書きしない
+    function isStillOriginal(element, originalText) {
+        if (element.textContent.trim() === originalText) return true;
+        // 書き換え後の文字で処理し直している最中なら、そちらの目印は残す
+        if (element.getAttribute(ORIGINAL_ATTR) === originalText) {
+            element.removeAttribute(PROCESSED_ATTR);
+            element.removeAttribute(ORIGINAL_ATTR);
+        }
+        return false;
+    }
+    function markPending(element, originalText) {
         element.setAttribute(PROCESSED_ATTR, 'pending');
+        element.setAttribute(ORIGINAL_ATTR, originalText);
+        element.removeAttribute(APPLIED_ATTR);
+    }
+    function queueDateUpdate(videoId, element, originalText) {
+        markPending(element, originalText);
         requestQueue.push(async () => {
             let uploadDate = null;
             if (hasYouTubeFullDate(originalText)) {
@@ -263,17 +316,19 @@
             if (!uploadDate) { element.removeAttribute(PROCESSED_ATTR); return; }
             const result = formatDate(uploadDate);
             if (!result.text) { element.removeAttribute(PROCESSED_ATTR); return; }
+            if (!isStillOriginal(element, originalText)) return;
             applyDateToElement(element, result);
         });
         processQueue();
     }
     function queueRelativeDateUpdate(element, originalText) {
-        element.setAttribute(PROCESSED_ATTR, 'pending');
+        markPending(element, originalText);
         requestQueue.push(async () => {
             const calculatedDate = calculateDateFromRelative(originalText);
             if (!calculatedDate) { element.removeAttribute(PROCESSED_ATTR); return; }
             const result = formatDate(calculatedDate);
             if (!result.text) { element.removeAttribute(PROCESSED_ATTR); return; }
+            if (!isStillOriginal(element, originalText)) return;
             applyDateToElement(element, result);
         });
         processQueue();
@@ -309,7 +364,9 @@
         ];
         for (const selector of selectors) {
             for (const el of container.querySelectorAll(selector)) {
-                if (needsProcessing(el) && !isExcludedEl(el)) return el;
+                if (!needsProcessing(el) || isExcludedEl(el)) continue;
+                // メタデータ行にはチャンネル名も並ぶ。日付欄らしい文字の span だけを対象にする
+                if (looksLikeDateField(el.textContent)) return el;
             }
         }
         return null;
@@ -358,7 +415,7 @@
             document.querySelectorAll(selector).forEach(post => {
                 ['#published-time-text a','#published-time-text','.published-time-text'].forEach(ds => {
                     const dateEl = post.querySelector(ds);
-                    if (dateEl && !dateEl.hasAttribute(PROCESSED_ATTR)) {
+                    if (dateEl && !isMarkedCurrent(dateEl)) {
                         const text = dateEl.textContent.trim();
                         if (isRelativeDateText(text)) queueRelativeDateUpdate(dateEl, text);
                     }
@@ -372,7 +429,7 @@
             document.querySelectorAll(selector).forEach(comment => {
                 ['#published-time-text','a.yt-simple-endpoint[href*="lc="]','.published-time-text a','span.published-time-text'].forEach(ds => {
                     const dateEl = comment.querySelector(ds);
-                    if (dateEl && !dateEl.hasAttribute(PROCESSED_ATTR)) {
+                    if (dateEl && !isMarkedCurrent(dateEl)) {
                         const text = dateEl.textContent.trim();
                         if (isRelativeDateText(text)) queueRelativeDateUpdate(dateEl, text);
                     }
@@ -394,6 +451,8 @@
     function clearAllMarkers() {
         document.querySelectorAll('[' + PROCESSED_ATTR + ']').forEach(el => {
             el.removeAttribute(PROCESSED_ATTR);
+            el.removeAttribute(ORIGINAL_ATTR);
+            el.removeAttribute(APPLIED_ATTR);
             el.classList.remove('ytfd-old-video','ytfd-this-week','ytfd-this-year');
         });
     }
@@ -647,5 +706,5 @@
     setTimeout(runProcessors, 3000);
     setTimeout(runProcessors, 6000);
 
-    console.log('📅 YouTube Full Dates (JST) v3.8.0 loaded!');
+    console.log('📅 YouTube Full Dates (JST) v3.8.3 loaded!');
 })();

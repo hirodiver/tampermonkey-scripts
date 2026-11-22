@@ -123,12 +123,28 @@ async function openPage(browser, url, setup) {
         check('使い回し: 戻したら目印も外れる', await page.evaluate(() =>
             !document.getElementById('note1').hasAttribute('data-tm-note-hidden')));
 
-        // 現状の挙動: 隠した要素の中身だけが差し替わり、ほかにDOM変化が無いと戻らない
-        // （隠した要素の中の変更は、無限ループ防止のため監視で無視している）
+        // 隠した要素の中身だけが差し替わり、ほかにDOM変化が無くても戻る
         await page.evaluate(({ normal }) => window.reuseCell('note2', normal), { normal: NORMAL });
         await wait(600);
-        known('隠した要素の中身だけが通常の通知に差し替わると、次のDOM変化まで隠れたまま',
+        check('使い回し: 隠した要素の中身だけが通常の通知に差し替わっても表示へ戻る',
+            (await display(page, 'note2')) !== 'none');
+
+        // 中身だけの差し替えで、もう一度ノートに戻れば隠す
+        await page.evaluate(({ ja }) => window.reuseCell('note2', ja), { ja: NOTE_JA });
+        await wait(600);
+        check('使い回し: 表示へ戻した要素の中身がノートに戻れば再び消える',
             (await display(page, 'note2')) === 'none');
+        await page.evaluate(({ normal }) => window.reuseCell('note2', normal), { normal: NORMAL });
+        await wait(600);
+
+        // 無限ループにならない（落ち着いた後に、スクリプトが属性を書き換え続けない）
+        const selfChanges = await page.evaluate(() => new Promise((resolve) => {
+            let count = 0;
+            const mo = new MutationObserver((list) => { count += list.length; });
+            mo.observe(document.getElementById('list'), { attributes: true, childList: true, subtree: true });
+            setTimeout(() => { mo.disconnect(); resolve(count); }, 1000);
+        }));
+        check('ループ: 落ち着いた後は DOM を書き換え続けない', selfChanges === 0, selfChanges);
         await page.evaluate(({ normal }) => window.mkCell('like4', normal), { normal: NORMAL });
         await wait(400);
         check('使い回し: ほかのDOM変化があれば、隠れていた通常の通知も戻る', (await display(page, 'note2')) !== 'none');

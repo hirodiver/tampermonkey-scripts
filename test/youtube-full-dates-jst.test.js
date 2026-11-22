@@ -200,11 +200,12 @@ async function openPage(browser, url, html, store, player) {
         check('残す: 視聴回数は書き換えない', (await t.text('cardWeekViews')) === '1.2万 回視聴');
         check('残す: チャンネル名は書き換えない', (await t.text('cardWeekChannel')) === 'テストチャンネル');
 
-        // 現状の挙動: チャンネル名が「前」と「日」などを含むと、相対日付と見なされ日付に置き換わる
-        // （メタデータ行の span を DOM 順に見て、最初に当たったものを日付欄とみなすため）
-        known('チャンネル名「毎日の前向き日記」も日付に置き換わる（日付欄と同じ日付になる）',
-            (await t.text('cardChanChannel')) !== '毎日の前向き日記',
+        // チャンネル名が「前」と「日」などを含んでも、日付欄（数字＋単位）だけを置き換える
+        check('残す: チャンネル名「毎日の前向き日記」は書き換えない',
+            (await t.text('cardChanChannel')) === '毎日の前向き日記',
             { channel: await t.text('cardChanChannel'), date: await t.text('cardChanDate') });
+        check('日付欄: チャンネル名に「前」「日」があっても日付欄は置き換わる',
+            (await t.text('cardChanDate')) === '🆕 2026年11月21日', await t.text('cardChanDate'));
 
         // API の失敗
         check('失敗: API が失敗したら元の表示のまま', (await t.text('cardFailDate')) === '5 年前');
@@ -228,26 +229,32 @@ async function openPage(browser, url, html, store, player) {
         await t.page.evaluate(() => {
             const old = document.getElementById('cardOld');
             const tpl = document.createElement('template');
+            // YouTube が作る新しい要素には、スクリプトの目印（data-ytfd-*）は付いていない
             tpl.innerHTML = old.outerHTML
+                .replace(/ data-ytfd-[a-z]+="[^"]*"/g, '')
+                .replace(/ class="ytfd-[^"]*"/g, '')
                 .replace(/cardOld/g, 'cardSwap')
                 .replace('vidOld00001', 'vidWeek001')
-                .replace('2024年06月15日', '1 日前')
-                .replace(/ data-ytfd-done="[^"]*"/g, '')
-                .replace(/ class="ytfd-[^"]*"/g, '');
+                .replace('2024年06月15日', '1 日前');
             old.replaceWith(tpl.content.firstElementChild);
         });
         await t.wait(800);
         check('使い回し: 差し替えられたカードも置き換わる', (await t.text('cardSwapDate')) === '🆕 2026年11月21日', await t.text('cardSwapDate'));
 
-        // 現状の挙動: 同じ span の文字だけ書き換わり、目印が残ったままだと置き換えない
+        // 同じ span の文字だけ書き換わっても、目印に持たせた文字と違えば処理し直す
         await t.page.evaluate(() => {
             const card = document.getElementById('cardLive');
             card.querySelector('a').setAttribute('href', '/watch?v=vidOld00001');
             document.getElementById('cardLiveDate').textContent = '2 年前';
         });
         await t.wait(3500);
-        known('同じ要素の文字だけが書き換わると、目印が残っているため置き換えない（次の SPA 遷移まで）',
-            (await t.text('cardLiveDate')) === '2 年前', await t.text('cardLiveDate'));
+        check('書き換え: 同じ要素の文字だけが書き換わっても、SPA 遷移を待たずに置き換わる',
+            (await t.text('cardLiveDate')) === '2024年06月15日', await t.text('cardLiveDate'));
+        check('書き換え: 色分けも新しい日付に合わせる（今年の紫を外して黄色）',
+            (await t.cls('cardLiveDate')).includes('ytfd-old-video') && !(await t.cls('cardLiveDate')).includes('ytfd-this-year'),
+            await t.cls('cardLiveDate'));
+        check('書き換え: 目印に置き換え前の文字を持つ', await t.page.evaluate(() =>
+            document.getElementById('cardLiveDate').getAttribute('data-ytfd-original') === '2 年前'));
 
         // SPA 遷移（yt-navigate-finish）で目印を消して全部見直す
         await t.page.evaluate(() => window.dispatchEvent(new Event('yt-navigate-finish')));
