@@ -1,0 +1,56 @@
+# ユーザースクリプトの検証（構文チェックと test/ の模擬DOMテスト）を流す。
+# PR ごとと main への push で走る。マージは自動なので、壊れた版が配信される前にここで止める。
+#
+# Playwright はこのリポジトリの依存には入れず（package.json を持たない方針）、
+# 実行のたびにグローバルへ入れる。手元（npm root -g）と同じ版に固定する。
+name: テスト
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PLAYWRIGHT_VERSION: "1.63.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 構文チェック
+        run: |
+          for f in *.user.js test/*.js; do
+            node --check "$f"
+          done
+
+      - name: Playwright を入れる
+        run: |
+          npm install -g "playwright@${PLAYWRIGHT_VERSION}"
+          npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium
+
+      # 1本落ちても残りは流し、最後にまとめて失敗にする
+      - name: 模擬DOMのテスト
+        run: |
+          export NODE_PATH="$(npm root -g)"
+          failed=""
+          for t in test/*.test.js; do
+            echo "::group::$t"
+            if ! node "$t"; then
+              failed="$failed $t"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::失敗したテスト:$failed"
+            exit 1
+          fi

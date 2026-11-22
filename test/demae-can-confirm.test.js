@@ -6,8 +6,12 @@ const path = require('path');
 //
 // 出前館のカート画面と「お届け時間に変更があります」確認モーダルを模したDOMを組み、
 // ヘッドレスChromium に document-idle 相当（読み込み後の evaluate）でスクリプトを流し込んで、
-// 「カート本体のボタンは押さない／モーダルの『注文を完了する』だけを1回押す／
-//   同じモーダルの別ボタンは押さない／押す前に閉じたら押さない／出し直しで再び押す」を確認する。
+// 「利用者が自分で押すまでは何も押さない／カート本体のボタンは押さない／
+//   モーダルの『注文を完了する』だけを1回押す／同じモーダルの別ボタンは押さない／
+//   押す前に閉じたら押さない／出し直しで再び押す／後から表示されたモーダルも押す」を確認する。
+//
+// 利用者のクリックは Playwright の page.click（isTrusted が true）で再現する。
+// 記録するのはスクリプトが押したクリック（isTrusted が false）だけ。
 //
 //   NODE_PATH=$(npm root -g) node test/demae-can-confirm.test.js
 //
@@ -40,13 +44,6 @@ function check(name, cond, extra) {
     console.log((cond ? 'PASS  ' : 'FAIL  ') + name + (extra && !cond ? '  -> ' + JSON.stringify(extra) : ''));
 }
 
-// 本体の現状の挙動を記録するだけの項目（通過数には数えない）
-const knowns = [];
-function known(name, cond, extra) {
-    knowns.push({ name, ok: !!cond });
-    console.log((cond ? 'KNOWN ' : 'KNOWN(変化あり) ') + name + (extra ? '  -> ' + JSON.stringify(extra) : ''));
-}
-
 async function openCart(browser, extraSummary) {
     const page = await browser.newPage();
 
@@ -61,6 +58,9 @@ async function openCart(browser, extraSummary) {
 
         // どのボタンが押されたかを記録する
         document.addEventListener('click', (event) => {
+            if (event.isTrusted) {
+                return;
+            }
             const target = event.target.closest('button, [role="button"], a');
             if (target) {
                 window.clicks.push(target.id || target.textContent.trim());
@@ -71,7 +71,11 @@ async function openCart(browser, extraSummary) {
         window.mkModal = (id, opts = {}) => {
             const overlay = document.createElement('div');
             overlay.id = id;
-            overlay.setAttribute('role', 'dialog');
+            if (opts.fixedOnly) {
+                Object.assign(overlay.style, { position: 'fixed', inset: '0' });
+            } else {
+                overlay.setAttribute('role', 'dialog');
+            }
             if (opts.hidden) {
                 overlay.style.display = 'none';
             }
@@ -114,8 +118,13 @@ async function openCart(browser, extraSummary) {
         const page = await openCart(browser);
         const wait = (ms) => page.waitForTimeout(ms);
 
-        await wait(800);
+        await wait(300);
         check('カート: 本体の「注文を完了する」は自動で押さない', (await clicks(page)).length === 0, await clicks(page));
+
+        // 利用者が自分で本体のボタンを押す
+        await page.click('#cartButton');
+        await wait(300);
+        check('カート: 利用者が押した後も、本体のボタンを自動で押し直さない', (await clicks(page)).length === 0, await clicks(page));
 
         await page.evaluate(() => window.mkModal('modal1'));
         await wait(100);
@@ -136,8 +145,7 @@ async function openCart(browser, extraSummary) {
         await wait(800);
         check('重複: 同じボタンは1回しか押さない', (await clicks(page)).filter((c) => c === 'modal1Confirm').length === 1, await clicks(page));
 
-        // 現状の挙動: モーダル表示中にカート本体のフッタが再描画（要素の作り直し）されると、
-        // 本体のボタンの祖先にもモーダルの見出しが入るため、本体のボタンも押してしまう
+        // モーダル表示中にカート本体のフッタが再描画（要素の作り直し）されても、本体のボタンは押さない
         await page.evaluate(() => {
             const footer = document.getElementById('footer');
             const button = document.getElementById('cartButton');
@@ -146,8 +154,7 @@ async function openCart(browser, extraSummary) {
             footer.appendChild(copy);
         });
         await wait(800);
-        known('モーダル表示中に本体のボタンが作り直されると、本体のボタンも押してしまう',
-            (await clicks(page)).includes('cartButton'), await clicks(page));
+        check('再描画: モーダル表示中に作り直された本体のボタンは押さない', !(await clicks(page)).includes('cartButton'), await clicks(page));
         await page.evaluate(() => { window.clicks.length = 0; });
 
         // 閉じてから出し直された（新しい要素の）モーダルでは、また押す
@@ -159,15 +166,18 @@ async function openCart(browser, extraSummary) {
         await page.close();
     }
 
-    // --- 2. 押さないもの ---
+    // --- 2. 押さないもの・後から表示されるもの ---
     {
         const page = await openCart(browser);
         const wait = (ms) => page.waitForTimeout(ms);
+
+        await page.click('#cartButton');
 
         // 見出しが「お届け時間に変更」でないモーダル
         await page.evaluate(() => window.mkModal('otherModal', { title: 'ご注文内容の確認' }));
         await wait(800);
         check('対象外: 見出しが違うモーダルの「注文を完了する」は押さない', (await clicks(page)).length === 0, await clicks(page));
+        await page.evaluate(() => document.getElementById('otherModal').remove());
 
         // 見えない状態で差し込まれたモーダル
         await page.evaluate(() => window.mkModal('hiddenModal', { hidden: true }));
@@ -184,17 +194,24 @@ async function openCart(browser, extraSummary) {
         await wait(800);
         check('対象外: 押す前に閉じられたモーダルは押さない', (await clicks(page)).length === 0, await clicks(page));
 
-        // 現状の挙動: 非表示で差し込まれ、後から表示に切り替わったモーダルは拾わない
-        // （監視は要素の追加だけで、style・class の変化を見ていないため）
+        // 非表示で差し込まれ、後から表示に切り替わったモーダルは押す
         await page.evaluate(() => { document.getElementById('hiddenModal').style.display = ''; });
         await wait(800);
-        known('非表示で差し込まれ後から表示されたモーダルは押さない（追加しか監視していない）',
-            !(await clicks(page)).includes('hiddenModalConfirm'), await clicks(page));
+        check('表示切替: 非表示から表示に切り替わったモーダルを押す', (await clicks(page)).includes('hiddenModalConfirm'), await clicks(page));
 
         await page.close();
     }
 
-    // --- 3. 読み込み時点で既にモーダルが出ている ---
+    // --- 3. 利用者が押していなければ、何も押さない ---
+    {
+        const page = await openCart(browser);
+        await page.evaluate(() => window.mkModal('noUserModal'));
+        await page.waitForTimeout(800);
+        check('未操作: 利用者が押していなければ、モーダルが出ても押さない', (await clicks(page)).length === 0, await clicks(page));
+        await page.close();
+    }
+
+    // --- 4. 読み込み時点で既にモーダルが出ている ---
     {
         const page = await browser.newPage();
         await page.route('https://demae-can.com/**', (route) =>
@@ -208,33 +225,69 @@ async function openCart(browser, extraSummary) {
         await page.goto('https://demae-can.com/cart');
         await page.evaluate(() => {
             window.clicks = [];
-            document.addEventListener('click', (event) => window.clicks.push(event.target.id), true);
+            document.addEventListener('click', (event) => {
+                if (!event.isTrusted) {
+                    window.clicks.push(event.target.id);
+                }
+            }, true);
         });
         await page.evaluate(SCRIPT);
         await page.waitForTimeout(800);
-        check('起動時: 既に出ているモーダルのボタンも押す', (await clicks(page)).includes('preConfirm'), await clicks(page));
-        // 現状の挙動: カート本体のボタンも祖先8段以内（#app）にモーダルの見出しを含むため、本体も押してしまう
-        known('起動時にモーダルが出ていると、カート本体の「注文を完了する」も押してしまう',
-            (await clicks(page)).includes('cartButton'), await clicks(page));
+        check('起動時: 利用者が押していないので、カート本体のボタンを押さない', !(await clicks(page)).includes('cartButton'), await clicks(page));
+        check('起動時: 利用者が押していないので、既に出ているモーダルも押さない', !(await clicks(page)).includes('preConfirm'), await clicks(page));
         await page.close();
     }
 
-    // --- 4. カート本体に「お届け時間」と「変更」が並ぶ場合 ---
+    // --- 5. カート本体に「お届け時間」と「変更」が並ぶ場合 ---
     // 実際のカートにはお届け時間の行と「変更」ボタンがあることが多い。
-    // 祖先8段の textContent に /お届け時間.*変更/ が当たるため、本体のボタンを押してしまう。
     {
         const page = await openCart(browser,
             '<section id="delivery"><span>お届け時間：最短 30分</span><button id="changeTime" type="button">変更</button></section>');
+        await page.click('#cartButton');
         await page.waitForTimeout(800);
-        known('カートに「お届け時間…変更」の行があると、本体の「注文を完了する」を押してしまう',
-            (await clicks(page)).includes('cartButton'), await clicks(page));
+        check('お届け時間の行: カートに「お届け時間…変更」の行があっても、本体のボタンは押さない',
+            !(await clicks(page)).includes('cartButton'), await clicks(page));
+
+        // 本体のフッタが画面に固定され、その中にお届け時間の行がある場合も押さない
+        await page.evaluate(() => {
+            const footer = document.getElementById('footer');
+            Object.assign(footer.style, { position: 'fixed', bottom: '0', left: '0', right: '0' });
+            footer.prepend(document.getElementById('delivery'));
+        });
+        await page.waitForTimeout(800);
+        check('お届け時間の行: 固定フッタの中にあっても、本体のボタンは押さない',
+            !(await clicks(page)).includes('cartButton'), await clicks(page));
+
+        // その状態でモーダルが出れば、モーダルのボタンだけを押す
+        await page.evaluate(() => window.mkModal('modal5'));
+        await page.waitForTimeout(800);
+        check('お届け時間の行: モーダルのボタンだけを押す',
+            JSON.stringify(await clicks(page)) === JSON.stringify(['modal5Confirm']), await clicks(page));
+        await page.close();
+    }
+
+    // --- 6. role の無い重ね表示のモーダル ---
+    {
+        const page = await openCart(browser);
+        await page.click('#cartButton');
+        await page.evaluate(() => window.mkModal('fixedModal', { fixedOnly: true }));
+        await page.waitForTimeout(800);
+        check('重ね表示: role が無くても、画面に固定されたモーダルなら押す', (await clicks(page)).includes('fixedModalConfirm'), await clicks(page));
+        await page.close();
+    }
+
+    // --- 7. 診断 ---
+    {
+        const page = await openCart(browser);
+        const rows = await page.evaluate(() => window.__tmDemaeConfirm.dump());
+        check('診断: dump() が本体のボタンを「ダイアログなし」として出す',
+            rows.length === 1 && rows[0].id === 'cartButton' && rows[0].dialog === '（なし）', rows);
         await page.close();
     }
 
     await browser.close();
 
     const failed = results.filter((r) => !r.ok);
-    console.log('\n' + (results.length - failed.length) + '/' + results.length + ' 通過' +
-        (knowns.length ? '（ほかに現状の挙動の記録 ' + knowns.length + ' 件）' : ''));
+    console.log('\n' + (results.length - failed.length) + '/' + results.length + ' 通過');
     process.exit(failed.length ? 1 : 0);
 })();

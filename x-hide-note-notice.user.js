@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X ノート通知非表示 v1.1.0
+// @name         X ノート通知非表示 v1.1.1
 // @namespace    local.hiro.tools
-// @version      1.1.0
+// @version      1.1.1
 // @description  X の通知タブからコミュニティノート関連の通知を非表示にする
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -316,19 +316,10 @@
 
 
                 /*
-                 * 自分が隠した要素の中の変更は無視する
-                 * （無限ループ防止）
+                 * 隠した要素の中の変化も拾う（中身だけ通常の通知に差し替わる使い回しがある）。
+                 * 監視するのは子要素の追加（childList）だけで、このスクリプトが変えるのは
+                 * 属性と style だけなので、自作の変更でここに来ることはなく、無限ループにはならない。
                  */
-                const target = mutation.target;
-
-                if (
-                    target instanceof Element &&
-                    target.closest?.(`[${HIDDEN_ATTR}]`)
-                ) {
-                    continue;
-                }
-
-
                 scheduleProcess();
 
                 return;

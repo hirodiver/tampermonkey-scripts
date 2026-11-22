@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         YouTube 配信予定リスト v4.8
+// @name         YouTube 配信予定リスト v4.8.1
 // @namespace    https://www.youtube.com/
-// @version      4.8
+// @version      4.8.1
 // @description  登録チャンネルの本日開始・配信中・今後の配信を開始日時順に一覧表示（本日5時以降・区切り表示・前回リストの保持・キーワード強調）
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -916,8 +916,11 @@
 
         /*
          * ラベルの文字数で位置がずれないよう
-         * 幅を固定する。
+         * 幅を固定する。9em は表示前の仮の値で、
+         * 表示後に lockToggleWidth() が両方のラベルを
+         * 実際に測った幅に置き換える（フォントで幅が変わるため）。
          */
+        toggle.style.boxSizing = 'border-box';
         toggle.style.minWidth = '9em';
 
         headingRow.append(
@@ -1094,8 +1097,46 @@
         return el;
     }
 
+    // ============================================================
+    // 表示/非表示ボタンの幅
+    // ============================================================
+
+    const TOGGLE_LABELS = [
+        'リストを表示',
+        'リストを非表示'
+    ];
+
+    /*
+     * 両方のラベルを入れて幅を測り、長いほうに固定する。
+     * 画面に出ていない（幅が 0）ときは測れないので、次の機会に回す。
+     */
+    function lockToggleWidth(toggle) {
+        if (toggle.dataset.tmWidthLocked === '1') return;
+
+        const current = toggle.textContent;
+        let widest = 0;
+
+        for (const label of TOGGLE_LABELS) {
+            toggle.textContent = label;
+
+            widest = Math.max(
+                widest,
+                toggle.getBoundingClientRect().width
+            );
+        }
+
+        toggle.textContent = current;
+
+        if (widest <= 0) return;
+
+        toggle.style.minWidth = `${widest}px`;
+        toggle.dataset.tmWidthLocked = '1';
+    }
+
     function applyCollapsed() {
         if (!els) return;
+
+        lockToggleWidth(els.toggle);
 
         els.toggle.textContent =
             collapsed

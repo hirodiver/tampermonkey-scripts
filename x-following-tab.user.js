@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X フォロー中固定 v1.1.0
+// @name         X フォロー中固定 v1.1.1
 // @namespace    local.hiro.tools
-// @version      1.1.0
+// @version      1.1.1
 // @description  X ホームの「おすすめ」タブを隠し、常に「フォロー中」を表示する
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -134,12 +134,79 @@
 
 
     // ============================================================
+    // 表示・非表示
+    // ============================================================
+
+    /*
+     * X は同じ DOM 要素を別のタブに使い回すことがある。
+     * 一度隠した要素をそのままにすると、別のラベルのタブまで消えてしまう。
+     * そのため毎回判定し直し、条件から外れた要素は表示に戻す。
+     */
+    function setHidden(element, hidden) {
+
+        const isHidden =
+            element.hasAttribute(HIDDEN_ATTR);
+
+
+        if (hidden && !isHidden) {
+
+            element.setAttribute(HIDDEN_ATTR, '1');
+
+            element.style.display = 'none';
+
+            return true;
+        }
+
+
+        if (!hidden && isHidden) {
+
+            element.removeAttribute(HIDDEN_ATTR);
+
+            element.style.display = '';
+
+            return true;
+        }
+
+
+        return false;
+    }
+
+
+    /*
+     * 隠したまま残っている要素を、hideTarget 以外すべて表示へ戻す
+     * （タブ一覧から外れた要素や、ホーム以外へ移った後の要素も含む）
+     */
+    function restoreHiddenExcept(hideTarget) {
+
+        const hiddenElements =
+            document.querySelectorAll(`[${HIDDEN_ATTR}]`);
+
+
+        for (const element of hiddenElements) {
+
+            if (element === hideTarget) {
+                continue;
+            }
+
+
+            if (setHidden(element, false)) {
+
+                log('条件から外れた要素を表示に戻した:', normalize(element.textContent));
+            }
+        }
+    }
+
+
+    // ============================================================
     // タブ処理
     // ============================================================
 
     function process() {
 
         if (!isHomePage()) {
+
+            restoreHiddenExcept(null);
+
             return;
         }
 
@@ -148,6 +215,9 @@
             queryAll(TAB_SELECTORS);
 
         if (!tabs.length) {
+
+            restoreHiddenExcept(null);
+
             return;
         }
 
@@ -177,22 +247,23 @@
 
             log('フォロー中タブが見つからない');
 
+            restoreHiddenExcept(null);
+
             return;
         }
 
 
         // --------------------------------------------------------
-        // おすすめタブを隠す
+        // おすすめタブを隠す（ほかの隠した要素は表示へ戻す）
         // --------------------------------------------------------
+
+        restoreHiddenExcept(forYouTab);
+
 
         if (
             forYouTab &&
-            !forYouTab.hasAttribute(HIDDEN_ATTR)
+            setHidden(forYouTab, true)
         ) {
-
-            forYouTab.setAttribute(HIDDEN_ATTR, '1');
-
-            forYouTab.style.display = 'none';
 
             log('おすすめタブを隠した');
         }

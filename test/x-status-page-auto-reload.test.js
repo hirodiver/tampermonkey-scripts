@@ -15,9 +15,8 @@ const path = require('path');
 // 再読み込みは、ページの文書リクエストの回数で数える。
 //
 // 流し込みは <head> 先頭のインライン <script> で行う（<html> はあるが <body> はまだ無い時点）。
-// Playwright の addInitScript は document.documentElement が null の時点で走り、
-// このスクリプトの observe(document.documentElement) が例外になるため使わない
-// （その場合の挙動は最後の項目で記録している）。
+// Playwright の addInitScript は document.documentElement が null の時点で走る。
+// その時点で走ったときの挙動（documentElement ができるまで待って監視する）は最後の項目で見ている。
 // X の実DOMそのものではないので、これに通ることは実機で動くことを保証しない。
 
 const SCRIPT = fs.readFileSync(
@@ -102,6 +101,8 @@ async function openPage(browser, url, modeFor, opts = {}) {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     if (opts.initScript) {
+        // スクリプトが走る時点で documentElement が無かったかを記録する
+        await page.addInitScript(() => { window.__noDocumentElement = document.documentElement === null; });
         await page.addInitScript(SCRIPT);
     }
     await page.goto(url);
@@ -229,13 +230,28 @@ const statusLoads = (loads) => loads.filter((p) => p === STATUS_PATH).length;
     }
 
     // --- 9. documentElement がまだ無い時点で走った場合 ---
-    // 現状の挙動: 初回の observe(document.documentElement) が TypeError になり、
-    // 直接開いた個別ポストは監視されない（SPA遷移の監視は pushState のラップが先に済んでいるので動く）
+    // documentElement ができるまで待ってから監視するので、例外にならず、直接開いた個別ポストも見る
     {
         const t = await openPage(browser, 'https://x.com' + STATUS_PATH, () => 'stuck', { initScript: true });
+        check('前提: スクリプトが走った時点では documentElement が null',
+            await t.page.evaluate(() => window.__noDocumentElement === true));
+        await t.wait(1500);
+        check('documentElement 待ち: 例外にならない', t.errors.length === 0, t.errors);
+        check('documentElement 待ち: DOM 構築は「動きあり」とみなし、早期の再読み込みはしない',
+            statusLoads(t.loads) === 1, t.loads);
+        await t.wait(2000);
+        check('documentElement 待ち: 固まったままなら約2.5秒で1回再読み込みする', statusLoads(t.loads) === 2, t.loads);
         await t.wait(3500);
-        known('documentElement が null の時点で走ると例外になり、直接開いた個別ポストを再読み込みしない',
-            t.errors.some((e) => /observe/.test(e)) && statusLoads(t.loads) === 1, { errors: t.errors, loads: t.loads });
+        check('documentElement 待ち: 同じポストでは1回で諦める', statusLoads(t.loads) === 2, t.loads);
+        check('documentElement 待ち: 再読み込み後も例外にならない', t.errors.length === 0, t.errors);
+        await t.close();
+    }
+
+    {
+        const t = await openPage(browser, 'https://x.com' + STATUS_PATH, () => 'loaded', { initScript: true });
+        await t.wait(3000);
+        check('documentElement 待ち: 本文が出ていれば再読み込みしない', statusLoads(t.loads) === 1 && t.errors.length === 0,
+            { loads: t.loads, errors: t.errors });
         await t.close();
     }
 
