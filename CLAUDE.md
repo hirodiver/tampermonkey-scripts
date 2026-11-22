@@ -20,8 +20,8 @@ hirodiver の個人ツールは2つのリポジトリに分かれている。指
 - 目的のリポジトリがセッションに無いときは、手元にある別のリポジトリで代用しない。
   クラウドのセッションなら `add_repo` で追加してから作業する。追加できなければ、
   そう伝えて止める。
-- claude-code-tools にも古いユーザースクリプト（`YouTube配信予定リスト/` など）が
-  残っているが、**配布も自動更新もされない旧版**。直すのは常にこちらのファイル。
+- claude-code-tools にあった古いユーザースクリプト（`YouTube配信予定リスト/` など）と
+  雛形 `_templates/` は消した（2026-11-22）。ユーザースクリプトは常にこちらのファイルを直す。
 
 ## 応答・記述の言語
 
@@ -34,9 +34,11 @@ hirodiver の個人ツールは2つのリポジトリに分かれている。指
 tampermonkey-scripts/
 ├── CLAUDE.md
 ├── README.md                    ← スクリプト一覧・インストールURL・配布の仕組み
-├── SPEC.md / HANDOFF.md         ← 個別スクリプトの仕様書・引き継ぎ
 ├── <サイト>-<機能>.user.js       ← スクリプト本体（例: x-hide-spaces-bar.user.js）
-└── test/<名前>.test.js          ← Playwright による模擬DOM検証
+├── docs/<名前>.md               ← スクリプトごとの説明（使い方・作りの要点・診断・検証）
+├── docs/<名前>.spec.md          ← 詳しい仕様書が要るスクリプトだけ（例: X YouTube Card）
+├── test/<名前>.test.js          ← Playwright による模擬DOM検証
+└── .github/workflows/test.yml   ← PR ごとに構文チェックと test/ を全部流す
 ```
 
 - ファイル名は英小文字のケバブケースで `<サイト>-<機能>.user.js`（`x-` `youtube-` など）。
@@ -46,7 +48,9 @@ tampermonkey-scripts/
   - `@name` は短く、末尾に ` vX.Y.Z` で `@version` と同じ値を付ける
   - `@homepageURL` / `@supportURL` はこのリポジトリ、
     `@downloadURL` / `@updateURL` は `main` の raw URL
-- 新しいスクリプトを足したら、**README の「スクリプト一覧」表と「インストール」の URL 一覧にも足す**。
+- 新しいスクリプトを足したら、**README の「スクリプト一覧」表と「インストール」の URL 一覧にも足し**、
+  説明は `docs/<名前>.md` に書いて一覧表の名前からリンクする。README に説明を直接書かない。
+- スクリプトを直したら、`docs/<名前>.md` の説明も合わせて直す。
 - 既存スクリプトを直したら**必ず `@version` を上げる**（上げないと配信されない）。
   バージョンの付け方、配布と自動更新の詳細は README に従う。
 - **検証が通ったら、確認せず PR を作って `main` にマージするところまで続けて行う。**
@@ -190,6 +194,10 @@ node --check path/to/script.user.js
 ```bash
 NODE_PATH=$(npm root -g) node test/x-hide-spaces-bar.test.js
 ```
+
+PR を作ると GitHub Actions（`.github/workflows/test.yml`）が全スクリプトの構文チェックと
+`test/*.test.js` を全部流す。**マージの前に、この結果が成功になっていることを確かめる。**
+Playwright の版はワークフローの `PLAYWRIGHT_VERSION` で固定している。
 
 構文が通っても実際の挙動は別。最終確認は Tampermonkey に貼って
 DevTools コンソールを見る。
