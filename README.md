@@ -11,12 +11,12 @@ hirodiver 用の Tampermonkey ユーザースクリプト置き場。
 | `x-following-tab.user.js` | [X フォロー中固定](docs/x-following-tab-and-note-notice.md) | x.com / twitter.com |
 | `x-hide-note-notice.user.js` | [X ノート通知非表示](docs/x-following-tab-and-note-notice.md) | x.com / twitter.com |
 | `x-hide-spaces-bar.user.js` | [X スペース帯非表示](docs/x-hide-spaces-bar.md) | x.com / twitter.com |
-| `x-bottom-bar-opaque.user.js` | X 下部メニュー不透明化 | x.com / twitter.com |
+| `x-bottom-bar-opaque.user.js` | [X 下部メニュー不透明化](docs/x-bottom-bar-opaque.md) | x.com / twitter.com |
 | `x-account-switcher.user.js` | [X アカウント切替](docs/x-account-switcher.md) | x.com / twitter.com |
 | `x-tab-account.user.js` | [X タブ別アカウント](docs/x-tab-account.md) | x.com / twitter.com |
 | `x-hex-decode.user.js` | [X 16進デコード](docs/x-hex-decode.md) | x.com / twitter.com / www.youtube.com/live_chat |
 | `youtube-full-dates-jst.user.js` | [YouTube Full Dates (JST)](docs/youtube-full-dates-jst.md) | www.youtube.com |
-| `youtube-upcoming-stream-list.user.js` | YouTube 配信予定リスト | www.youtube.com |
+| `youtube-upcoming-stream-list.user.js` | [YouTube 配信予定リスト](docs/youtube-upcoming-stream-list.md) | www.youtube.com |
 | `youtube-hide-chat-users.user.js` | [YouTube チャット非表示](docs/youtube-hide-chat-users.md) | www.youtube.com/live_chat |
 | `youtube-chat-highlight.user.js` | [YouTube チャット強調](docs/youtube-chat-highlight.md) | www.youtube.com/live_chat |
 | `youtube-chat-input-toggle.user.js` | [YouTube チャット入力欄切替](docs/youtube-chat-input-toggle.md) | www.youtube.com/live_chat |
